@@ -76,6 +76,21 @@
   .request-card.complete { border-left: 3px solid var(--green); }
   .request-card.denied { border-left: 3px solid var(--red); }
   .request-card.error { border-left: 3px solid var(--orange); }
+  .request-card.shell-warn {
+    border-color: var(--red);
+    background: rgba(248,81,73,0.05);
+  }
+  .request-card.shell-warn.pending { border-left: 3px solid var(--red); }
+  .shell-warning-banner {
+    background: rgba(248,81,73,0.15);
+    border: 1px solid rgba(248,81,73,0.3);
+    border-radius: 4px;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.8rem;
+    color: var(--red);
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+  }
   .request-header {
     display: flex;
     justify-content: space-between;
@@ -105,6 +120,32 @@
     margin-bottom: 0.5rem;
     white-space: pre-wrap;
     word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+  .cmd-token {
+    color: var(--green);
+    font-weight: 600;
+  }
+  .arg-token {
+    display: inline;
+    border: 1px solid var(--border);
+    background: rgba(110,118,129,0.1);
+    border-radius: 3px;
+    padding: 0 0.2rem;
+    margin: 0 0.15rem;
+  }
+  .line-count-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(88,166,255,0.2);
+    color: var(--blue);
+    margin-left: 0.5rem;
+    font-weight: 600;
   }
   .shell-badge {
     display: inline-block;
@@ -117,6 +158,12 @@
     font-weight: 600;
   }
   .reason { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem; }
+  .reason .toggle-link {
+    color: var(--blue);
+    cursor: pointer;
+    font-size: 0.8rem;
+    margin-left: 0.3rem;
+  }
   .meta { color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.5rem; }
   .actions { display: flex; gap: 0.5rem; }
   .actions button {
@@ -183,6 +230,9 @@ const headers = { 'Authorization': 'Bearer ' + TOKEN };
 let currentFilter = '';
 let requests = [];
 
+// Bidi control character regex: LRM, RLM, LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI
+const BIDI_RE = /[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
 // Filter buttons
 document.querySelectorAll('.filters button').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -202,6 +252,60 @@ function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s;
   return div.innerHTML;
+}
+
+function stripBidi(s) {
+  if (!s) return s;
+  return s.replace(BIDI_RE, '[BIDI]');
+}
+
+function sanitize(s) {
+  return escapeHtml(stripBidi(s));
+}
+
+function buildCommandDisplay(r) {
+  if (r.shell) {
+    // Shell mode: render as flat escaped string
+    let full = stripBidi(r.command);
+    if (r.args && r.args.length) {
+      full += ' ' + r.args.map(stripBidi).join(' ');
+    }
+    return escapeHtml(full);
+  }
+  // Non-shell: highlight command token, wrap args in bordered spans
+  let html = '<span class="cmd-token">' + escapeHtml(stripBidi(r.command)) + '</span>';
+  if (r.args && r.args.length) {
+    for (const arg of r.args) {
+      html += ' <span class="arg-token">' + escapeHtml(stripBidi(arg)) + '</span>';
+    }
+  }
+  return html;
+}
+
+let truncateCounter = 0;
+
+function truncateWithToggle(text, maxLen, prefix) {
+  const clean = stripBidi(text);
+  if (clean.length <= maxLen) {
+    return escapeHtml(clean);
+  }
+  const id = prefix + '-' + (truncateCounter++);
+  const truncated = escapeHtml(clean.slice(0, maxLen)) + '...';
+  const full = escapeHtml(clean);
+  return '<span id="' + id + '-short">' + truncated +
+    ' <span class="toggle-link" onclick="toggleTruncate(\'' + id + '\')">show more</span></span>' +
+    '<span id="' + id + '-full" style="display:none">' + full +
+    ' <span class="toggle-link" onclick="toggleTruncate(\'' + id + '\')">show less</span></span>';
+}
+
+function toggleTruncate(id) {
+  const short = document.getElementById(id + '-short');
+  const full = document.getElementById(id + '-full');
+  if (short && full) {
+    const showing = short.style.display !== 'none';
+    short.style.display = showing ? 'none' : '';
+    full.style.display = showing ? '' : 'none';
+  }
 }
 
 function render() {
@@ -226,12 +330,28 @@ function render() {
     return;
   }
 
+  truncateCounter = 0;
+
   el.innerHTML = filtered.map(r => {
-    const cmd = r.shell
-      ? escapeHtml(r.command + (r.args && r.args.length ? ' ' + r.args.join(' ') : ''))
-      : escapeHtml(r.command) + (r.args && r.args.length ? ' ' + r.args.map(escapeHtml).join(' ') : '');
+    const cmdDisplay = buildCommandDisplay(r);
     const shellBadge = r.shell ? '<span class="shell-badge">SHELL</span>' : '';
-    const wdInfo = r.working_dir ? '<div class="meta">cwd: ' + escapeHtml(r.working_dir) + '</div>' : '';
+    const wdInfo = r.working_dir ? '<div class="meta">cwd: ' + sanitize(r.working_dir) + '</div>' : '';
+
+    // Line count badge for long commands
+    const cmdText = r.shell
+      ? (r.command + (r.args && r.args.length ? ' ' + r.args.join(' ') : ''))
+      : (r.command + (r.args && r.args.length ? ' ' + r.args.join(' ') : ''));
+    const lineCount = cmdText.split('\n').length;
+    const linesBadge = lineCount > 5
+      ? '<span class="line-count-badge">' + lineCount + ' lines — scroll to review</span>'
+      : '';
+
+    // Shell warning for pending shell commands
+    const isShellPending = r.shell && r.status === 'pending';
+    const shellWarning = isShellPending
+      ? '<div class="shell-warning-banner">Shell execution — command will be interpreted by sh -c. Review carefully.</div>'
+      : '';
+    const cardClass = 'request-card ' + r.status + (isShellPending ? ' shell-warn' : '');
 
     let actions = '';
     if (r.status === 'pending') {
@@ -256,16 +376,17 @@ function render() {
       }
     }
     if (r.deny_reason) {
-      output += '<div class="deny-reason">Denied: ' + escapeHtml(r.deny_reason) + '</div>';
+      output += '<div class="deny-reason">Denied: ' + sanitize(r.deny_reason) + '</div>';
     }
 
-    return `<div class="request-card ${r.status}">
+    return `<div class="${cardClass}">
       <div class="request-header">
         <span class="request-id">${r.id}</span>
         <span class="request-status ${r.status}">${r.status}</span>
       </div>
-      <div class="command-block">${cmd}${shellBadge}</div>
-      <div class="reason">${escapeHtml(r.reason)}</div>
+      ${shellWarning}
+      <div class="command-block">${cmdDisplay}${shellBadge}${linesBadge}</div>
+      <div class="reason">${truncateWithToggle(r.reason, 200, 'reason-' + r.id)}</div>
       ${wdInfo}
       <div class="meta">${formatTime(r.created_at)}</div>
       ${actions}
@@ -309,9 +430,6 @@ function connectSSE() {
   const dot = document.getElementById('connDot');
   const status = document.getElementById('connStatus');
 
-  // EventSource doesn't support custom headers, so we use fetch-based SSE
-  // For the dashboard, we'll poll + SSE without auth on the events endpoint
-  // Auth is on the API endpoints
   const es = new EventSource('/events');
 
   es.onopen = () => {
@@ -334,8 +452,10 @@ if ('Notification' in window && Notification.permission === 'default') {
 
 function notifyNewRequest(r) {
   if ('Notification' in window && Notification.permission === 'granted') {
+    let body = stripBidi(r.command + ' — ' + r.reason);
+    if (body.length > 100) body = body.slice(0, 100) + '...';
     new Notification('Human Relay', {
-      body: r.command + ' — ' + r.reason,
+      body: body,
       tag: r.id
     });
   }

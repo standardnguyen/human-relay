@@ -51,7 +51,14 @@ func main() {
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 
-	// The /events SSE endpoint is unauthenticated (EventSource can't set headers).
+	// The /events SSE endpoint is unauthenticated. This is a deliberate trade-off:
+	// EventSource cannot set custom headers (no Authorization header possible).
+	// Risk: an attacker on the local network could subscribe and observe command
+	// metadata (names, reasons, statuses) in real time. Accepted because:
+	//   1. The server is only exposed on private/tailnet networks.
+	//   2. /events is read-only — no mutations are possible through it.
+	//   3. All approve/deny/list API endpoints still require Bearer auth.
+	//   4. Adding cookie/query-param auth would add complexity with minimal gain.
 	// All mutation/data endpoints require auth.
 	authedMux := http.NewServeMux()
 	authedMux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Human Relay</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --blue: #58a6ff;
+    --orange: #f0883e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 1rem;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+  .status-bar {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 0.5rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    align-items: center;
+  }
+  .status-bar .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    display: inline-block;
+  }
+  .status-bar .dot.disconnected { background: var(--red); }
+  .filters {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .filters button {
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .filters button.active {
+    background: var(--blue);
+    color: #fff;
+    border-color: var(--blue);
+  }
+  .request-list { display: flex; flex-direction: column; gap: 0.75rem; }
+  .request-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+  }
+  .request-card.pending { border-left: 3px solid var(--yellow); }
+  .request-card.approved, .request-card.running { border-left: 3px solid var(--blue); }
+  .request-card.complete { border-left: 3px solid var(--green); }
+  .request-card.denied { border-left: 3px solid var(--red); }
+  .request-card.error { border-left: 3px solid var(--orange); }
+  .request-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .request-id { font-family: monospace; color: var(--text-muted); font-size: 0.8rem; }
+  .request-status {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 12px;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .request-status.pending { background: rgba(210,153,34,0.2); color: var(--yellow); }
+  .request-status.approved, .request-status.running { background: rgba(88,166,255,0.2); color: var(--blue); }
+  .request-status.complete { background: rgba(63,185,80,0.2); color: var(--green); }
+  .request-status.denied { background: rgba(248,81,73,0.2); color: var(--red); }
+  .request-status.error { background: rgba(240,136,62,0.2); color: var(--orange); }
+  .command-block {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.75rem;
+    font-family: monospace;
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .shell-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(248,81,73,0.2);
+    color: var(--red);
+    margin-left: 0.5rem;
+    font-weight: 600;
+  }
+  .reason { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem; }
+  .meta { color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.5rem; }
+  .actions { display: flex; gap: 0.5rem; }
+  .actions button {
+    padding: 0.4rem 1.2rem;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .btn-approve { background: var(--green); color: #fff; }
+  .btn-deny { background: var(--red); color: #fff; }
+  .btn-approve:hover { opacity: 0.9; }
+  .btn-deny:hover { opacity: 0.9; }
+  .output {
+    margin-top: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.75rem;
+    font-family: monospace;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .output-label { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem; }
+  .deny-reason { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
+  .empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 3rem;
+    font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Human Relay</h1>
+
+<div class="status-bar">
+  <span class="dot" id="connDot"></span>
+  <span id="connStatus">Connecting...</span>
+  <span style="margin-left:auto" id="requestCount"></span>
+</div>
+
+<div class="filters">
+  <button class="active" data-filter="">All</button>
+  <button data-filter="pending">Pending</button>
+  <button data-filter="running">Running</button>
+  <button data-filter="complete">Complete</button>
+  <button data-filter="denied">Denied</button>
+  <button data-filter="error">Error</button>
+</div>
+
+<div id="requests" class="request-list"></div>
+
+<script>
+const TOKEN = localStorage.getItem('mhr_token') || prompt('Enter auth token:');
+if (TOKEN) localStorage.setItem('mhr_token', TOKEN);
+
+const headers = { 'Authorization': 'Bearer ' + TOKEN };
+let currentFilter = '';
+let requests = [];
+
+// Filter buttons
+document.querySelectorAll('.filters button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.filter;
+    render();
+  });
+});
+
+function formatTime(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString();
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+function render() {
+  const el = document.getElementById('requests');
+  const filtered = currentFilter
+    ? requests.filter(r => r.status === currentFilter)
+    : requests;
+
+  // Sort: pending first, then by time descending
+  filtered.sort((a, b) => {
+    if (a.status === 'pending' && b.status !== 'pending') return -1;
+    if (b.status === 'pending' && a.status !== 'pending') return 1;
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
+
+  const pending = requests.filter(r => r.status === 'pending').length;
+  document.getElementById('requestCount').textContent =
+    pending > 0 ? pending + ' pending' : requests.length + ' total';
+
+  if (filtered.length === 0) {
+    el.innerHTML = '<div class="empty">No requests</div>';
+    return;
+  }
+
+  el.innerHTML = filtered.map(r => {
+    const cmd = r.shell
+      ? escapeHtml(r.command + (r.args && r.args.length ? ' ' + r.args.join(' ') : ''))
+      : escapeHtml(r.command) + (r.args && r.args.length ? ' ' + r.args.map(escapeHtml).join(' ') : '');
+    const shellBadge = r.shell ? '<span class="shell-badge">SHELL</span>' : '';
+    const wdInfo = r.working_dir ? '<div class="meta">cwd: ' + escapeHtml(r.working_dir) + '</div>' : '';
+
+    let actions = '';
+    if (r.status === 'pending') {
+      actions = `<div class="actions">
+        <button class="btn-approve" onclick="approve('${r.id}')">Approve</button>
+        <button class="btn-deny" onclick="deny('${r.id}')">Deny</button>
+      </div>`;
+    }
+
+    let output = '';
+    if (r.result) {
+      if (r.result.stdout) {
+        output += '<div class="output-label">stdout (exit ' + r.result.exit_code + ')</div>';
+        output += '<div class="output">' + escapeHtml(r.result.stdout) + '</div>';
+      }
+      if (r.result.stderr) {
+        output += '<div class="output-label">stderr</div>';
+        output += '<div class="output">' + escapeHtml(r.result.stderr) + '</div>';
+      }
+      if (!r.result.stdout && !r.result.stderr) {
+        output += '<div class="output-label">exit code: ' + r.result.exit_code + ' (no output)</div>';
+      }
+    }
+    if (r.deny_reason) {
+      output += '<div class="deny-reason">Denied: ' + escapeHtml(r.deny_reason) + '</div>';
+    }
+
+    return `<div class="request-card ${r.status}">
+      <div class="request-header">
+        <span class="request-id">${r.id}</span>
+        <span class="request-status ${r.status}">${r.status}</span>
+      </div>
+      <div class="command-block">${cmd}${shellBadge}</div>
+      <div class="reason">${escapeHtml(r.reason)}</div>
+      ${wdInfo}
+      <div class="meta">${formatTime(r.created_at)}</div>
+      ${actions}
+      ${output}
+    </div>`;
+  }).join('');
+}
+
+async function fetchRequests() {
+  try {
+    const resp = await fetch('/api/requests', { headers });
+    if (resp.ok) {
+      requests = await resp.json();
+      render();
+    }
+  } catch (e) {
+    console.error('fetch error:', e);
+  }
+}
+
+async function approve(id) {
+  await fetch('/api/requests/' + id + '/approve', {
+    method: 'POST',
+    headers
+  });
+  fetchRequests();
+}
+
+async function deny(id) {
+  const reason = prompt('Deny reason (optional):') || '';
+  await fetch('/api/requests/' + id + '/deny', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ reason })
+  });
+  fetchRequests();
+}
+
+// SSE for real-time updates
+function connectSSE() {
+  const dot = document.getElementById('connDot');
+  const status = document.getElementById('connStatus');
+
+  // EventSource doesn't support custom headers, so we use fetch-based SSE
+  // For the dashboard, we'll poll + SSE without auth on the events endpoint
+  // Auth is on the API endpoints
+  const es = new EventSource('/events');
+
+  es.onopen = () => {
+    dot.classList.remove('disconnected');
+    status.textContent = 'Connected';
+  };
+  es.onmessage = (e) => {
+    fetchRequests();
+  };
+  es.onerror = () => {
+    dot.classList.add('disconnected');
+    status.textContent = 'Disconnected — retrying...';
+  };
+}
+
+// Request notification permission
+if ('Notification' in window && Notification.permission === 'default') {
+  Notification.requestPermission();
+}
+
+function notifyNewRequest(r) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification('Human Relay', {
+      body: r.command + ' — ' + r.reason,
+      tag: r.id
+    });
+  }
+}
+
+// Watch for new pending requests
+let prevPending = new Set();
+const origRender = render;
+render = function() {
+  const newPending = new Set(requests.filter(r => r.status === 'pending').map(r => r.id));
+  for (const id of newPending) {
+    if (!prevPending.has(id)) {
+      const r = requests.find(req => req.id === id);
+      if (r) notifyNewRequest(r);
+    }
+  }
+  prevPending = newPending;
+  origRender();
+};
+
+fetchRequests();
+connectSSE();
+</script>
+
+</body>
+</html>

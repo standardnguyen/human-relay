@@ -1,0 +1,43 @@
+name: CI
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: docker
+    container:
+      image: golang:1.23-bookworm
+    steps:
+      - name: Checkout human-relay
+        uses: actions/checkout@v4
+
+      - name: Checkout tests
+        uses: actions/checkout@v4
+        with:
+          repository: administrator/human-relay-tests
+          path: _tests
+
+      - name: Build binary
+        run: go build -o human-relay .
+
+      - name: Run integration tests
+        run: |
+          cd _tests
+          HUMAN_RELAY_BIN=$(pwd)/../human-relay go test -v -count=1 ./...
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    steps:
+      - name: Deploy to CTID 131
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          echo "$DEPLOY_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
+          ssh -o StrictHostKeyChecking=no -i /tmp/deploy_key root@192.168.10.88 \
+            '/opt/human-relay/deploy.sh'
+          rm /tmp/deploy_key

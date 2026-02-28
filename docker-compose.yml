@@ -7,3 +7,6 @@ services:
       - "8090:8090"
     env_file:
       - .env
+    volumes:
+      - /root/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      - /root/.ssh/known_hosts:/root/.ssh/known_hosts:ro

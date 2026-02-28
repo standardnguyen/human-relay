@@ -5,9 +5,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"git.ekaterina.net/administrator/human-relay/containers"
 	"git.ekaterina.net/administrator/human-relay/executor"
 	"git.ekaterina.net/administrator/human-relay/mcp"
 	"git.ekaterina.net/administrator/human-relay/store"
@@ -25,6 +27,9 @@ func main() {
 	defaultTimeout := envInt("MHR_DEFAULT_TIMEOUT", 30)
 	maxTimeout := envInt("MHR_MAX_TIMEOUT", 300)
 
+	dataDir := envString("MHR_DATA_DIR", "/opt/human-relay/data")
+	hostIP := envString("MHR_HOST_IP", "192.168.10.50")
+
 	var allowedDirs []string
 	if dirs := os.Getenv("MHR_ALLOWED_DIRS"); dirs != "" {
 		for _, d := range strings.Split(dirs, ",") {
@@ -35,6 +40,11 @@ func main() {
 		}
 	}
 
+	// Ensure data directory exists
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		log.Fatalf("create data dir: %v", err)
+	}
+
 	s := store.New()
 	exec := executor.New(executor.Config{
 		DefaultTimeout: defaultTimeout,
@@ -42,8 +52,17 @@ func main() {
 		AllowedDirs:    allowedDirs,
 	})
 
+	// Container registry (SQLite)
+	dbPath := filepath.Join(dataDir, "relay.db")
+	containerStore, err := containers.NewStore(dbPath)
+	if err != nil {
+		log.Fatalf("init container store: %v", err)
+	}
+	defer containerStore.Close()
+	log.Printf("Container registry: %s", dbPath)
+
 	// MCP server (SSE transport)
-	toolHandler := mcp.NewToolHandler(s)
+	toolHandler := mcp.NewToolHandler(s, containerStore, hostIP)
 	mcpServer := mcp.NewServer(toolHandler)
 
 	// Web dashboard
@@ -79,6 +98,7 @@ func main() {
 	log.Printf("Human Relay starting")
 	log.Printf("  MCP server: :%d/sse", mcpPort)
 	log.Printf("  Web UI:     :%d", webPort)
+	log.Printf("  Host IP:    %s", hostIP)
 	if len(allowedDirs) > 0 {
 		log.Printf("  Allowed dirs: %v", allowedDirs)
 	}
@@ -101,6 +121,13 @@ func envInt(key string, def int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
+	}
+	return def
+}
+
+func envString(key string, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
 	return def
 }

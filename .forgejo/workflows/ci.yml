@@ -23,6 +23,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: administrator/human-relay-tests
+          ref: main
+          token: ${{ secrets.FORGEJO_TOKEN }}
           path: _tests
 
       - name: Build binary

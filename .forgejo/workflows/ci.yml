@@ -9,8 +9,13 @@ jobs:
   test:
     runs-on: docker
     container:
-      image: golang:1.23-bookworm
+      image: node:20-bookworm
     steps:
+      - name: Install Go
+        run: |
+          curl -fsSL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz | tar -C /usr/local -xz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+
       - name: Checkout human-relay
         uses: actions/checkout@v4
 

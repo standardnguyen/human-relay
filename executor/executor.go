@@ -5,11 +5,36 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"git.ekaterina.net/administrator/human-relay/store"
 )
+
+const maxOutputBytes = 1 << 20 // 1MB
+
+// limitedWriter caps writes at a maximum byte count, silently discarding overflow.
+type limitedWriter struct {
+	buf bytes.Buffer
+	max int
+	hit bool
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	n := len(p) // always report full consumption so the process continues
+	remaining := w.max - w.buf.Len()
+	if remaining <= 0 {
+		w.hit = true
+		return n, nil
+	}
+	if n > remaining {
+		w.hit = true
+		p = p[:remaining]
+	}
+	w.buf.Write(p)
+	return n, nil
+}
 
 type Config struct {
 	DefaultTimeout int
@@ -57,17 +82,24 @@ func (e *Executor) Execute(r *store.Request) *store.Result {
 	}
 
 	if r.WorkingDir != "" {
-		cmd.Dir = r.WorkingDir
+		cmd.Dir = filepath.Clean(r.WorkingDir)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &limitedWriter{max: maxOutputBytes}
+	stderr := &limitedWriter{max: maxOutputBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	err := cmd.Run()
 	result := &store.Result{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
+		Stdout: stdout.buf.String(),
+		Stderr: stderr.buf.String(),
+	}
+	if stdout.hit {
+		result.Stderr += "\n[human-relay: stdout truncated at 1MB]"
+	}
+	if stderr.hit {
+		result.Stderr += "\n[human-relay: stderr truncated at 1MB]"
 	}
 
 	if err != nil {
@@ -89,8 +121,10 @@ func (e *Executor) validateWorkingDir(dir string) error {
 	if dir == "" || len(e.config.AllowedDirs) == 0 {
 		return nil
 	}
+	cleanDir := filepath.Clean(dir)
 	for _, allowed := range e.config.AllowedDirs {
-		if strings.HasPrefix(dir, allowed) {
+		cleanAllowed := filepath.Clean(allowed)
+		if cleanDir == cleanAllowed || strings.HasPrefix(cleanDir, cleanAllowed+"/") {
 			return nil
 		}
 	}

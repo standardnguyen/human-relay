@@ -6,6 +6,6 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /human-relay .
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-client && rm -rf /var/lib/apt/lists/*
 COPY --from=build /human-relay /usr/local/bin/human-relay
 ENTRYPOINT ["human-relay"]

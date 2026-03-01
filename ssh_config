@@ -1,4 +1,5 @@
 Host 192.168.10.*
     StrictHostKeyChecking accept-new
+    UserKnownHostsFile /root/.ssh-data/known_hosts
     User root
     ConnectTimeout 5

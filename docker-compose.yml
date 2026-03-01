@@ -9,5 +9,8 @@ services:
       - .env
     volumes:
       - /root/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
-      - /root/.ssh/known_hosts:/root/.ssh/known_hosts
+      - relay-ssh:/root/.ssh-data
       - ./ssh_config:/root/.ssh/config:ro
+
+volumes:
+  relay-ssh:

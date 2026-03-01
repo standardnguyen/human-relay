@@ -10,7 +10,9 @@ services:
     volumes:
       - /root/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
       - relay-ssh:/root/.ssh-data
+      - relay-data:/opt/human-relay/data
       - ./ssh_config:/root/.ssh/config:ro
 
 volumes:
   relay-ssh:
+  relay-data:

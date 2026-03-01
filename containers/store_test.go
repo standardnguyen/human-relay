@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-func tempDB(t *testing.T) *Store {
+func tempStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := NewStore(filepath.Join(dir, "test.db"))
+	s, err := NewStore(filepath.Join(dir, "containers.json"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -18,7 +18,7 @@ func tempDB(t *testing.T) *Store {
 }
 
 func TestRegisterAndGet(t *testing.T) {
-	s := tempDB(t)
+	s := tempStore(t)
 
 	c, err := s.Register(133, "192.168.10.90", "archivebox", true)
 	if err != nil {
@@ -38,7 +38,7 @@ func TestRegisterAndGet(t *testing.T) {
 }
 
 func TestGetNotFound(t *testing.T) {
-	s := tempDB(t)
+	s := tempStore(t)
 
 	got, err := s.Get(999)
 	if err != nil {
@@ -50,7 +50,7 @@ func TestGetNotFound(t *testing.T) {
 }
 
 func TestRegisterUpsert(t *testing.T) {
-	s := tempDB(t)
+	s := tempStore(t)
 
 	s.Register(133, "192.168.10.90", "archivebox", false)
 
@@ -71,7 +71,7 @@ func TestRegisterUpsert(t *testing.T) {
 }
 
 func TestList(t *testing.T) {
-	s := tempDB(t)
+	s := tempStore(t)
 
 	s.Register(100, "192.168.10.52", "ingress", false)
 	s.Register(133, "192.168.10.90", "archivebox", true)
@@ -92,7 +92,7 @@ func TestList(t *testing.T) {
 }
 
 func TestListEmpty(t *testing.T) {
-	s := tempDB(t)
+	s := tempStore(t)
 
 	list, err := s.List()
 	if err != nil {
@@ -104,7 +104,7 @@ func TestListEmpty(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	s := tempDB(t)
+	s := tempStore(t)
 
 	s.Register(133, "192.168.10.90", "archivebox", true)
 
@@ -119,7 +119,7 @@ func TestDelete(t *testing.T) {
 }
 
 func TestDeleteNotFound(t *testing.T) {
-	s := tempDB(t)
+	s := tempStore(t)
 
 	err := s.Delete(999)
 	if err == nil {
@@ -127,28 +127,48 @@ func TestDeleteNotFound(t *testing.T) {
 	}
 }
 
-func TestNewStoreRequiresExistingDir(t *testing.T) {
+func TestNewStoreCreatesFile(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "sub", "relay.db")
+	path := filepath.Join(dir, "containers.json")
 
-	// SQLite cannot create parent directories — this should fail
-	_, err := NewStore(dbPath)
-	if err == nil {
-		t.Fatal("expected error when parent directory does not exist")
-	}
-}
-
-func TestNewStoreCreatesDB(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "relay.db")
-
-	s, err := NewStore(dbPath)
+	s, err := NewStore(path)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+
+	// File shouldn't exist yet (no data written)
+	s.Register(100, "192.168.10.52", "ingress", false)
 	s.Close()
 
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		t.Fatal("database file was not created")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Fatal("JSON file was not created after Register")
+	}
+}
+
+func TestPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "containers.json")
+
+	// Write some data
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	s1.Register(133, "192.168.10.90", "archivebox", true)
+	s1.Close()
+
+	// Reopen and verify
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore reopen: %v", err)
+	}
+	defer s2.Close()
+
+	got, err := s2.Get(133)
+	if err != nil {
+		t.Fatalf("Get after reopen: %v", err)
+	}
+	if got == nil || got.IP != "192.168.10.90" || got.Hostname != "archivebox" || !got.HasRelaySSH {
+		t.Fatalf("data not persisted: %+v", got)
 	}
 }

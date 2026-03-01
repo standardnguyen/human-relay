@@ -52,14 +52,14 @@ func main() {
 		AllowedDirs:    allowedDirs,
 	})
 
-	// Container registry (SQLite)
-	dbPath := filepath.Join(dataDir, "relay.db")
-	containerStore, err := containers.NewStore(dbPath)
+	// Container registry (JSON file)
+	registryPath := filepath.Join(dataDir, "containers.json")
+	containerStore, err := containers.NewStore(registryPath)
 	if err != nil {
 		log.Fatalf("init container store: %v", err)
 	}
 	defer containerStore.Close()
-	log.Printf("Container registry: %s", dbPath)
+	log.Printf("Container registry: %s", registryPath)
 
 	// MCP server (SSE transport)
 	toolHandler := mcp.NewToolHandler(s, containerStore, hostIP)

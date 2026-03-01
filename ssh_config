@@ -1,0 +1,4 @@
+Host 192.168.10.*
+    StrictHostKeyChecking accept-new
+    User root
+    ConnectTimeout 5

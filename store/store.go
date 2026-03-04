@@ -32,6 +32,8 @@ type Request struct {
 	DecidedAt  *time.Time `json:"decided_at,omitempty"`
 	DenyReason string    `json:"deny_reason,omitempty"`
 	Result     *Result   `json:"result,omitempty"`
+	Stdin      []byte    `json:"-"`
+	StdinLen   int       `json:"stdin_len,omitempty"`
 }
 
 type Result struct {
@@ -73,6 +75,34 @@ func (s *Store) Add(cmd string, args []string, reason, workingDir string, shell 
 	s.mu.Unlock()
 
 	// Non-blocking send to notify listeners
+	select {
+	case s.notify <- id:
+	default:
+	}
+
+	return r
+}
+
+func (s *Store) AddWithStdin(cmd string, args []string, reason, workingDir string, shell bool, timeout int, stdin []byte) *Request {
+	id := generateID()
+	r := &Request{
+		ID:         id,
+		Command:    cmd,
+		Args:       args,
+		Reason:     reason,
+		WorkingDir: workingDir,
+		Shell:      shell,
+		Timeout:    timeout,
+		Status:     StatusPending,
+		CreatedAt:  time.Now(),
+		Stdin:      stdin,
+		StdinLen:   len(stdin),
+	}
+	s.mu.Lock()
+	s.requests[id] = r
+	s.order = append(s.order, id)
+	s.mu.Unlock()
+
 	select {
 	case s.notify <- id:
 	default:

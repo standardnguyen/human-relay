@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"git.ekaterina.net/administrator/human-relay/containers"
@@ -147,6 +150,44 @@ var ToolDefinitions = []Tool{
 			Required: []string{"ctid", "command", "reason"},
 		},
 	},
+	{
+		Name:        "write_file",
+		Description: "Write a file to a host or container. Content is sent as base64, decoded by the relay, and piped via stdin to avoid shell escaping issues. Requires human approval.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"path": {
+					Type:        "string",
+					Description: "Absolute path on the target (e.g. /opt/grafana/dashboards/backup-status.json)",
+				},
+				"content_base64": {
+					Type:        "string",
+					Description: "File content, base64-encoded",
+				},
+				"host": {
+					Type:        "string",
+					Description: "Target IP (default: Proxmox host). Ignored if ctid is set",
+				},
+				"ctid": {
+					Type:        "integer",
+					Description: "If set, write to this container (looks up registry for routing)",
+				},
+				"mode": {
+					Type:        "string",
+					Description: "File permissions, e.g. \"0755\" (default: \"0644\")",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Why this file needs to be written (shown to the human reviewer)",
+				},
+				"timeout": {
+					Type:        "integer",
+					Description: "Command timeout in seconds (default: server default, max: server max)",
+				},
+			},
+			Required: []string{"path", "content_base64", "reason"},
+		},
+	},
 }
 
 type ToolHandler struct {
@@ -173,6 +214,8 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 		return h.listContainers(args)
 	case "exec_container":
 		return h.execContainer(args)
+	case "write_file":
+		return h.writeFile(args)
 	default:
 		return errorResult(fmt.Sprintf("unknown tool: %s", name))
 	}
@@ -416,4 +459,106 @@ func intArg(args map[string]interface{}, key string) int {
 		return i
 	}
 	return 0
+}
+
+var validPathRe = regexp.MustCompile(`^/[a-zA-Z0-9._/\-]+$`)
+var validModeRe = regexp.MustCompile(`^0[0-7]{3}$`)
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
+	path, _ := args["path"].(string)
+	contentB64, _ := args["content_base64"].(string)
+	reason, _ := args["reason"].(string)
+
+	if path == "" || contentB64 == "" || reason == "" {
+		return errorResult("path, content_base64, and reason are required")
+	}
+
+	if !validPathRe.MatchString(path) {
+		return errorResult("path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
+	}
+
+	// Decode base64 (try standard, then raw/no-padding)
+	contentB64 = strings.Join(strings.Fields(contentB64), "")
+	content, err := base64.StdEncoding.DecodeString(contentB64)
+	if err != nil {
+		content, err = base64.RawStdEncoding.DecodeString(contentB64)
+		if err != nil {
+			return errorResult(fmt.Sprintf("invalid base64: %v", err))
+		}
+	}
+
+	mode := "0644"
+	if m, ok := args["mode"].(string); ok && m != "" {
+		mode = m
+	}
+	if !validModeRe.MatchString(mode) {
+		return errorResult("mode must be an octal permission string like 0644 or 0755")
+	}
+
+	ctid := intArg(args, "ctid")
+	host, _ := args["host"].(string)
+	if host == "" {
+		host = h.hostIP
+	}
+
+	timeout := 0
+	if t, ok := args["timeout"].(float64); ok {
+		timeout = int(t)
+	}
+
+	var sshArgs []string
+	var target string
+	var route string
+
+	if ctid > 0 {
+		c, err := h.containers.Get(ctid)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to look up container: %v", err))
+		}
+		if c == nil {
+			return errorResult(fmt.Sprintf("container %d not found in registry. Use register_container first.", ctid))
+		}
+		target = fmt.Sprintf("CTID %d (%s)", c.CTID, c.Hostname)
+
+		if c.HasRelaySSH {
+			route = "direct_ssh"
+			shellCmd := fmt.Sprintf("cat > %s && chmod %s %s", shellQuote(path), mode, shellQuote(path))
+			sshArgs = []string{fmt.Sprintf("root@%s", c.IP), "--", "sh", "-c", shellCmd}
+		} else {
+			route = "pct_push"
+			tmpFile := fmt.Sprintf("/tmp/mhr-%d", time.Now().UnixNano())
+			shellCmd := fmt.Sprintf("cat > %s && pct push %d %s %s && pct exec %d -- chmod %s %s && rm %s",
+				tmpFile, c.CTID, tmpFile, shellQuote(path), c.CTID, mode, shellQuote(path), tmpFile)
+			sshArgs = []string{fmt.Sprintf("root@%s", h.hostIP), "--", "sh", "-c", shellCmd}
+		}
+	} else {
+		target = host
+		route = "direct_ssh"
+		shellCmd := fmt.Sprintf("cat > %s && chmod %s %s", shellQuote(path), mode, shellQuote(path))
+		sshArgs = []string{fmt.Sprintf("root@%s", host), "--", "sh", "-c", shellCmd}
+	}
+
+	// Build content preview for the human reviewer
+	preview := string(content)
+	if len(preview) > 2048 {
+		preview = preview[:2048] + "\n... (truncated)"
+	}
+	prefixedReason := fmt.Sprintf("[FILE %dB -> %s:%s] %s\n---\n%s", len(content), target, path, reason, preview)
+
+	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, content)
+
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+		"target":     target,
+		"path":       path,
+		"size":       len(content),
+		"route":      route,
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
 }

@@ -359,6 +359,9 @@ function formatSize(bytes) {
 }
 
 function buildCommandDisplay(r) {
+  if (r.display_command) {
+    return '<span class="cmd-token">' + escapeHtml(r.display_command) + '</span>';
+  }
   if (r.shell) {
     // Shell mode: render as flat escaped string
     let full = stripBidi(r.command);

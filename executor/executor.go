@@ -85,6 +85,10 @@ func (e *Executor) Execute(r *store.Request) *store.Result {
 		cmd.Dir = filepath.Clean(r.WorkingDir)
 	}
 
+	if len(r.Stdin) > 0 {
+		cmd.Stdin = bytes.NewReader(r.Stdin)
+	}
+
 	stdout := &limitedWriter{max: maxOutputBytes}
 	stderr := &limitedWriter{max: maxOutputBytes}
 	cmd.Stdout = stdout

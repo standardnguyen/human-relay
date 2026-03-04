@@ -167,6 +167,16 @@
     margin-left: 0.5rem;
     font-weight: 600;
   }
+  .file-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(88,166,255,0.2);
+    color: var(--blue);
+    margin-left: 0.5rem;
+    font-weight: 600;
+  }
   .nonascii-warning-banner {
     background: rgba(210,153,34,0.15);
     border: 1px solid rgba(210,153,34,0.3);
@@ -342,6 +352,12 @@ function requestHasNonAscii(r) {
   return false;
 }
 
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + 'B';
+  if (bytes < 1048576) return (bytes/1024).toFixed(1) + 'KB';
+  return (bytes/1048576).toFixed(1) + 'MB';
+}
+
 function buildCommandDisplay(r) {
   if (r.shell) {
     // Shell mode: render as flat escaped string
@@ -493,6 +509,7 @@ function render() {
     const cmdDisplay = buildCommandDisplay(r);
     const b64Display = buildBase64Display(r);
     const shellBadge = r.shell ? '<span class="shell-badge">SHELL</span>' : '';
+    const fileBadge = r.stdin_len > 0 ? '<span class="file-badge">FILE ' + formatSize(r.stdin_len) + '</span>' : '';
     const nonAsciiBadge = requestHasNonAscii(r) ? '<span class="nonascii-badge">NON-ASCII</span>' : '';
     const wdInfo = r.working_dir ? '<div class="meta">cwd: ' + sanitize(r.working_dir) + '</div>' : '';
 
@@ -557,7 +574,7 @@ function render() {
       </div>
       ${shellWarning}
       ${nonAsciiWarning}
-      <div class="command-block">${cmdDisplay}${shellBadge}${nonAsciiBadge}${linesBadge}</div>
+      <div class="command-block">${cmdDisplay}${shellBadge}${fileBadge}${nonAsciiBadge}${linesBadge}</div>
       ${b64Display}
       <div class="reason">${truncateWithToggle(r.reason, 200, 'reason-' + r.id)}</div>
       ${wdInfo}

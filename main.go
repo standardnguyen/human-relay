@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"git.ekaterina.net/administrator/human-relay/containers"
 	"git.ekaterina.net/administrator/human-relay/executor"
@@ -66,7 +67,11 @@ func main() {
 	mcpServer := mcp.NewServer(toolHandler)
 
 	// Web dashboard
-	webHandler := web.NewHandler(s, exec)
+	var webOpts []web.HandlerOption
+	if cd := envInt("MHR_APPROVAL_COOLDOWN", 0); cd > 0 {
+		webOpts = append(webOpts, web.WithCooldown(time.Duration(cd)*time.Second))
+	}
+	webHandler := web.NewHandler(s, exec, webOpts...)
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 

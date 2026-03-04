@@ -177,6 +177,31 @@
     margin-bottom: 0.5rem;
     font-weight: 600;
   }
+  .b64-section {
+    margin-bottom: 0.5rem;
+  }
+  .b64-label {
+    font-size: 0.75rem;
+    color: var(--blue);
+    cursor: pointer;
+    user-select: none;
+    display: inline-block;
+    margin-bottom: 0.2rem;
+  }
+  .b64-label:hover { text-decoration: underline; }
+  .b64-decoded {
+    background: var(--bg);
+    border: 1px solid rgba(88,166,255,0.3);
+    border-radius: 4px;
+    padding: 0.75rem;
+    font-family: monospace;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow-y: auto;
+    color: var(--text);
+  }
   .reason { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem; }
   .reason .toggle-link {
     color: var(--blue);
@@ -336,6 +361,84 @@ function buildCommandDisplay(r) {
   return html;
 }
 
+function tryDecodeBase64(b64) {
+  try {
+    const binStr = atob(b64);
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    // Must be mostly printable text (allow common whitespace + unicode)
+    const printable = decoded.replace(/[^\x20-\x7e\x09\x0a\x0d\u00a0-\uffff]/g, '').length;
+    if (printable / decoded.length > 0.9 && decoded.length > 10) return decoded;
+  } catch(e) {}
+  return null;
+}
+
+function findBase64Blobs(text) {
+  const blobs = [];
+  const seen = new Set();
+
+  // Approach 1: consecutive lines of pure base64 (heredoc-style)
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    if (/^[A-Za-z0-9+\/]{16,}={0,2}$/.test(trimmed)) {
+      let b64 = '';
+      while (i < lines.length && /^[A-Za-z0-9+\/]{4,}={0,2}$/.test(lines[i].trim())) {
+        b64 += lines[i].trim();
+        i++;
+      }
+      if (b64.length >= 20 && !seen.has(b64)) {
+        const decoded = tryDecodeBase64(b64);
+        if (decoded) { blobs.push({ decoded }); seen.add(b64); }
+      }
+    } else {
+      i++;
+    }
+  }
+
+  // Approach 2: inline base64 strings (embedded in other content)
+  const re = /[A-Za-z0-9+\/]{20,}={0,2}/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (!seen.has(m[0])) {
+      const decoded = tryDecodeBase64(m[0]);
+      if (decoded) { blobs.push({ decoded }); seen.add(m[0]); }
+    }
+  }
+  return blobs;
+}
+
+function buildBase64Display(r) {
+  const cmdText = r.command + (r.args && r.args.length ? ' ' + r.args.join(' ') : '');
+  const blobs = findBase64Blobs(cmdText);
+  if (blobs.length === 0) return '';
+
+  let html = '';
+  for (let j = 0; j < blobs.length; j++) {
+    const id = 'b64-' + r.id + '-' + j;
+    const label = 'Decoded base64' + (blobs.length > 1 ? ' #' + (j+1) : '');
+    html += '<div class="b64-section">' +
+      '<span class="b64-label" id="' + id + '-label" onclick="toggleB64(\'' + id + '\')">' +
+      '\u25BC ' + label + '</span>' +
+      '<div class="b64-decoded" id="' + id + '">' + escapeHtml(blobs[j].decoded) + '</div>' +
+      '</div>';
+  }
+  return html;
+}
+
+function toggleB64(id) {
+  const el = document.getElementById(id);
+  const label = document.getElementById(id + '-label');
+  if (el && label) {
+    const showing = el.style.display !== 'none';
+    el.style.display = showing ? 'none' : '';
+    const txt = label.textContent;
+    label.textContent = (showing ? '\u25B6 ' : '\u25BC ') + txt.slice(2);
+  }
+}
+
 let truncateCounter = 0;
 
 function truncateWithToggle(text, maxLen, prefix) {
@@ -388,6 +491,7 @@ function render() {
 
   el.innerHTML = filtered.map(r => {
     const cmdDisplay = buildCommandDisplay(r);
+    const b64Display = buildBase64Display(r);
     const shellBadge = r.shell ? '<span class="shell-badge">SHELL</span>' : '';
     const nonAsciiBadge = requestHasNonAscii(r) ? '<span class="nonascii-badge">NON-ASCII</span>' : '';
     const wdInfo = r.working_dir ? '<div class="meta">cwd: ' + sanitize(r.working_dir) + '</div>' : '';
@@ -454,6 +558,7 @@ function render() {
       ${shellWarning}
       ${nonAsciiWarning}
       <div class="command-block">${cmdDisplay}${shellBadge}${nonAsciiBadge}${linesBadge}</div>
+      ${b64Display}
       <div class="reason">${truncateWithToggle(r.reason, 200, 'reason-' + r.id)}</div>
       ${wdInfo}
       <div class="meta">${formatTime(r.created_at)}</div>

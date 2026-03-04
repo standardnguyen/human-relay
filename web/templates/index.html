@@ -590,6 +590,13 @@ async function fetchRequests() {
     const resp = await fetch('/api/requests', { headers });
     if (resp.ok) {
       requests = await resp.json();
+      const cdMs = parseInt(resp.headers.get('X-Cooldown-Remaining-Ms') || '0', 10);
+      if (cdMs > 0) {
+        cooldownUntil = Date.now() + cdMs;
+        startCooldownTimer();
+      } else if (cooldownUntil > 0 && Date.now() >= cooldownUntil) {
+        cooldownUntil = 0;
+      }
       render();
     }
   } catch (e) {
@@ -602,8 +609,7 @@ async function approve(id) {
     method: 'POST',
     headers
   });
-  cooldownUntil = Date.now() + 30000;
-  startCooldownTimer();
+  // Re-fetch syncs cooldown state from server header
   fetchRequests();
 }
 

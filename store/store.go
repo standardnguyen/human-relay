@@ -32,8 +32,9 @@ type Request struct {
 	DecidedAt  *time.Time `json:"decided_at,omitempty"`
 	DenyReason string    `json:"deny_reason,omitempty"`
 	Result     *Result   `json:"result,omitempty"`
-	Stdin      []byte    `json:"-"`
-	StdinLen   int       `json:"stdin_len,omitempty"`
+	Stdin          []byte     `json:"-"`
+	StdinLen       int        `json:"stdin_len,omitempty"`
+	DisplayCommand string     `json:"display_command,omitempty"`
 }
 
 type Result struct {
@@ -189,6 +190,17 @@ func (s *Store) List(filter Status) []*Request {
 // Subscribe returns a channel that receives request IDs when new requests are added.
 func (s *Store) Subscribe() <-chan string {
 	return s.notify
+}
+
+func (s *Store) SetDisplayCommand(id string, cmd string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.requests[id]
+	if !ok {
+		return false
+	}
+	r.DisplayCommand = cmd
+	return true
 }
 
 func generateID() string {

@@ -551,6 +551,9 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 
 	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, content)
 
+	displayCmd := fmt.Sprintf("write -> %s:%s  [%dB, mode %s]", target, path, len(content), mode)
+	h.store.SetDisplayCommand(r.ID, displayCmd)
+
 	result := map[string]interface{}{
 		"request_id": r.ID,
 		"status":     "pending",

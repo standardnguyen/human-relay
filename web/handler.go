@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"git.ekaterina.net/administrator/human-relay/executor"
 	"git.ekaterina.net/administrator/human-relay/store"
@@ -17,21 +18,38 @@ import (
 //go:embed templates/*
 var templateFS embed.FS
 
+const defaultApprovalCooldown = 30 * time.Second
+
 type Handler struct {
 	store    *store.Store
 	executor *executor.Executor
 	tmpl     *template.Template
 	sseClients map[chan []byte]struct{}
 	sseMu      sync.Mutex
+	lastApproval    time.Time
+	cooldownMu      sync.Mutex
+	approvalCooldown time.Duration
 }
 
-func NewHandler(s *store.Store, exec *executor.Executor) *Handler {
+type HandlerOption func(*Handler)
+
+func WithCooldown(d time.Duration) HandlerOption {
+	return func(h *Handler) {
+		h.approvalCooldown = d
+	}
+}
+
+func NewHandler(s *store.Store, exec *executor.Executor, opts ...HandlerOption) *Handler {
 	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
 	h := &Handler{
-		store:      s,
-		executor:   exec,
-		tmpl:       tmpl,
-		sseClients: make(map[chan []byte]struct{}),
+		store:            s,
+		executor:         exec,
+		tmpl:             tmpl,
+		sseClients:       make(map[chan []byte]struct{}),
+		approvalCooldown: defaultApprovalCooldown,
+	}
+	for _, opt := range opts {
+		opt(h)
 	}
 	// Watch for new requests and broadcast to SSE clients
 	go h.watchRequests()
@@ -64,6 +82,14 @@ func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	if requests == nil {
 		requests = []*store.Request{}
 	}
+	// Tell the frontend how much cooldown remains (0 if none)
+	h.cooldownMu.Lock()
+	remaining := h.approvalCooldown - time.Since(h.lastApproval)
+	h.cooldownMu.Unlock()
+	if remaining < 0 {
+		remaining = 0
+	}
+	w.Header().Set("X-Cooldown-Remaining-Ms", fmt.Sprintf("%d", remaining.Milliseconds()))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(requests)
 }
@@ -95,6 +121,23 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case "approve":
+		h.cooldownMu.Lock()
+		elapsed := time.Since(h.lastApproval)
+		if elapsed < h.approvalCooldown {
+			remaining := h.approvalCooldown - elapsed
+			h.cooldownMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(remaining.Seconds())+1))
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":        "cooldown active",
+				"remaining_ms": remaining.Milliseconds(),
+			})
+			return
+		}
+		h.lastApproval = time.Now()
+		h.cooldownMu.Unlock()
+
 		h.store.SetStatus(id, store.StatusApproved)
 		log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
 		h.broadcastEvent("update", id)

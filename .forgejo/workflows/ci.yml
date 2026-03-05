@@ -16,24 +16,14 @@ jobs:
           curl -fsSL https://go.dev/dl/go1.24.1.linux-amd64.tar.gz | tar -C /usr/local -xz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
 
-      - name: Checkout human-relay
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Checkout tests
-        uses: actions/checkout@v4
-        with:
-          repository: administrator/human-relay-tests
-          ref: main
-          token: ${{ secrets.FORGEJO_TOKEN }}
-          path: _tests
 
       - name: Build binary
         run: go build -o human-relay .
 
       - name: Run integration tests
-        run: |
-          cd _tests
-          HUMAN_RELAY_BIN=$(pwd)/../human-relay go test -v -count=1 ./...
+        run: HUMAN_RELAY_BIN=${{ github.workspace }}/human-relay go test -v -count=1 ./integration/...
 
   deploy:
     needs: test

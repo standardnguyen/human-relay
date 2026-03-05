@@ -23,7 +23,7 @@ jobs:
         run: go build -o human-relay .
 
       - name: Run integration tests
-        run: HUMAN_RELAY_BIN=./human-relay go test -v -count=1 ./integration/...
+        run: HUMAN_RELAY_BIN=${{ github.workspace }}/human-relay go test -v -count=1 ./integration/...
 
   deploy:
     needs: test

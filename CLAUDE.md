@@ -2,4 +2,11 @@
 
 ## Testing
 
-**All tests go in the separate test repo: `~/human-relay-tests/`** (git.ekaterina.net/administrator/human-relay-tests). Do NOT write tests in this repo. The test repo contains integration tests that start the compiled binary and hit it over HTTP. See `helpers.go` in that repo for the test harness (`StartServer`, `WebGet`, `WebPost`, `MCPClient`).
+**Integration tests live in `integration/`** in this repo. They start the compiled binary and hit it over HTTP. See `integration/helpers.go` for the test harness (`StartServer`, `WebGet`, `WebPost`, `MCPClient`).
+
+```bash
+go build -o human-relay .
+HUMAN_RELAY_BIN=$(pwd)/human-relay go test -v -count=1 ./integration/...
+```
+
+Unit tests for MCP tool definitions live in `mcp/tools_test.go` and run with `go test ./mcp/...`.

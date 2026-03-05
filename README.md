@@ -72,8 +72,8 @@ go build -o human-relay .
 # Run
 MHR_AUTH_TOKEN=your-token ./human-relay
 
-# Run integration tests (from the human-relay-tests repo)
-HUMAN_RELAY_BIN=/path/to/human-relay go test -v -count=1 ./...
+# Run integration tests
+HUMAN_RELAY_BIN=$(pwd)/human-relay go test -v -count=1 ./integration/...
 ```
 
 ## Architecture

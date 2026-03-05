@@ -26,9 +26,11 @@ type Handler struct {
 	tmpl     *template.Template
 	sseClients map[chan []byte]struct{}
 	sseMu      sync.Mutex
-	lastApproval    time.Time
-	cooldownMu      sync.Mutex
+	lastApproval     time.Time
+	cooldownMu       sync.Mutex
 	approvalCooldown time.Duration
+	turboCooldown    time.Duration
+	turboExpiry      time.Time
 }
 
 type HandlerOption func(*Handler)
@@ -56,10 +58,18 @@ func NewHandler(s *store.Store, exec *executor.Executor, opts ...HandlerOption) 
 	return h
 }
 
+func (h *Handler) activeCooldown() time.Duration {
+	if !h.turboExpiry.IsZero() && time.Now().Before(h.turboExpiry) {
+		return h.turboCooldown
+	}
+	return h.approvalCooldown
+}
+
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", h.handleDashboard)
 	mux.HandleFunc("/api/requests", h.handleListRequests)
 	mux.HandleFunc("/api/requests/", h.handleRequestAction)
+	mux.HandleFunc("/api/turbocharge", h.handleTurbocharge)
 	mux.HandleFunc("/events", h.handleSSE)
 }
 
@@ -84,12 +94,23 @@ func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	// Tell the frontend how much cooldown remains (0 if none)
 	h.cooldownMu.Lock()
-	remaining := h.approvalCooldown - time.Since(h.lastApproval)
+	cd := h.activeCooldown()
+	remaining := cd - time.Since(h.lastApproval)
+	turboActive := !h.turboExpiry.IsZero() && time.Now().Before(h.turboExpiry)
+	turboRemaining := time.Duration(0)
+	if turboActive {
+		turboRemaining = time.Until(h.turboExpiry)
+	}
 	h.cooldownMu.Unlock()
 	if remaining < 0 {
 		remaining = 0
 	}
 	w.Header().Set("X-Cooldown-Remaining-Ms", fmt.Sprintf("%d", remaining.Milliseconds()))
+	w.Header().Set("X-Cooldown-Duration-Ms", fmt.Sprintf("%d", cd.Milliseconds()))
+	if turboActive {
+		w.Header().Set("X-Turbo-Active", "true")
+		w.Header().Set("X-Turbo-Remaining-Ms", fmt.Sprintf("%d", turboRemaining.Milliseconds()))
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(requests)
 }
@@ -122,9 +143,10 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "approve":
 		h.cooldownMu.Lock()
+		cd := h.activeCooldown()
 		elapsed := time.Since(h.lastApproval)
-		if elapsed < h.approvalCooldown {
-			remaining := h.approvalCooldown - elapsed
+		if elapsed < cd {
+			remaining := cd - elapsed
 			h.cooldownMu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(remaining.Seconds())+1))
@@ -176,6 +198,66 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (h *Handler) handleTurbocharge(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.cooldownMu.Lock()
+		active := !h.turboExpiry.IsZero() && time.Now().Before(h.turboExpiry)
+		remaining := time.Duration(0)
+		turboCd := h.turboCooldown
+		if active {
+			remaining = time.Until(h.turboExpiry)
+		}
+		h.cooldownMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active":           active,
+			"remaining_ms":     remaining.Milliseconds(),
+			"cooldown_seconds": int(turboCd.Seconds()),
+		})
+
+	case http.MethodPost:
+		var body struct {
+			DurationMinutes int `json:"duration_minutes"`
+			CooldownSeconds int `json:"cooldown_seconds"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.DurationMinutes <= 0 {
+			body.DurationMinutes = 5
+		}
+		if body.DurationMinutes > 30 {
+			body.DurationMinutes = 30
+		}
+		if body.CooldownSeconds <= 0 {
+			body.CooldownSeconds = 3
+		}
+		h.cooldownMu.Lock()
+		h.turboCooldown = time.Duration(body.CooldownSeconds) * time.Second
+		h.turboExpiry = time.Now().Add(time.Duration(body.DurationMinutes) * time.Minute)
+		h.cooldownMu.Unlock()
+		log.Printf("turbocharge activated: %ds cooldown for %d minutes", body.CooldownSeconds, body.DurationMinutes)
+		h.broadcastEvent("turbo", "on")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active":           true,
+			"remaining_ms":     (time.Duration(body.DurationMinutes) * time.Minute).Milliseconds(),
+			"cooldown_seconds": body.CooldownSeconds,
+		})
+
+	case http.MethodDelete:
+		h.cooldownMu.Lock()
+		h.turboExpiry = time.Time{}
+		h.cooldownMu.Unlock()
+		log.Printf("turbocharge deactivated")
+		h.broadcastEvent("turbo", "off")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "deactivated"})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 

@@ -44,6 +44,29 @@
     display: inline-block;
   }
   .status-bar .dot.disconnected { background: var(--red); }
+  .btn-turbo {
+    padding: 0.2rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-left: 0.5rem;
+    transition: all 0.15s;
+  }
+  .btn-turbo:hover { border-color: var(--yellow); color: var(--yellow); }
+  .btn-turbo.active {
+    background: rgba(210,153,34,0.2);
+    border-color: var(--yellow);
+    color: var(--yellow);
+  }
+  .turbo-info {
+    font-size: 0.8rem;
+    color: var(--yellow);
+    margin-left: 0.3rem;
+  }
   .filters {
     display: flex;
     gap: 0.5rem;
@@ -283,6 +306,8 @@
   <span class="dot" id="connDot"></span>
   <span id="connStatus">Connecting...</span>
   <span style="margin-left:auto" id="requestCount"></span>
+  <button class="btn-turbo" id="turboBtn" onclick="toggleTurbo()">Turbo</button>
+  <span class="turbo-info" id="turboInfo"></span>
 </div>
 
 <div class="filters">
@@ -304,7 +329,11 @@ const headers = { 'Authorization': 'Bearer ' + TOKEN };
 let currentFilter = '';
 let requests = [];
 let cooldownUntil = 0;
+let cooldownDuration = 30000;
 let cooldownInterval = null;
+let turboActive = false;
+let turboUntil = 0;
+let turboInterval = null;
 
 // Bidi control character regex: LRM, RLM, LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI
 const BIDI_RE = /[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
@@ -490,11 +519,11 @@ function render() {
     ? requests.filter(r => r.status === currentFilter)
     : requests;
 
-  // Sort: pending first, then by time descending
+  // Sort: pending first, then by time ascending (oldest first)
   filtered.sort((a, b) => {
     if (a.status === 'pending' && b.status !== 'pending') return -1;
     if (b.status === 'pending' && a.status !== 'pending') return 1;
-    return new Date(b.created_at) - new Date(a.created_at);
+    return new Date(a.created_at) - new Date(b.created_at);
   });
 
   const pending = requests.filter(r => r.status === 'pending').length;
@@ -540,7 +569,7 @@ function render() {
       const inCooldown = Date.now() < cooldownUntil;
       const approveDisabled = inCooldown ? ' disabled' : '';
       const remaining = Math.max(0, cooldownUntil - Date.now());
-      const pct = inCooldown ? (remaining / 30000) * 100 : 0;
+      const pct = inCooldown && cooldownDuration > 0 ? (remaining / cooldownDuration) * 100 : 0;
       const secs = Math.ceil(remaining / 1000);
       const cooldownHtml = inCooldown
         ? '<div class="cooldown-bar"><div class="cooldown-bar-fill" style="width:' + pct + '%"></div></div>' +
@@ -594,12 +623,25 @@ async function fetchRequests() {
     if (resp.ok) {
       requests = await resp.json();
       const cdMs = parseInt(resp.headers.get('X-Cooldown-Remaining-Ms') || '0', 10);
+      const cdDur = parseInt(resp.headers.get('X-Cooldown-Duration-Ms') || '0', 10);
+      if (cdDur > 0) cooldownDuration = cdDur;
       if (cdMs > 0) {
         cooldownUntil = Date.now() + cdMs;
         startCooldownTimer();
       } else if (cooldownUntil > 0 && Date.now() >= cooldownUntil) {
         cooldownUntil = 0;
       }
+      // Sync turbo state from headers
+      const wasTurbo = turboActive;
+      turboActive = resp.headers.get('X-Turbo-Active') === 'true';
+      if (turboActive) {
+        const turboMs = parseInt(resp.headers.get('X-Turbo-Remaining-Ms') || '0', 10);
+        turboUntil = Date.now() + turboMs;
+        startTurboTimer();
+      } else {
+        turboUntil = 0;
+      }
+      updateTurboUI();
       render();
     }
   } catch (e) {
@@ -634,7 +676,7 @@ function startCooldownTimer() {
 function updateCooldownDisplay() {
   const remaining = cooldownUntil - Date.now();
   if (remaining <= 0) return;
-  const pct = (remaining / 30000) * 100;
+  const pct = cooldownDuration > 0 ? (remaining / cooldownDuration) * 100 : 0;
   const secs = Math.ceil(remaining / 1000);
   document.querySelectorAll('.cooldown-bar-fill').forEach(el => {
     el.style.width = pct + '%';
@@ -652,6 +694,52 @@ async function deny(id) {
     body: JSON.stringify({ reason })
   });
   fetchRequests();
+}
+
+async function toggleTurbo() {
+  if (turboActive) {
+    await fetch('/api/turbocharge', { method: 'DELETE', headers });
+  } else {
+    await fetch('/api/turbocharge', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duration_minutes: 5, cooldown_seconds: 3 })
+    });
+  }
+  fetchRequests();
+}
+
+function startTurboTimer() {
+  if (turboInterval) clearInterval(turboInterval);
+  turboInterval = setInterval(() => {
+    if (Date.now() >= turboUntil) {
+      clearInterval(turboInterval);
+      turboInterval = null;
+      turboActive = false;
+      turboUntil = 0;
+      updateTurboUI();
+      fetchRequests();
+    } else {
+      updateTurboUI();
+    }
+  }, 1000);
+}
+
+function updateTurboUI() {
+  const btn = document.getElementById('turboBtn');
+  const info = document.getElementById('turboInfo');
+  if (turboActive) {
+    btn.classList.add('active');
+    btn.textContent = 'Turbo ON';
+    const remaining = Math.max(0, turboUntil - Date.now());
+    const mins = Math.floor(remaining / 60000);
+    const secs = Math.ceil((remaining % 60000) / 1000);
+    info.textContent = mins + ':' + String(secs).padStart(2, '0');
+  } else {
+    btn.classList.remove('active');
+    btn.textContent = 'Turbo';
+    info.textContent = '';
+  }
 }
 
 // SSE for real-time updates

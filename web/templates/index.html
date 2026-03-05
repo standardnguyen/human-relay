@@ -703,7 +703,7 @@ async function toggleTurbo() {
     await fetch('/api/turbocharge', {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ duration_minutes: 5, cooldown_seconds: 3 })
+      body: JSON.stringify({ duration_minutes: 5, cooldown_seconds: 10 })
     });
   }
   fetchRequests();

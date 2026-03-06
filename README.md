@@ -68,10 +68,16 @@ If you prefer running the relay in a container (e.g., on a remote server):
 ```bash
 cp .env.example .env
 # Edit .env: set MHR_AUTH_TOKEN, MHR_HOST_IP (see Configuration below)
+
+# The container needs an SSH key to execute commands on the host.
+# Generate one if you don't have one:
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+
 docker compose up -d --build
 ```
 
-The `docker-compose.yml` mounts `/root/.ssh/id_ed25519` into the container for SSH-based command execution. If you're running commands locally only, you can remove that volume mount.
+**SSH key requirement:** The `docker-compose.yml` mounts `~/.ssh/id_ed25519` into the container as a read-only volume. The relay uses this key to SSH back to the host (at `MHR_HOST_IP`) to execute approved commands. The key must exist before starting the container, and its public key must be in `authorized_keys` on the target host.
 
 ## MCP Tools
 
@@ -96,6 +102,8 @@ Agent: request_command(command="df", args=["-h"], reason="Check disk space")
 Agent: get_result(request_id="a1b2c3d4", timeout=30)
   → { "status": "complete", "result": { "exit_code": 0, "stdout": "..." } }
 ```
+
+**Note:** The MCP transport is JSON-RPC over SSE. The agent must hold an open SSE connection to `/sse` — this is the session. Tool calls are POSTed to the `/message` endpoint returned by the SSE stream, and responses come back over that same SSE connection, not as HTTP response bodies. MCP client libraries (like `mcp-remote`) handle this automatically.
 
 ### Container routing
 

@@ -1,67 +1,146 @@
 # Human Relay
 
-An MCP server that mediates between AI agents and command execution. Agents submit commands via the MCP protocol (JSON-RPC over SSE); a human operator reviews each request in a web dashboard and approves or denies it.
+**Human-in-the-loop command execution for AI agents.**
 
-## How It Works
+Human Relay is an [MCP](https://modelcontextprotocol.io/) server that sits between your AI agent and your infrastructure. Agents request commands; you approve or deny them in a web dashboard; only then do they execute.
 
-1. An AI agent connects to the MCP SSE endpoint and calls `request_command` with a command, arguments, and reason.
-2. The request appears in the web dashboard as a pending card.
-3. The human operator reviews the command and clicks Approve or Deny.
-4. If approved, the server executes the command and returns stdout/stderr/exit code to the agent via `get_result`.
-5. If denied, the agent receives the denial reason.
+```
+┌─────────────┐   JSON-RPC/SSE   ┌──────────────┐     HTTP      ┌─────────┐
+│  AI Agent    │◄────────────────►│ Human Relay  │◄────────────►│ Browser │
+│ (Claude Code,│   :8080/sse     │              │   :8090      │  (You)  │
+│  Cursor, etc)│                 │  ┌─────────┐ │              └─────────┘
+└─────────────┘                 │  │ Request │ │    Approve / Deny
+                                │  │  Queue  │ │         │
+                                │  └─────────┘ │         ▼
+                                │  ┌─────────┐ │   ┌──────────┐
+                                │  │Executor │─┼──►│ ssh, bash,│
+                                │  └─────────┘ │   │ any cmd   │
+                                └──────────────┘   └──────────┘
+```
+
+## Why
+
+AI coding agents are powerful but run in sandboxes. When they need to touch production systems — restart a service, check disk usage, deploy a config — you either give them SSH keys (dangerous) or copy-paste commands yourself (tedious).
+
+Human Relay gives agents a way to *ask* for command execution. You stay in the loop, review each command, and approve with a click. The agent gets the output and continues working.
+
+## Quickstart
+
+```bash
+# Build from source
+git clone https://github.com/your-user/human-relay.git
+cd human-relay
+go build -o human-relay .
+
+# Run
+export MHR_AUTH_TOKEN=$(openssl rand -hex 16)
+echo "Dashboard token: $MHR_AUTH_TOKEN"
+./human-relay
+
+# Or with Docker
+docker build -t human-relay .
+docker run -p 8080:8080 -p 8090:8090 -e MHR_AUTH_TOKEN=your-token human-relay
+```
+
+The MCP server starts on `:8080` and the dashboard on `:8090`.
+
+## Connect your agent
+
+Add to your MCP client config (e.g. Claude Code `~/.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "human-relay": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://YOUR-HOST:8080/sse", "--allow-http"]
+    }
+  }
+}
+```
+
+The agent now has access to the `request_command`, `get_result`, and other tools.
 
 ## MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `request_command` | Submit a command for human approval. Returns a request ID. |
-| `get_result` | Poll for the result of a submitted command. Supports blocking poll with timeout. |
-| `list_requests` | List all requests, optionally filtered by status. |
+| Tool | Description | Requires Approval |
+|------|-------------|:-:|
+| `request_command` | Submit a command for human approval | Yes |
+| `get_result` | Poll for command result (supports blocking with timeout) | No |
+| `list_requests` | List requests, optionally filtered by status | No |
+| `register_container` | Register a remote host in the container registry | No |
+| `list_containers` | List registered containers | No |
+| `exec_container` | Execute a command on a registered remote host via SSH | Yes |
+| `write_file` | Deploy a file to a remote host (base64-encoded, binary-safe) | Yes |
+
+### Basic flow
+
+```
+Agent: request_command(command="df", args=["-h"], reason="Check disk space")
+  → { "request_id": "a1b2c3d4", "status": "pending" }
+
+  [You review and approve in the dashboard]
+
+Agent: get_result(request_id="a1b2c3d4", timeout=30)
+  → { "status": "complete", "result": { "exit_code": 0, "stdout": "..." } }
+```
+
+### Container routing
+
+For managing remote hosts, register them once and `exec_container` handles SSH routing:
+
+```
+Agent: register_container(ctid=133, ip="10.0.0.50", hostname="webserver", has_relay_ssh=true)
+Agent: exec_container(ctid=133, command="docker", args=["compose","ps"], reason="Check services")
+  → routes to: ssh root@10.0.0.50 -- docker compose ps
+```
+
+## Dashboard
+
+The web UI shows pending requests with full command details, approve/deny buttons, and a history of completed requests. Real-time updates via SSE — no polling.
+
+Features:
+- Shell mode commands highlighted with a red warning banner
+- Non-ASCII characters flagged to catch homoglyph attacks
+- 30-second cooldown between approvals (prevents reflexive clicking)
+- Turbocharge mode to temporarily reduce cooldown during batch operations
+- Browser notifications for new requests
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MHR_AUTH_TOKEN` | (required) | Bearer token for web dashboard API authentication |
-| `MHR_MCP_PORT` | 8080 | Port for the MCP SSE server |
-| `MHR_WEB_PORT` | 8090 | Port for the web dashboard |
-| `MHR_DEFAULT_TIMEOUT` | 30 | Default command timeout in seconds |
-| `MHR_MAX_TIMEOUT` | 300 | Maximum allowed command timeout in seconds |
-| `MHR_ALLOWED_DIRS` | (none) | Comma-separated list of allowed working directories |
+| `MHR_AUTH_TOKEN` | (required) | Bearer token for dashboard API authentication |
+| `MHR_MCP_PORT` | `8080` | MCP SSE server port |
+| `MHR_WEB_PORT` | `8090` | Web dashboard port |
+| `MHR_DEFAULT_TIMEOUT` | `30` | Default command timeout (seconds) |
+| `MHR_MAX_TIMEOUT` | `300` | Maximum allowed timeout |
+| `MHR_APPROVAL_COOLDOWN` | `30` | Seconds between approvals (0 to disable) |
+| `MHR_ALLOWED_DIRS` | (none) | Comma-separated allowed working directories |
+| `MHR_DATA_DIR` | `/opt/human-relay/data` | Persistent data directory (audit log, container registry) |
+| `MHR_HOST_IP` | (none) | Fallback host IP for `exec_container` routing when direct SSH is unavailable |
 
-## Security Model
+## Security
 
-Human Relay is designed for **private network / Tailnet deployment**. It is not suitable for public internet exposure.
+Human Relay is designed for **private networks**. It is not suitable for public internet exposure without a TLS reverse proxy.
 
-### Implemented Mitigations
+### What's protected
 
-- **Bearer token authentication** on all mutation and data API endpoints
-- **CSRF validation** via Origin header checking on POST requests
-- **Path traversal protection** — working directories are canonicalized with `filepath.Clean` and validated against an allowlist
-- **Output truncation** — stdout and stderr are capped at 1MB to prevent memory exhaustion
-- **Bidi character stripping** — bidirectional Unicode control characters are replaced with `[BIDI]` in the frontend to prevent reorder attacks
-- **Non-ASCII warning** — commands containing non-ASCII characters are flagged with a visual warning to catch homoglyph substitution
-- **Shell mode warning** — shell commands (`sh -c`) get a prominent red warning banner and card highlight
-- **Double-approval protection** — approving an already-approved request returns 409 Conflict
-- **Approval cooldown** — 30-second client-side cooldown between approvals to prevent reflexive clicking
+- **No shell by default** — commands run via `os/exec`, not `sh -c`, so shell injection doesn't apply
+- **Shell mode is opt-in** — `sh -c` commands get a red warning banner in the dashboard
+- **Token auth** — all mutations require a bearer token (constant-time comparison)
+- **CSRF protection** — Origin header validation on all POST endpoints
+- **Path traversal blocked** — working directories validated against an allowlist
+- **Output capped** — stdout/stderr limited to 1MB per command
+- **Approval cooldown** — server-enforced rate limit between approvals
+- **Audit log** — append-only JSONL file records every request, approval, denial, and execution result
 
-### Known Unmitigated Threats
+### What's not (yet)
 
-These are accepted risks for the current deployment context (private Tailnet):
-
-- **No TLS.** Traffic between agent, server, and dashboard is unencrypted. Acceptable on a private network; would need a reverse proxy (Caddy/nginx) for any other deployment.
-- **No per-user authentication.** Anyone with the bearer token has full access. There is no user identity, session management, or role separation.
-- **SSE metadata leak.** The `/events` SSE endpoint is unauthenticated (EventSource cannot set headers). An attacker on the network could observe command names, reasons, and statuses in real time. Read-only; no mutations possible.
-- **No command allowlist.** Any command can be submitted. The human operator is the only filter.
-- **No persistent audit log.** Approved commands and their outputs are stored in memory only. Server restart loses all history.
-- **Homoglyphs are flagged, not blocked.** The non-ASCII warning helps a human spot suspicious characters, but does not prevent submission.
-- **Approval cooldown is client-side only.** Reloading the page bypasses the 30-second cooldown. It is a UX nudge against fatigue, not a hard rate limit.
-
-### Future Versions
-
-- **Persistent audit log** — append-only log file recording every approval, denial, command, and output. Highest-priority next step.
-- **Per-user authentication** — individual operator accounts with role separation.
-- **Command allowlist/denylist** — regex-based filtering of submitted commands.
+- No TLS (use a reverse proxy)
+- No per-user auth (single shared token)
+- No command allowlist (the human is the filter)
+- SSE metadata endpoint is unauthenticated (EventSource can't set headers)
 
 ## Development
 
@@ -70,26 +149,27 @@ These are accepted risks for the current deployment context (private Tailnet):
 go build -o human-relay .
 
 # Run
-MHR_AUTH_TOKEN=your-token ./human-relay
+MHR_AUTH_TOKEN=test-token ./human-relay
 
-# Run integration tests
-HUMAN_RELAY_BIN=$(pwd)/human-relay go test -v -count=1 ./integration/...
+# Run tests
+HUMAN_RELAY_BIN=$(pwd)/human-relay go test -v -count=1 ./...
 ```
 
-## Architecture
+### Project structure
 
 ```
-Agent (Claude Code, etc.)
-  |
-  |  JSON-RPC over SSE (MCP protocol)
-  |
-  +---> MCP Server (:8080/sse, /message)
-  |       +-- store (in-memory request queue)
-  |
-  +---> Web Dashboard (:8090)
-          +-- GET /           -> dashboard HTML (no auth)
-          +-- GET /events     -> SSE stream (no auth)
-          +-- GET /api/requests     -> list requests (auth required)
-          +-- POST /api/requests/{id}/approve|deny (auth required)
-                +-- executor -> sh -c or direct exec -> stdout/stderr
+human-relay/
+├── main.go              # Entry point, config, server startup
+├── audit/               # Append-only JSONL audit logger
+├── mcp/                 # MCP protocol: JSON-RPC over SSE, tool handlers
+├── store/               # In-memory request queue
+├── containers/          # JSON-backed container/host registry
+├── executor/            # Command execution (timeout, output capping)
+├── web/                 # Dashboard HTTP handlers, SSE, auth
+│   └── templates/       # Single-page dashboard (vanilla JS)
+├── integration/         # Integration test suite
+├── Dockerfile           # Multi-stage build (Go 1.24 + Debian slim)
+└── docker-compose.yml   # Ready-to-run with Docker Compose
 ```
+
+Single Go binary. Zero external dependencies at runtime. ~2,500 lines of Go.

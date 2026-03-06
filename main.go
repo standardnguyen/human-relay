@@ -30,7 +30,7 @@ func main() {
 	maxTimeout := envInt("MHR_MAX_TIMEOUT", 300)
 
 	dataDir := envString("MHR_DATA_DIR", "/opt/human-relay/data")
-	hostIP := envString("MHR_HOST_IP", "192.168.10.50")
+	hostIP := envString("MHR_HOST_IP", "")
 
 	var allowedDirs []string
 	if dirs := os.Getenv("MHR_ALLOWED_DIRS"); dirs != "" {

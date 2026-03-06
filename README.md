@@ -5,17 +5,16 @@
 Human Relay is an [MCP](https://modelcontextprotocol.io/) server that sits between your AI agent and your infrastructure. Agents request commands; you approve or deny them in a web dashboard; only then do they execute.
 
 ```
-┌─────────────┐   JSON-RPC/SSE   ┌──────────────┐     HTTP      ┌─────────┐
-│  AI Agent    │◄────────────────►│ Human Relay  │◄────────────►│ Browser │
-│ (Claude Code,│   :8080/sse     │              │   :8090      │  (You)  │
-│  Cursor, etc)│                 │  ┌─────────┐ │              └─────────┘
-└─────────────┘                 │  │ Request │ │    Approve / Deny
-                                │  │  Queue  │ │         │
-                                │  └─────────┘ │         ▼
-                                │  ┌─────────┐ │   ┌──────────┐
-                                │  │Executor │─┼──►│ ssh, bash,│
-                                │  └─────────┘ │   │ any cmd   │
-                                └──────────────┘   └──────────┘
+  Sandboxed                    Isolated                     Your infra
+┌─────────────┐  JSON-RPC/SSE  ┌──────────────┐    SSH     ┌──────────┐
+│  AI Agent    │◄──────────────►│ Human Relay  │───────────►│ Target   │
+│ (Claude Code,│  :8080/sse    │  (Docker)    │            │ hosts    │
+│  Cursor, etc)│               │              │            └──────────┘
+└─────────────┘               │  ┌─────────┐ │   HTTP    ┌─────────┐
+  Can only reach               │  │ Request │ │◄─────────►│ Browser │
+  the MCP port                 │  │  Queue  │ │  :8090    │  (You)  │
+                               │  └─────────┘ │           └─────────┘
+                               └──────────────┘  Approve / Deny
 ```
 
 ## Why
@@ -24,60 +23,80 @@ AI coding agents are powerful but run in sandboxes. When they need to touch prod
 
 Human Relay gives agents a way to *ask* for command execution. You stay in the loop, review each command, and approve with a click. The agent gets the output and continues working.
 
+## Isolation model
+
+Human Relay is only useful if the agent **cannot bypass it**. This requires three components in separate trust boundaries:
+
+| Component | Where it runs | Can reach |
+|-----------|--------------|-----------|
+| AI Agent | Sandboxed container or VM | Relay MCP port (`:8080`) only |
+| Human Relay | Its own container (Docker) | SSH to target hosts, dashboard UI |
+| Target hosts | Your infrastructure | N/A — commands are pushed to them |
+
+If the agent runs on the same machine as the relay with no containerization, it can execute commands directly and the relay is just theater. If the relay runs directly on a target host with no container, a relay compromise gives full host access.
+
+**Recommended setup:** Run the relay in a Docker container on a machine the agent cannot directly SSH into. The agent connects to the relay over the network. The relay SSHes to your infrastructure to execute approved commands.
+
+**The human is the filter.** Human Relay is not a replacement for understanding what you're approving. An agent could request `cat /root/.ssh/id_ed25519` and exfiltrate the relay's private key in the output. It could chain innocent-looking commands that together do something destructive. The dashboard gives you visibility, cooldowns give you time to think, and the audit log gives you a paper trail — but ultimately it comes down to the operator knowing what each command does before clicking approve.
+
 ## Quickstart
 
-Most users want to run the relay on the same machine their agent runs on. No Docker required — it's a single binary.
+### 1. Deploy the relay
 
-### 1. Build and run
+On the machine that will host the relay (a server, VM, or container with Docker):
 
 ```bash
-# Requires Go 1.24+
 git clone https://github.com/standardnguyen/human-relay.git
 cd human-relay
-go build -o human-relay .
+cp .env.example .env
+# Edit .env: set MHR_AUTH_TOKEN to a random secret
+#            set MHR_HOST_IP to the IP of the machine you want commands to run on
 
-# Generate a dashboard token and start the server
-export MHR_AUTH_TOKEN=$(openssl rand -hex 16)
-echo "Dashboard token: $MHR_AUTH_TOKEN"
-./human-relay
+# The relay container needs an SSH key to reach target hosts.
+# Generate one if you don't have one:
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+
+# Authorize the key on each target host:
+cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys  # for the local host
+# ssh-copy-id -i ~/.ssh/id_ed25519.pub root@other-host  # for remote targets
+
+docker compose up -d --build
 ```
 
-The MCP server starts on `:8080` and the web dashboard on `:8090`. Open `http://localhost:8090` in your browser — that's where you'll approve commands.
+The `docker-compose.yml` mounts `~/.ssh/id_ed25519` into the container as a read-only volume. The relay uses this key to SSH to target hosts and execute approved commands.
 
 ### 2. Connect your agent
 
-Add to your MCP client config (e.g. Claude Code `~/.claude/settings.json`):
+From wherever your agent runs (a different machine, container, or VM), add to your MCP client config (e.g. Claude Code `~/.claude/settings.json`):
 
 ```json
 {
   "mcpServers": {
     "human-relay": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:8080/sse", "--allow-http"]
+      "args": ["mcp-remote", "http://RELAY_HOST:8080/sse", "--allow-http"]
     }
   }
 }
 ```
 
-The agent now has access to the `request_command`, `get_result`, and other tools. When the agent submits a command, it appears in the dashboard for your approval.
+Replace `RELAY_HOST` with the IP or hostname of the machine running the relay.
 
-### Docker (alternative)
+### 3. Approve commands
 
-If you prefer running the relay in a container (e.g., on a remote server):
+Open `http://RELAY_HOST:8090` in your browser. When the agent submits a command, it appears here for your approval.
+
+### Running without Docker (development only)
+
+For local development and testing, you can run the binary directly:
 
 ```bash
-cp .env.example .env
-# Edit .env: set MHR_AUTH_TOKEN, MHR_HOST_IP (see Configuration below)
-
-# The container needs an SSH key to execute commands on the host.
-# Generate one if you don't have one:
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
-cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
-
-docker compose up -d --build
+# Requires Go 1.24+
+go build -o human-relay .
+MHR_AUTH_TOKEN=dev-token ./human-relay
 ```
 
-**SSH key requirement:** The `docker-compose.yml` mounts `~/.ssh/id_ed25519` into the container as a read-only volume. The relay uses this key to SSH back to the host (at `MHR_HOST_IP`) to execute approved commands. The key must exist before starting the container, and its public key must be in `authorized_keys` on the target host.
+This runs the relay and executes approved commands directly on your machine with no isolation. Fine for development, not for production.
 
 ## MCP Tools
 

@@ -1,5 +1,10 @@
 # human-relay Runbooks
 
+> **Status: Untested drafts.** These runbooks were written by Claude as a best-effort
+> interpretation of how to validate human-relay deployments. None of them have been
+> executed end-to-end. Expect wrong assumptions, missing steps, and broken commands.
+> If you run one and it works, great. If not, fixes are welcome.
+
 Test runbooks for validating human-relay deployments across environments, with both manual and LLM-driven (claude-control) test scenarios.
 
 ## Philosophy
@@ -40,3 +45,10 @@ These runbooks validate that by:
 - API keys for target LLMs (see [08-multi-llm-matrix](08-multi-llm-matrix.md))
 - Docker installed on test runners
 - `claude` CLI with `--dangerously-skip-permissions` support (for claude-control tests)
+
+## Known Issues
+
+- Template names in runbooks (e.g. `debian-12-standard_12.12-1_amd64.tar.zst`) will drift as Proxmox publishes new versions. Check `pveam available --section system` for the current name.
+- The `pct exec -- bash -c "..."` pattern can mangle PATH and shell variables depending on the SSH chain. If commands fail with "not found", try pushing a script into the container and executing it directly.
+- Runbook 10 references `runbooks/prompts/deploy-test.txt` and `runbooks/harness/llm_deploy_harness.py` — these files have not been created yet.
+- The LLM-driven runbooks (04-08) require a `claude`-like CLI or custom harness that does not exist for non-Anthropic models.

@@ -53,7 +53,7 @@ jobs:
           for MODEL in ${MODELS}; do
             CTID=$((9100 + RANDOM % 100))
 
-            pct create ${CTID} local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+            pct create ${CTID} local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
               --hostname "hr-matrix-${MODEL}" \
               --memory 2048 --cores 4 \
               --rootfs local-lvm:16 \

@@ -22,7 +22,7 @@ Validate that a fresh Proxmox LXC container can run human-relay via Docker Compo
 CTID=9001  # high CTID to avoid collisions with production
 PROXMOX_HOST="your-proxmox-host"
 
-ssh root@${PROXMOX_HOST} "pct create ${CTID} local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+ssh root@${PROXMOX_HOST} "pct create ${CTID} local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
   --hostname hr-smoke-test \
   --memory 1024 \
   --cores 2 \

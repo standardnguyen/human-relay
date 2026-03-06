@@ -35,7 +35,7 @@ Layer 0: Proxmox Host (bare metal)
 PROXMOX_HOST="your-proxmox-host"
 
 # Relay container (Docker-in-LXC)
-ssh root@${PROXMOX_HOST} "pct create 9010 local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+ssh root@${PROXMOX_HOST} "pct create 9010 local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
   --hostname hr-relay \
   --memory 2048 --cores 4 \
   --rootfs local-lvm:16 \
@@ -43,7 +43,7 @@ ssh root@${PROXMOX_HOST} "pct create 9010 local:vztmpl/debian-12-standard_12.2-1
   --features nesting=1 --unprivileged 0 --start 1"
 
 # Target with SSH access
-ssh root@${PROXMOX_HOST} "pct create 9011 local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+ssh root@${PROXMOX_HOST} "pct create 9011 local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
   --hostname hr-target-ssh \
   --memory 512 --cores 1 \
   --rootfs local-lvm:4 \
@@ -51,7 +51,7 @@ ssh root@${PROXMOX_HOST} "pct create 9011 local:vztmpl/debian-12-standard_12.2-1
   --start 1"
 
 # Target without SSH (pct-only)
-ssh root@${PROXMOX_HOST} "pct create 9012 local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+ssh root@${PROXMOX_HOST} "pct create 9012 local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
   --hostname hr-target-pct \
   --memory 512 --cores 1 \
   --rootfs local-lvm:4 \

@@ -26,25 +26,25 @@ Human Relay gives agents a way to *ask* for command execution. You stay in the l
 
 ## Quickstart
 
+Most users want to run the relay on the same machine their agent runs on. No Docker required — it's a single binary.
+
+### 1. Build and run
+
 ```bash
-# Build from source
-git clone https://github.com/your-user/human-relay.git
+# Requires Go 1.24+
+git clone https://github.com/standardnguyen/human-relay.git
 cd human-relay
 go build -o human-relay .
 
-# Run
+# Generate a dashboard token and start the server
 export MHR_AUTH_TOKEN=$(openssl rand -hex 16)
 echo "Dashboard token: $MHR_AUTH_TOKEN"
 ./human-relay
-
-# Or with Docker
-docker build -t human-relay .
-docker run -p 8080:8080 -p 8090:8090 -e MHR_AUTH_TOKEN=your-token human-relay
 ```
 
-The MCP server starts on `:8080` and the dashboard on `:8090`.
+The MCP server starts on `:8080` and the web dashboard on `:8090`. Open `http://localhost:8090` in your browser — that's where you'll approve commands.
 
-## Connect your agent
+### 2. Connect your agent
 
 Add to your MCP client config (e.g. Claude Code `~/.claude/settings.json`):
 
@@ -53,13 +53,25 @@ Add to your MCP client config (e.g. Claude Code `~/.claude/settings.json`):
   "mcpServers": {
     "human-relay": {
       "command": "npx",
-      "args": ["mcp-remote", "http://YOUR-HOST:8080/sse", "--allow-http"]
+      "args": ["mcp-remote", "http://localhost:8080/sse", "--allow-http"]
     }
   }
 }
 ```
 
-The agent now has access to the `request_command`, `get_result`, and other tools.
+The agent now has access to the `request_command`, `get_result`, and other tools. When the agent submits a command, it appears in the dashboard for your approval.
+
+### Docker (alternative)
+
+If you prefer running the relay in a container (e.g., on a remote server):
+
+```bash
+cp .env.example .env
+# Edit .env: set MHR_AUTH_TOKEN, MHR_HOST_IP (see Configuration below)
+docker compose up -d --build
+```
+
+The `docker-compose.yml` mounts `/root/.ssh/id_ed25519` into the container for SSH-based command execution. If you're running commands locally only, you can remove that volume mount.
 
 ## MCP Tools
 

@@ -25,7 +25,7 @@ The LLM runs in "dangerous" mode (no sandbox, real root access) inside the dispo
 CTID=9002
 PROXMOX_HOST="your-proxmox-host"
 
-ssh root@${PROXMOX_HOST} "pct create ${CTID} local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+ssh root@${PROXMOX_HOST} "pct create ${CTID} local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
   --hostname hr-llm-deploy \
   --memory 2048 \
   --cores 4 \

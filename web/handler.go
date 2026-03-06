@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"git.ekaterina.net/administrator/human-relay/audit"
 	"git.ekaterina.net/administrator/human-relay/executor"
 	"git.ekaterina.net/administrator/human-relay/store"
 )
@@ -23,6 +24,7 @@ const defaultApprovalCooldown = 30 * time.Second
 type Handler struct {
 	store    *store.Store
 	executor *executor.Executor
+	audit    *audit.Logger
 	tmpl     *template.Template
 	sseClients map[chan []byte]struct{}
 	sseMu      sync.Mutex
@@ -41,11 +43,12 @@ func WithCooldown(d time.Duration) HandlerOption {
 	}
 }
 
-func NewHandler(s *store.Store, exec *executor.Executor, opts ...HandlerOption) *Handler {
+func NewHandler(s *store.Store, exec *executor.Executor, al *audit.Logger, opts ...HandlerOption) *Handler {
 	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
 	h := &Handler{
 		store:            s,
 		executor:         exec,
+		audit:            al,
 		tmpl:             tmpl,
 		sseClients:       make(map[chan []byte]struct{}),
 		approvalCooldown: defaultApprovalCooldown,
@@ -162,11 +165,16 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 
 		h.store.SetStatus(id, store.StatusApproved)
 		log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
+		h.audit.Log("request_approved", id, map[string]interface{}{
+			"command": req.Command,
+			"args":    req.Args,
+		})
 		h.broadcastEvent("update", id)
 
 		// Execute in background
 		go func() {
 			h.store.SetStatus(id, store.StatusRunning)
+			h.audit.Log("execution_started", id, nil)
 			h.broadcastEvent("update", id)
 			result := h.executor.Execute(req)
 			status := store.StatusComplete
@@ -175,6 +183,12 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 			}
 			h.store.SetResult(id, result, status)
 			log.Printf("request %s completed with exit code %d", id, result.ExitCode)
+			h.audit.Log("execution_completed", id, map[string]interface{}{
+				"exit_code": result.ExitCode,
+				"status":    string(status),
+				"stdout":    audit.Truncate(result.Stdout),
+				"stderr":    audit.Truncate(result.Stderr),
+			})
 			h.broadcastEvent("update", id)
 		}()
 
@@ -191,6 +205,11 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		}
 		h.store.Deny(id, body.Reason)
 		log.Printf("request %s denied: %s", id, body.Reason)
+		h.audit.Log("request_denied", id, map[string]interface{}{
+			"command":     req.Command,
+			"args":        req.Args,
+			"deny_reason": body.Reason,
+		})
 		h.broadcastEvent("update", id)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -239,6 +258,10 @@ func (h *Handler) handleTurbocharge(w http.ResponseWriter, r *http.Request) {
 		h.turboExpiry = time.Now().Add(time.Duration(body.DurationMinutes) * time.Minute)
 		h.cooldownMu.Unlock()
 		log.Printf("turbocharge activated: %ds cooldown for %d minutes", body.CooldownSeconds, body.DurationMinutes)
+		h.audit.Log("turbocharge_on", "", map[string]interface{}{
+			"cooldown_seconds":  body.CooldownSeconds,
+			"duration_minutes":  body.DurationMinutes,
+		})
 		h.broadcastEvent("turbo", "on")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -252,6 +275,7 @@ func (h *Handler) handleTurbocharge(w http.ResponseWriter, r *http.Request) {
 		h.turboExpiry = time.Time{}
 		h.cooldownMu.Unlock()
 		log.Printf("turbocharge deactivated")
+		h.audit.Log("turbocharge_off", "", nil)
 		h.broadcastEvent("turbo", "off")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "deactivated"})

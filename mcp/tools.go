@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"git.ekaterina.net/administrator/human-relay/audit"
 	"git.ekaterina.net/administrator/human-relay/containers"
 	"git.ekaterina.net/administrator/human-relay/store"
 )
@@ -194,10 +195,11 @@ type ToolHandler struct {
 	store      *store.Store
 	containers *containers.Store
 	hostIP     string
+	audit      *audit.Logger
 }
 
-func NewToolHandler(s *store.Store, cs *containers.Store, hostIP string) *ToolHandler {
-	return &ToolHandler{store: s, containers: cs, hostIP: hostIP}
+func NewToolHandler(s *store.Store, cs *containers.Store, hostIP string, al *audit.Logger) *ToolHandler {
+	return &ToolHandler{store: s, containers: cs, hostIP: hostIP, audit: al}
 }
 
 func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallToolResult {
@@ -246,6 +248,16 @@ func (h *ToolHandler) requestCommand(args map[string]interface{}) *CallToolResul
 	}
 
 	r := h.store.Add(command, cmdArgs, reason, workingDir, shell, timeout)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":        "request_command",
+		"command":     command,
+		"args":        cmdArgs,
+		"reason":      reason,
+		"working_dir": workingDir,
+		"shell":       shell,
+		"timeout":     timeout,
+	})
 
 	return textResult(fmt.Sprintf(`{"request_id": "%s", "status": "pending"}`, r.ID))
 }
@@ -440,6 +452,18 @@ func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult
 		route = "pct_exec"
 	}
 
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":     "exec_container",
+		"ctid":     ctid,
+		"hostname": c.Hostname,
+		"command":  command,
+		"args":     cmdArgs,
+		"reason":   reason,
+		"route":    route,
+		"shell":    shell,
+		"timeout":  timeout,
+	})
+
 	result := map[string]interface{}{
 		"request_id": r.ID,
 		"status":     "pending",
@@ -553,6 +577,16 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 
 	displayCmd := fmt.Sprintf("write -> %s:%s  [%dB, mode %s]", target, path, len(content), mode)
 	h.store.SetDisplayCommand(r.ID, displayCmd)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":   "write_file",
+		"target": target,
+		"path":   path,
+		"size":   len(content),
+		"mode":   mode,
+		"route":  route,
+		"reason": reason,
+	})
 
 	result := map[string]interface{}{
 		"request_id": r.ID,

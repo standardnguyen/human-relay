@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"git.ekaterina.net/administrator/human-relay/audit"
 	"git.ekaterina.net/administrator/human-relay/containers"
 	"git.ekaterina.net/administrator/human-relay/executor"
 	"git.ekaterina.net/administrator/human-relay/mcp"
@@ -53,6 +54,15 @@ func main() {
 		AllowedDirs:    allowedDirs,
 	})
 
+	// Audit log (append-only JSONL)
+	auditPath := filepath.Join(dataDir, "audit.log")
+	auditLog, err := audit.NewLogger(auditPath)
+	if err != nil {
+		log.Fatalf("init audit log: %v", err)
+	}
+	defer auditLog.Close()
+	log.Printf("Audit log: %s", auditPath)
+
 	// Container registry (JSON file)
 	registryPath := filepath.Join(dataDir, "containers.json")
 	containerStore, err := containers.NewStore(registryPath)
@@ -63,12 +73,12 @@ func main() {
 	log.Printf("Container registry: %s", registryPath)
 
 	// MCP server (SSE transport)
-	toolHandler := mcp.NewToolHandler(s, containerStore, hostIP)
+	toolHandler := mcp.NewToolHandler(s, containerStore, hostIP, auditLog)
 	mcpServer := mcp.NewServer(toolHandler)
 
 	// Web dashboard
 	cd := envInt("MHR_APPROVAL_COOLDOWN", 30)
-	webHandler := web.NewHandler(s, exec, web.WithCooldown(time.Duration(cd)*time.Second))
+	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second))
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 

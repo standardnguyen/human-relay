@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"git.ekaterina.net/administrator/human-relay/audit"
 	"git.ekaterina.net/administrator/human-relay/containers"
 	"git.ekaterina.net/administrator/human-relay/store"
 )
@@ -17,7 +18,12 @@ func setup(t *testing.T) *ToolHandler {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { cs.Close() })
-	return NewToolHandler(s, cs, "192.168.10.50")
+	al, err := audit.NewLogger(filepath.Join(t.TempDir(), "audit.log"))
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	t.Cleanup(func() { al.Close() })
+	return NewToolHandler(s, cs, "192.168.10.50", al)
 }
 
 func TestRegisterContainer(t *testing.T) {

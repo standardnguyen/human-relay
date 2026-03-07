@@ -593,10 +593,23 @@ function render() {
     ? requests.filter(r => r.status === currentFilter)
     : requests;
 
-  // Sort: pending first, then by time ascending (oldest first)
+  // Sort: status-filtered views for complete/denied/error show newest first.
+  // "All" view: pending oldest-first at top, non-pending newest-first after.
+  // Pending/running views: oldest first.
+  const newestFirstStatuses = ['complete', 'denied', 'error'];
   filtered.sort((a, b) => {
-    if (a.status === 'pending' && b.status !== 'pending') return -1;
-    if (b.status === 'pending' && a.status !== 'pending') return 1;
+    if (currentFilter === '' || currentFilter === 'pending' || currentFilter === 'running') {
+      // All/pending/running: pending items first, oldest-to-newest
+      if (a.status === 'pending' && b.status !== 'pending') return -1;
+      if (b.status === 'pending' && a.status !== 'pending') return 1;
+      if (a.status === 'pending' && b.status === 'pending') {
+        return new Date(a.created_at) - new Date(b.created_at);
+      }
+    }
+    if (currentFilter === '' || newestFirstStatuses.includes(currentFilter)) {
+      // Non-pending in "all", or complete/denied/error tabs: newest first
+      return new Date(b.created_at) - new Date(a.created_at);
+    }
     return new Date(a.created_at) - new Date(b.created_at);
   });
 

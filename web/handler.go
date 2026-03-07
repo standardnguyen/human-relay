@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +106,7 @@ func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	if requests == nil {
 		requests = []*store.Request{}
 	}
+	sortRequests(requests, status)
 	// Tell the frontend how much cooldown remains (0 if none)
 	h.cooldownMu.Lock()
 	cd := h.activeCooldown()
@@ -458,4 +460,30 @@ func (h *Handler) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) 
 	})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "removed"})
+}
+
+// sortRequests sorts the request list for the web dashboard.
+// Complete/denied/error: newest first. Pending/running: oldest first.
+// Unfiltered (all): pending oldest-first at top, non-pending newest-first after.
+func sortRequests(requests []*store.Request, filter store.Status) {
+	newestFirst := filter == store.StatusComplete || filter == store.StatusDenied || filter == store.StatusError
+	sort.SliceStable(requests, func(i, j int) bool {
+		a, b := requests[i], requests[j]
+		if filter == "" {
+			// All view: pending items first (oldest-first), then non-pending (newest-first)
+			aPending := a.Status == store.StatusPending
+			bPending := b.Status == store.StatusPending
+			if aPending != bPending {
+				return aPending
+			}
+			if aPending {
+				return a.CreatedAt.Before(b.CreatedAt)
+			}
+			return b.CreatedAt.Before(a.CreatedAt)
+		}
+		if newestFirst {
+			return b.CreatedAt.Before(a.CreatedAt)
+		}
+		return a.CreatedAt.Before(b.CreatedAt)
+	})
 }

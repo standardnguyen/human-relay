@@ -85,6 +85,10 @@ func main() {
 
 	// MCP server (SSE transport)
 	toolHandler := mcp.NewToolHandler(s, containerStore, hostIP, auditLog)
+	if sshCfg := os.Getenv("MHR_SSH_CONFIG"); sshCfg != "" {
+		toolHandler.SetSSHConfig(sshCfg)
+		log.Printf("  SSH config: %s", sshCfg)
+	}
 	mcpServer := mcp.NewServer(toolHandler)
 
 	// Web dashboard

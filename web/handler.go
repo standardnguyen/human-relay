@@ -14,6 +14,7 @@ import (
 	"git.ekaterina.net/administrator/human-relay/audit"
 	"git.ekaterina.net/administrator/human-relay/executor"
 	"git.ekaterina.net/administrator/human-relay/store"
+	"git.ekaterina.net/administrator/human-relay/whitelist"
 )
 
 //go:embed templates/*
@@ -33,6 +34,7 @@ type Handler struct {
 	approvalCooldown time.Duration
 	turboCooldown    time.Duration
 	turboExpiry      time.Time
+	whitelist        *whitelist.Whitelist
 }
 
 type HandlerOption func(*Handler)
@@ -40,6 +42,12 @@ type HandlerOption func(*Handler)
 func WithCooldown(d time.Duration) HandlerOption {
 	return func(h *Handler) {
 		h.approvalCooldown = d
+	}
+}
+
+func WithWhitelist(wl *whitelist.Whitelist) HandlerOption {
+	return func(h *Handler) {
+		h.whitelist = wl
 	}
 }
 
@@ -73,6 +81,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/requests", h.handleListRequests)
 	mux.HandleFunc("/api/requests/", h.handleRequestAction)
 	mux.HandleFunc("/api/turbocharge", h.handleTurbocharge)
+	mux.HandleFunc("/api/whitelist", h.handleWhitelist)
+	mux.HandleFunc("/api/whitelist/remove", h.handleWhitelistRemove)
 	mux.HandleFunc("/events", h.handleSSE)
 }
 
@@ -336,5 +346,114 @@ func (h *Handler) watchRequests() {
 	sub := h.store.Subscribe()
 	for id := range sub {
 		h.broadcastEvent("new", id)
+		if h.whitelist != nil {
+			req := h.store.Get(id)
+			if req != nil && req.Status == store.StatusPending && h.whitelist.Match(req.Command, req.Args) {
+				h.autoApprove(req)
+			}
+		}
 	}
+}
+
+func (h *Handler) autoApprove(req *store.Request) {
+	h.store.SetStatus(req.ID, store.StatusApproved)
+	log.Printf("request %s auto-approved (whitelist): %s %v", req.ID, req.Command, req.Args)
+	h.audit.Log("request_auto_approved", req.ID, map[string]interface{}{
+		"command": req.Command,
+		"args":    req.Args,
+	})
+	h.broadcastEvent("update", req.ID)
+
+	go func() {
+		h.store.SetStatus(req.ID, store.StatusRunning)
+		h.audit.Log("execution_started", req.ID, nil)
+		h.broadcastEvent("update", req.ID)
+		result := h.executor.Execute(req)
+		status := store.StatusComplete
+		if result.ExitCode != 0 {
+			status = store.StatusError
+		}
+		h.store.SetResult(req.ID, result, status)
+		log.Printf("request %s completed with exit code %d", req.ID, result.ExitCode)
+		h.audit.Log("execution_completed", req.ID, map[string]interface{}{
+			"exit_code": result.ExitCode,
+			"status":    string(status),
+			"stdout":    audit.Truncate(result.Stdout),
+			"stderr":    audit.Truncate(result.Stderr),
+		})
+		h.broadcastEvent("update", req.ID)
+	}()
+}
+
+func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
+	if h.whitelist == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("[]"))
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		rules := h.whitelist.Rules()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(rules)
+
+	case http.MethodPost:
+		var body struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Command == "" {
+			http.Error(w, "command is required", http.StatusBadRequest)
+			return
+		}
+		h.whitelist.Add(body.Command, body.Args)
+		if err := h.whitelist.Save(); err != nil {
+			log.Printf("whitelist save error: %v", err)
+		}
+		h.audit.Log("whitelist_add", "", map[string]interface{}{
+			"command": body.Command,
+			"args":    body.Args,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "added"})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.whitelist == nil {
+		http.Error(w, "whitelist not configured", http.StatusNotFound)
+		return
+	}
+
+	var body struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Command == "" {
+		http.Error(w, "command is required", http.StatusBadRequest)
+		return
+	}
+
+	removed := h.whitelist.Remove(body.Command, body.Args)
+	if !removed {
+		http.Error(w, "rule not found", http.StatusNotFound)
+		return
+	}
+	if err := h.whitelist.Save(); err != nil {
+		log.Printf("whitelist save error: %v", err)
+	}
+	h.audit.Log("whitelist_remove", "", map[string]interface{}{
+		"command": body.Command,
+		"args":    body.Args,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "removed"})
 }

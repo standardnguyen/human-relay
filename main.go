@@ -16,6 +16,7 @@ import (
 	"git.ekaterina.net/administrator/human-relay/mcp"
 	"git.ekaterina.net/administrator/human-relay/store"
 	"git.ekaterina.net/administrator/human-relay/web"
+	"git.ekaterina.net/administrator/human-relay/whitelist"
 )
 
 func main() {
@@ -72,13 +73,23 @@ func main() {
 	defer containerStore.Close()
 	log.Printf("Container registry: %s", registryPath)
 
+	// Whitelist (auto-approve matching commands)
+	wlPath := envString("MHR_WHITELIST_FILE", filepath.Join(dataDir, "whitelist.json"))
+	wl, err := whitelist.Load(wlPath)
+	if err != nil {
+		log.Fatalf("load whitelist: %v", err)
+	}
+	if rules := wl.Rules(); len(rules) > 0 {
+		log.Printf("Whitelist: %d rules from %s", len(rules), wlPath)
+	}
+
 	// MCP server (SSE transport)
 	toolHandler := mcp.NewToolHandler(s, containerStore, hostIP, auditLog)
 	mcpServer := mcp.NewServer(toolHandler)
 
 	// Web dashboard
 	cd := envInt("MHR_APPROVAL_COOLDOWN", 30)
-	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second))
+	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl))
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 

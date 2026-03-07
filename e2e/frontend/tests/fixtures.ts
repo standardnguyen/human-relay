@@ -126,15 +126,18 @@ async function mcpCall(method: string, params?: any): Promise<any> {
   const id = nextCallID();
   const body = { jsonrpc: '2.0', id, method, params };
   const url = `http://127.0.0.1:${server!.mcpPort}${sseSessionID}`;
-  await httpReq('POST', url, body);
 
-  // Wait for response via SSE
-  return new Promise((resolve, reject) => {
+  // Set up the SSE waiter BEFORE sending the request to avoid a race where
+  // the SSE response arrives before httpReq resolves and the waiter is added.
+  const responsePromise = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`MCP timeout for ${method}`)), 15_000);
     sseEventCh.push({
       resolve: (v: any) => { clearTimeout(timer); resolve(v); },
     });
   });
+
+  await httpReq('POST', url, body);
+  return responsePromise;
 }
 
 async function mcpNotify(method: string, params?: any): Promise<void> {

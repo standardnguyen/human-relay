@@ -642,7 +642,7 @@ function render() {
     const wlBtnHtml = r.status !== 'pending'
       ? (wlMatch
         ? '<button class="btn-whitelist active" disabled>Whitelisted</button>'
-        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + escapeHtml(r.command).replace(/'/g, "\\'") + '\',' + JSON.stringify(r.args || []) + ')">Whitelist</button>')
+        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + escapeHtml(r.command).replace(/'/g, "\\'") + '\',' + JSON.stringify(r.args || []).replace(/"/g, '&quot;') + ')">Whitelist</button>')
       : '';
 
     let actions = '';

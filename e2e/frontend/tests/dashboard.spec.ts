@@ -139,10 +139,9 @@ test.describe('Whitelist Panel', () => {
     // Find the whitelist button for this specific command and click it
     const btn = page.locator('.btn-whitelist:not(.active)').first();
     await btn.click();
-    await page.waitForTimeout(500);
 
-    // After clicking, it should show "Whitelisted"
-    await expect(page.locator('.btn-whitelist.active').first()).toBeVisible();
+    // After clicking, wait for the async whitelist flow (confirm → POST → fetchWhitelist → render)
+    await page.waitForSelector('.btn-whitelist.active', { timeout: 5000 });
     await expect(page).toHaveScreenshot('whitelisted-state.png');
   });
 
@@ -188,7 +187,7 @@ test.describe('Approval Interaction', () => {
     await page.click('.btn-deny');
     await page.waitForSelector('.request-card.denied', { timeout: 5_000 });
     await page.waitForTimeout(300);
-    await expect(page.locator('.deny-reason')).toContainText('rejected via UI test');
+    await expect(page.locator('.deny-reason', { hasText: 'rejected via UI test' })).toBeVisible();
     await expect(page).toHaveScreenshot('after-ui-deny.png');
   });
 });

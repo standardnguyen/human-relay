@@ -402,3 +402,110 @@ test.describe('Sort Order', () => {
     await expect(page).toHaveScreenshot('sort-all-mixed.png');
   });
 });
+
+test.describe('Turbo Cooldown', () => {
+  test('turbo activation shows turbo UI', async ({ page, relay }) => {
+    await relay.deactivateTurbo();
+    await relay.activateTurbo(5, 5);
+    await openDashboard(page, relay);
+
+    const btn = page.locator('#turboBtn');
+    await expect(btn).toHaveText('Turbo ON');
+    await expect(btn).toHaveClass(/active/);
+
+    const info = page.locator('#turboInfo');
+    await expect(info).not.toBeEmpty();
+
+    await expect(page.locator('.status-bar')).toHaveScreenshot('turbo-active.png');
+  });
+
+  test('cooldown bar during turbo', async ({ page, relay }) => {
+    // Approve while turbo is off (cooldown=0, so approve succeeds instantly)
+    await relay.deactivateTurbo();
+    const id = await relay.submitCommand('echo', ['turbo-cooldown-test'], 'turbo cooldown test');
+    await relay.approve(id);
+    await relay.waitForComplete(id);
+
+    // Now activate turbo with long cooldown — lastApproval is recent, so cooldown kicks in
+    await relay.activateTurbo(5, 30);
+
+    // Submit a pending request so the cooldown bar is visible on its card
+    await relay.submitCommand('echo', ['waiting-in-cooldown'], 'pending during cooldown');
+
+    await openDashboard(page, relay);
+    // Filter to pending only to reduce noise from accumulated requests
+    await page.click('.filters button[data-filter="pending"]');
+    await page.waitForSelector('.cooldown-bar');
+    await expect(page.locator('.cooldown-bar').first()).toBeVisible();
+    await expect(page.locator('.cooldown-label').first()).toBeVisible();
+
+    await expect(page).toHaveScreenshot('turbo-cooldown-bar.png');
+  });
+
+  test('turbo deactivation mid-cooldown', async ({ page, relay }) => {
+    // Approve while turbo is off so cooldown=0 doesn't block
+    await relay.deactivateTurbo();
+    const id = await relay.submitCommand('echo', ['turbo-deactivate-test'], 'turbo deactivate test');
+    await relay.approve(id);
+    await relay.waitForComplete(id);
+
+    // Activate turbo with long cooldown (lastApproval is recent, so cooldown active)
+    await relay.activateTurbo(5, 30);
+
+    // Submit a pending request
+    await relay.submitCommand('echo', ['pending-after-deactivate'], 'pending after deactivate');
+
+    // Deactivate turbo while cooldown is active
+    await relay.deactivateTurbo();
+
+    await openDashboard(page, relay);
+    // After deactivation, turbo button should be back to normal
+    const btn = page.locator('#turboBtn');
+    await expect(btn).toHaveText('Turbo');
+    await expect(btn).not.toHaveClass(/active/);
+
+    // Turbo info should be empty
+    await expect(page.locator('#turboInfo')).toBeEmpty();
+
+    await expect(page).toHaveScreenshot('turbo-deactivated-mid-cooldown.png');
+  });
+
+  test('turbo reactivation mid-cooldown', async ({ page, relay }) => {
+    // Approve while turbo is off so cooldown=0 doesn't block
+    await relay.deactivateTurbo();
+    const id = await relay.submitCommand('echo', ['turbo-reactivate-test'], 'turbo reactivate test');
+    await relay.approve(id);
+    await relay.waitForComplete(id);
+
+    // Activate turbo with long cooldown (lastApproval is recent, so cooldown active)
+    await relay.activateTurbo(5, 30);
+
+    // Submit a pending request
+    await relay.submitCommand('echo', ['pending-reactivate'], 'pending for reactivate');
+
+    // Deactivate then reactivate
+    await relay.deactivateTurbo();
+    await relay.activateTurbo(5, 5);
+
+    await openDashboard(page, relay);
+    // Turbo should be active again
+    const btn = page.locator('#turboBtn');
+    await expect(btn).toHaveText('Turbo ON');
+    await expect(btn).toHaveClass(/active/);
+    await expect(page.locator('#turboInfo')).not.toBeEmpty();
+
+    await expect(page.locator('.status-bar')).toHaveScreenshot('turbo-reactivated.png');
+  });
+
+  test('turbo countdown timer format', async ({ page, relay }) => {
+    await relay.deactivateTurbo();
+    await relay.activateTurbo(5, 5);
+    await openDashboard(page, relay);
+
+    // Verify the turbo timer shows a M:SS format
+    const info = page.locator('#turboInfo');
+    await expect(info).toHaveText(/\d+:\d{2}/);
+
+    await expect(page.locator('.status-bar')).toHaveScreenshot('turbo-countdown-format.png');
+  });
+});

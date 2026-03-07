@@ -1,0 +1,25 @@
+version: "3"
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-node
+    hostname: test-node-1
+    volumes:
+      - ./authorized_keys:/root/.ssh/authorized_keys:ro
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-node
+    hostname: test-node-2
+    volumes:
+      - ./authorized_keys:/root/.ssh/authorized_keys:ro
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-node
+    hostname: test-node-3
+    volumes:
+      - ./authorized_keys:/root/.ssh/authorized_keys:ro

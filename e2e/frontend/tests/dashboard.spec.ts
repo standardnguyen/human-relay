@@ -1,4 +1,4 @@
-import { test, expect, openDashboard } from './fixtures';
+import { test, expect, openDashboard, RelayHelper } from './fixtures';
 
 test.describe('Dashboard States', () => {
   test('empty state — no requests', async ({ page, relay }) => {
@@ -252,5 +252,260 @@ test.describe('Command Display', () => {
     await openDashboard(page, relay);
     await page.waitForSelector('.line-count-badge');
     await expect(page.locator('.request-card').last()).toHaveScreenshot('line-count-badge.png');
+  });
+});
+
+// Helper: get the ordered list of request IDs visible on the page
+async function getVisibleRequestIDs(page: any): Promise<string[]> {
+  return page.locator('.request-id').allTextContents();
+}
+
+// Helper: get relative order of specific IDs within the visible list
+function relativeOrder(allIDs: string[], targetIDs: string[]): string[] {
+  return allIDs.filter(id => targetIDs.includes(id));
+}
+
+test.describe('Sort Order', () => {
+  test('complete tab sorts newest first', async ({ page, relay }) => {
+    // Create 3 requests with slight delays for distinct timestamps
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = await relay.submitCommand('echo', [`sort-complete-${i}`], `sort complete ${i}`);
+      ids.push(id);
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    // Approve and complete all 3
+    for (const id of ids) {
+      await relay.approve(id);
+      await relay.waitForComplete(id);
+    }
+
+    await openDashboard(page, relay);
+    await page.click('.filters button[data-filter="complete"]');
+    await page.waitForTimeout(300);
+
+    const visible = await getVisibleRequestIDs(page);
+    const order = relativeOrder(visible, ids);
+
+    // Should be newest first: ids[2], ids[1], ids[0]
+    expect(order).toEqual([ids[2], ids[1], ids[0]]);
+    await expect(page).toHaveScreenshot('sort-complete-newest-first.png');
+  });
+
+  test('denied tab sorts newest first', async ({ page, relay }) => {
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = await relay.submitCommand('echo', [`sort-denied-${i}`], `sort denied ${i}`);
+      ids.push(id);
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    for (const id of ids) {
+      await relay.deny(id, `denied-sort-${id}`);
+    }
+
+    await openDashboard(page, relay);
+    await page.click('.filters button[data-filter="denied"]');
+    await page.waitForTimeout(300);
+
+    const visible = await getVisibleRequestIDs(page);
+    const order = relativeOrder(visible, ids);
+
+    expect(order).toEqual([ids[2], ids[1], ids[0]]);
+    await expect(page).toHaveScreenshot('sort-denied-newest-first.png');
+  });
+
+  test('error tab sorts newest first', async ({ page, relay }) => {
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = await relay.submitCommand('false', [], `sort error ${i}`);
+      ids.push(id);
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    for (const id of ids) {
+      await relay.approve(id);
+      await relay.waitForComplete(id);
+    }
+
+    await openDashboard(page, relay);
+    await page.click('.filters button[data-filter="error"]');
+    await page.waitForTimeout(300);
+
+    const visible = await getVisibleRequestIDs(page);
+    const order = relativeOrder(visible, ids);
+
+    expect(order).toEqual([ids[2], ids[1], ids[0]]);
+    await expect(page).toHaveScreenshot('sort-error-newest-first.png');
+  });
+
+  test('pending tab sorts oldest first', async ({ page, relay }) => {
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = await relay.submitCommand('echo', [`sort-pending-${i}`], `sort pending ${i}`);
+      ids.push(id);
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    await openDashboard(page, relay);
+    await page.click('.filters button[data-filter="pending"]');
+    await page.waitForTimeout(300);
+
+    const visible = await getVisibleRequestIDs(page);
+    const order = relativeOrder(visible, ids);
+
+    // Should be oldest first: ids[0], ids[1], ids[2]
+    expect(order).toEqual([ids[0], ids[1], ids[2]]);
+    await expect(page).toHaveScreenshot('sort-pending-oldest-first.png');
+  });
+
+  test('all tab shows pending oldest-first then non-pending newest-first', async ({ page, relay }) => {
+    // Create a controlled set: 2 pending, 1 complete, 1 denied
+    const pending1 = await relay.submitCommand('echo', ['sort-all-p1'], 'sort all pending 1');
+    await new Promise(r => setTimeout(r, 100));
+    const complete1 = await relay.submitCommand('echo', ['sort-all-c1'], 'sort all complete 1');
+    await new Promise(r => setTimeout(r, 100));
+    const pending2 = await relay.submitCommand('echo', ['sort-all-p2'], 'sort all pending 2');
+    await new Promise(r => setTimeout(r, 100));
+    const denied1 = await relay.submitCommand('echo', ['sort-all-d1'], 'sort all denied 1');
+
+    await relay.approve(complete1);
+    await relay.waitForComplete(complete1);
+    await relay.deny(denied1, 'sort test');
+
+    await openDashboard(page, relay);
+    // Click "All" filter (first button, should already be active but click to be sure)
+    await page.click('.filters button[data-filter=""]');
+    await page.waitForTimeout(300);
+
+    const visible = await getVisibleRequestIDs(page);
+
+    // Find positions of our test IDs
+    const p1Idx = visible.indexOf(pending1);
+    const p2Idx = visible.indexOf(pending2);
+    const c1Idx = visible.indexOf(complete1);
+    const d1Idx = visible.indexOf(denied1);
+
+    // Pending items should come before non-pending
+    expect(p1Idx).toBeLessThan(c1Idx);
+    expect(p1Idx).toBeLessThan(d1Idx);
+    expect(p2Idx).toBeLessThan(c1Idx);
+    expect(p2Idx).toBeLessThan(d1Idx);
+
+    // Pending items should be oldest first (pending1 before pending2)
+    expect(p1Idx).toBeLessThan(p2Idx);
+
+    // Non-pending items should be newest first (denied1 created after complete1)
+    expect(d1Idx).toBeLessThan(c1Idx);
+
+    await expect(page).toHaveScreenshot('sort-all-mixed.png');
+  });
+});
+
+test.describe('Turbo Cooldown', () => {
+  test('turbo activation shows turbo UI', async ({ page, relay }) => {
+    await relay.deactivateTurbo();
+    await relay.activateTurbo(5, 5);
+    await openDashboard(page, relay);
+
+    const btn = page.locator('#turboBtn');
+    await expect(btn).toHaveText('Turbo ON');
+    await expect(btn).toHaveClass(/active/);
+
+    const info = page.locator('#turboInfo');
+    await expect(info).not.toBeEmpty();
+
+    await expect(page.locator('.status-bar')).toHaveScreenshot('turbo-active.png');
+  });
+
+  test('cooldown bar during turbo', async ({ page, relay }) => {
+    // Approve while turbo is off (cooldown=0, so approve succeeds instantly)
+    await relay.deactivateTurbo();
+    const id = await relay.submitCommand('echo', ['turbo-cooldown-test'], 'turbo cooldown test');
+    await relay.approve(id);
+    await relay.waitForComplete(id);
+
+    // Now activate turbo with long cooldown — lastApproval is recent, so cooldown kicks in
+    await relay.activateTurbo(5, 30);
+
+    // Submit a pending request so the cooldown bar is visible on its card
+    await relay.submitCommand('echo', ['waiting-in-cooldown'], 'pending during cooldown');
+
+    await openDashboard(page, relay);
+    // Filter to pending only to reduce noise from accumulated requests
+    await page.click('.filters button[data-filter="pending"]');
+    await page.waitForSelector('.cooldown-bar');
+    await expect(page.locator('.cooldown-bar').first()).toBeVisible();
+    await expect(page.locator('.cooldown-label').first()).toBeVisible();
+
+    await expect(page).toHaveScreenshot('turbo-cooldown-bar.png');
+  });
+
+  test('turbo deactivation mid-cooldown', async ({ page, relay }) => {
+    // Approve while turbo is off so cooldown=0 doesn't block
+    await relay.deactivateTurbo();
+    const id = await relay.submitCommand('echo', ['turbo-deactivate-test'], 'turbo deactivate test');
+    await relay.approve(id);
+    await relay.waitForComplete(id);
+
+    // Activate turbo with long cooldown (lastApproval is recent, so cooldown active)
+    await relay.activateTurbo(5, 30);
+
+    // Submit a pending request
+    await relay.submitCommand('echo', ['pending-after-deactivate'], 'pending after deactivate');
+
+    // Deactivate turbo while cooldown is active
+    await relay.deactivateTurbo();
+
+    await openDashboard(page, relay);
+    // After deactivation, turbo button should be back to normal
+    const btn = page.locator('#turboBtn');
+    await expect(btn).toHaveText('Turbo');
+    await expect(btn).not.toHaveClass(/active/);
+
+    // Turbo info should be empty
+    await expect(page.locator('#turboInfo')).toBeEmpty();
+
+    await expect(page).toHaveScreenshot('turbo-deactivated-mid-cooldown.png');
+  });
+
+  test('turbo reactivation mid-cooldown', async ({ page, relay }) => {
+    // Approve while turbo is off so cooldown=0 doesn't block
+    await relay.deactivateTurbo();
+    const id = await relay.submitCommand('echo', ['turbo-reactivate-test'], 'turbo reactivate test');
+    await relay.approve(id);
+    await relay.waitForComplete(id);
+
+    // Activate turbo with long cooldown (lastApproval is recent, so cooldown active)
+    await relay.activateTurbo(5, 30);
+
+    // Submit a pending request
+    await relay.submitCommand('echo', ['pending-reactivate'], 'pending for reactivate');
+
+    // Deactivate then reactivate
+    await relay.deactivateTurbo();
+    await relay.activateTurbo(5, 5);
+
+    await openDashboard(page, relay);
+    // Turbo should be active again
+    const btn = page.locator('#turboBtn');
+    await expect(btn).toHaveText('Turbo ON');
+    await expect(btn).toHaveClass(/active/);
+    await expect(page.locator('#turboInfo')).not.toBeEmpty();
+
+    await expect(page.locator('.status-bar')).toHaveScreenshot('turbo-reactivated.png');
+  });
+
+  test('turbo countdown timer format', async ({ page, relay }) => {
+    await relay.deactivateTurbo();
+    await relay.activateTurbo(5, 5);
+    await openDashboard(page, relay);
+
+    // Verify the turbo timer shows a M:SS format
+    const info = page.locator('#turboInfo');
+    await expect(info).toHaveText(/\d+:\d{2}/);
+
+    await expect(page.locator('.status-bar')).toHaveScreenshot('turbo-countdown-format.png');
   });
 });

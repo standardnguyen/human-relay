@@ -997,6 +997,7 @@ type RequestResult struct {
 	Args           []string    `json:"args"`
 	Reason         string      `json:"reason"`
 	Status         string      `json:"status"`
+	CreatedAt      time.Time   `json:"created_at"`
 	DenyReason     string      `json:"deny_reason"`
 	Result         *ExecResult `json:"result"`
 	StdinLen       int         `json:"stdin_len"`

@@ -320,9 +320,10 @@
     font-weight: 600;
   }
   .btn-approve { background: var(--green); color: #fff; }
+  .btn-approve-wl { background: var(--green); color: #fff; opacity: 0.75; font-size: 0.75rem; }
   .btn-deny { background: var(--red); color: #fff; }
-  .btn-approve:hover { opacity: 0.9; }
-  .btn-approve:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-approve:hover, .btn-approve-wl:hover { opacity: 0.9; }
+  .btn-approve:disabled, .btn-approve-wl:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn-deny:hover { opacity: 0.9; }
   .cooldown-bar {
     height: 3px;
@@ -593,10 +594,23 @@ function render() {
     ? requests.filter(r => r.status === currentFilter)
     : requests;
 
-  // Sort: pending first, then by time ascending (oldest first)
+  // Sort: status-filtered views for complete/denied/error show newest first.
+  // "All" view: pending oldest-first at top, non-pending newest-first after.
+  // Pending/running views: oldest first.
+  const newestFirstStatuses = ['complete', 'denied', 'error'];
   filtered.sort((a, b) => {
-    if (a.status === 'pending' && b.status !== 'pending') return -1;
-    if (b.status === 'pending' && a.status !== 'pending') return 1;
+    if (currentFilter === '' || currentFilter === 'pending' || currentFilter === 'running') {
+      // All/pending/running: pending items first, oldest-to-newest
+      if (a.status === 'pending' && b.status !== 'pending') return -1;
+      if (b.status === 'pending' && a.status !== 'pending') return 1;
+      if (a.status === 'pending' && b.status === 'pending') {
+        return new Date(a.created_at) - new Date(b.created_at);
+      }
+    }
+    if (currentFilter === '' || newestFirstStatuses.includes(currentFilter)) {
+      // Non-pending in "all", or complete/denied/error tabs: newest first
+      return new Date(b.created_at) - new Date(a.created_at);
+    }
     return new Date(a.created_at) - new Date(b.created_at);
   });
 
@@ -656,8 +670,11 @@ function render() {
         ? '<div class="cooldown-bar"><div class="cooldown-bar-fill" style="width:' + pct + '%"></div></div>' +
           '<div class="cooldown-label">' + secs + 's cooldown</div>'
         : '';
+      const wlCmd = escapeHtml(r.command).replace(/'/g, "\\'");
+      const wlArgs = JSON.stringify(r.args || []).replace(/"/g, '&quot;');
       actions = '<div class="actions">' +
         '<button class="btn-approve"' + approveDisabled + ' onclick="approve(\'' + r.id + '\')">Approve</button>' +
+        '<button class="btn-approve-wl"' + approveDisabled + ' onclick="approveAndWhitelist(\'' + r.id + '\',\'' + wlCmd + '\',' + wlArgs + ')">Approve &amp; Whitelist</button>' +
         '<button class="btn-deny" onclick="deny(\'' + r.id + '\')">Deny</button>' +
         '</div>' + cooldownHtml;
     }
@@ -814,6 +831,20 @@ async function approve(id) {
   fetchRequests();
 }
 
+async function approveAndWhitelist(id, command, args) {
+  await fetch('/api/requests/' + id + '/approve', {
+    method: 'POST',
+    headers
+  });
+  await fetch('/api/whitelist', {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command, args: args || [] })
+  });
+  await fetchWhitelist();
+  fetchRequests();
+}
+
 function startCooldownTimer() {
   if (cooldownInterval) clearInterval(cooldownInterval);
   render();
@@ -843,7 +874,8 @@ function updateCooldownDisplay() {
 }
 
 async function deny(id) {
-  const reason = prompt('Deny reason (optional):') || '';
+  const reason = prompt('Deny reason (optional):');
+  if (reason === null) return;
   await fetch('/api/requests/' + id + '/deny', {
     method: 'POST',
     headers,

@@ -177,6 +177,10 @@ export interface RelayHelper {
   deny(requestID: string, reason?: string): Promise<void>;
   /** Add a whitelist rule */
   addWhitelist(command: string, args: string[]): Promise<void>;
+  /** Activate turbo mode */
+  activateTurbo(durationMinutes: number, cooldownSeconds: number): Promise<void>;
+  /** Deactivate turbo mode */
+  deactivateTurbo(): Promise<void>;
   /** Wait for a request to reach a terminal status */
   waitForComplete(requestID: string): Promise<any>;
 }
@@ -230,6 +234,19 @@ export const test = base.extend<{ relay: RelayHelper }>({
       async addWhitelist(command, args) {
         await httpReq('POST', `${webURL}/api/whitelist`,
           { command, args },
+          { Authorization: `Bearer ${TOKEN}` },
+        );
+      },
+
+      async activateTurbo(durationMinutes, cooldownSeconds) {
+        await httpReq('POST', `${webURL}/api/turbocharge`,
+          { duration_minutes: durationMinutes, cooldown_seconds: cooldownSeconds },
+          { Authorization: `Bearer ${TOKEN}` },
+        );
+      },
+
+      async deactivateTurbo() {
+        await httpReq('DELETE', `${webURL}/api/turbocharge`, undefined,
           { Authorization: `Bearer ${TOKEN}` },
         );
       },

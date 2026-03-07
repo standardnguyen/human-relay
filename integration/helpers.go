@@ -51,6 +51,12 @@ func WithCooldown(seconds int) ServerOption {
 	}
 }
 
+func WithWhitelistFile(path string) ServerOption {
+	return func(s *TestServer) {
+		s.env = append(s.env, "MHR_WHITELIST_FILE="+path)
+	}
+}
+
 func StartServer(t *testing.T, opts ...ServerOption) *TestServer {
 	t.Helper()
 	bin := os.Getenv("HUMAN_RELAY_BIN")

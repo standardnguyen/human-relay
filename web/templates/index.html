@@ -235,6 +235,73 @@
     overflow-y: auto;
     color: var(--text);
   }
+  .auto-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(63,185,80,0.2);
+    color: var(--green);
+    margin-left: 0.5rem;
+    font-weight: 600;
+  }
+  .btn-whitelist {
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .btn-whitelist:hover { border-color: var(--green); color: var(--green); }
+  .btn-whitelist.active {
+    background: rgba(63,185,80,0.15);
+    border-color: var(--green);
+    color: var(--green);
+    cursor: default;
+  }
+  .whitelist-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  .whitelist-panel h2 {
+    font-size: 1rem;
+    margin-bottom: 0.75rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .whitelist-panel h2:hover { color: var(--blue); }
+  .wl-rule {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 0.4rem;
+    font-family: monospace;
+    font-size: 0.85rem;
+  }
+  .wl-rule .wl-cmd { flex: 1; word-break: break-all; }
+  .wl-rule .btn-wl-remove {
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--red);
+    cursor: pointer;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .wl-rule .btn-wl-remove:hover { background: rgba(248,81,73,0.15); }
+  .wl-empty { color: var(--text-muted); font-size: 0.85rem; }
   .reason { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem; }
   .reason .toggle-link {
     color: var(--blue);
@@ -317,6 +384,13 @@
   <button data-filter="complete">Complete</button>
   <button data-filter="denied">Denied</button>
   <button data-filter="error">Error</button>
+</div>
+
+<div class="whitelist-panel" id="whitelistPanel" style="display:none">
+  <h2 onclick="toggleWhitelistPanel()"><span id="wlArrow">&#9660;</span> Whitelist Rules</h2>
+  <div id="whitelistBody">
+    <div id="whitelistRules"></div>
+  </div>
 </div>
 
 <div id="requests" class="request-list"></div>
@@ -564,6 +638,13 @@ function render() {
       : '';
     const cardClass = 'request-card ' + r.status + (isShellPending ? ' shell-warn' : '');
 
+    const wlMatch = isWhitelisted(r.command, r.args);
+    const wlBtnHtml = r.status !== 'pending'
+      ? (wlMatch
+        ? '<button class="btn-whitelist active" disabled>Whitelisted</button>'
+        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + escapeHtml(r.command).replace(/'/g, "\\'") + '\',' + JSON.stringify(r.args || []) + ')">Whitelist</button>')
+      : '';
+
     let actions = '';
     if (r.status === 'pending') {
       const inCooldown = Date.now() < cooldownUntil;
@@ -613,8 +694,74 @@ function render() {
       <div class="meta">${formatTime(r.created_at)}</div>
       ${actions}
       ${output}
+      ${wlBtnHtml ? '<div style="margin-top:0.5rem">' + wlBtnHtml + '</div>' : ''}
     </div>`;
   }).join('');
+}
+
+// Whitelist management
+let whitelistRules = [];
+let wlPanelOpen = true;
+
+async function fetchWhitelist() {
+  try {
+    const resp = await fetch('/api/whitelist', { headers });
+    if (resp.ok) {
+      whitelistRules = await resp.json();
+      renderWhitelist();
+    }
+  } catch(e) { console.error('whitelist fetch:', e); }
+}
+
+function isWhitelisted(command, args) {
+  return whitelistRules.some(r =>
+    r.command === command &&
+    JSON.stringify(r.args || []) === JSON.stringify(args || [])
+  );
+}
+
+function renderWhitelist() {
+  const panel = document.getElementById('whitelistPanel');
+  const el = document.getElementById('whitelistRules');
+  if (whitelistRules.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+  el.innerHTML = whitelistRules.map((r, i) => {
+    const cmd = escapeHtml(r.command);
+    const args = (r.args || []).map(a => '<span class="arg-token">' + escapeHtml(a) + '</span>').join(' ');
+    return '<div class="wl-rule"><span class="wl-cmd"><span class="cmd-token">' + cmd + '</span> ' + args + '</span>' +
+      '<button class="btn-wl-remove" onclick="removeWhitelist(' + i + ')">Remove</button></div>';
+  }).join('');
+}
+
+function toggleWhitelistPanel() {
+  const body = document.getElementById('whitelistBody');
+  const arrow = document.getElementById('wlArrow');
+  wlPanelOpen = !wlPanelOpen;
+  body.style.display = wlPanelOpen ? '' : 'none';
+  arrow.innerHTML = wlPanelOpen ? '&#9660;' : '&#9654;';
+}
+
+async function addWhitelist(command, args) {
+  await fetch('/api/whitelist', {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command, args: args || [] })
+  });
+  fetchWhitelist();
+}
+
+async function removeWhitelist(index) {
+  const rule = whitelistRules[index];
+  if (!rule) return;
+  await fetch('/api/whitelist/remove', {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command: rule.command, args: rule.args || [] })
+  });
+  fetchWhitelist();
 }
 
 async function fetchRequests() {
@@ -755,6 +902,7 @@ function connectSSE() {
   };
   es.onmessage = (e) => {
     fetchRequests();
+    fetchWhitelist();
   };
   es.onerror = () => {
     dot.classList.add('disconnected');
@@ -794,6 +942,7 @@ render = function() {
 };
 
 fetchRequests();
+fetchWhitelist();
 connectSSE();
 </script>
 

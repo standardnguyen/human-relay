@@ -53,8 +53,9 @@ async function startRelay(): Promise<ServerInfo> {
   const bin = process.env.HUMAN_RELAY_BIN;
   if (!bin) throw new Error('HUMAN_RELAY_BIN not set');
 
-  const mcpPort = 38080 + (process.pid % 1000);
-  const webPort = 38090 + (process.pid % 1000);
+  // Use fixed ports to avoid conflicts with orphaned processes
+  const mcpPort = 38080;
+  const webPort = 38090;
   const dataDir = mkdtempSync(join(tmpdir(), 'pw-relay-'));
 
   // Write empty whitelist
@@ -77,12 +78,17 @@ async function startRelay(): Promise<ServerInfo> {
 
   // Wait for ready
   const deadline = Date.now() + 10_000;
+  let started = false;
   while (Date.now() < deadline) {
     try {
       const r = await httpReq('GET', `http://127.0.0.1:${webPort}/`);
-      if (r.status === 200) break;
+      if (r.status === 200) { started = true; break; }
     } catch {}
     await new Promise(r => setTimeout(r, 100));
+  }
+  if (!started) {
+    proc.kill();
+    throw new Error(`Server failed to start on port ${webPort} within 10s`);
   }
 
   return { mcpPort, webPort, token: TOKEN, dataDir, proc };
@@ -120,15 +126,18 @@ async function mcpCall(method: string, params?: any): Promise<any> {
   const id = nextCallID();
   const body = { jsonrpc: '2.0', id, method, params };
   const url = `http://127.0.0.1:${server!.mcpPort}${sseSessionID}`;
-  await httpReq('POST', url, body);
 
-  // Wait for response via SSE
-  return new Promise((resolve, reject) => {
+  // Set up the SSE waiter BEFORE sending the request to avoid a race where
+  // the SSE response arrives before httpReq resolves and the waiter is added.
+  const responsePromise = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`MCP timeout for ${method}`)), 15_000);
     sseEventCh.push({
       resolve: (v: any) => { clearTimeout(timer); resolve(v); },
     });
   });
+
+  await httpReq('POST', url, body);
+  return responsePromise;
 }
 
 async function mcpNotify(method: string, params?: any): Promise<void> {
@@ -136,6 +145,25 @@ async function mcpNotify(method: string, params?: any): Promise<void> {
   const url = `http://127.0.0.1:${server!.mcpPort}${sseSessionID}`;
   await httpReq('POST', url, body);
 }
+
+function killServer() {
+  if (server) {
+    server.proc.kill('SIGKILL');
+    server = null;
+  }
+  if (sseResp) {
+    sseResp.destroy();
+    sseResp = null;
+  }
+  sseSessionID = null;
+  sseEventCh = [];
+  callID = 1;
+}
+
+// Ensure cleanup on exit
+process.on('exit', killServer);
+process.on('SIGINT', () => { killServer(); process.exit(1); });
+process.on('SIGTERM', () => { killServer(); process.exit(1); });
 
 export interface RelayHelper {
   token: string;

@@ -216,9 +216,10 @@ func TestWriteFileHostTarget(t *testing.T) {
 		t.Errorf("expected command ssh, got %s", found.Command)
 	}
 
-	// Should be: ssh root@192.168.10.50 -- sh -c 'cat > '/opt/grafana/prometheus.yml' && chmod 0644 '/opt/grafana/prometheus.yml''
-	if len(found.Args) < 4 {
-		t.Fatalf("expected at least 4 args, got %d: %v", len(found.Args), found.Args)
+	// Should be: ssh root@192.168.10.50 -- "cat > '/opt/grafana/prometheus.yml' && chmod 0644 '/opt/grafana/prometheus.yml'"
+	// (no sh -c: SSH passes the command through the remote shell directly)
+	if len(found.Args) != 3 {
+		t.Fatalf("expected 3 args, got %d: %v", len(found.Args), found.Args)
 	}
 	if found.Args[0] != "root@192.168.10.50" {
 		t.Errorf("expected first arg root@192.168.10.50, got %s", found.Args[0])
@@ -226,21 +227,12 @@ func TestWriteFileHostTarget(t *testing.T) {
 	if found.Args[1] != "--" {
 		t.Errorf("expected second arg --, got %s", found.Args[1])
 	}
-	if found.Args[2] != "sh" {
-		t.Errorf("expected third arg sh, got %s", found.Args[2])
+	shellCmd := found.Args[2]
+	if !strings.Contains(shellCmd, "cat >") {
+		t.Errorf("expected 'cat >' in shell cmd, got %s", shellCmd)
 	}
-	if found.Args[3] != "-c" {
-		t.Errorf("expected fourth arg -c, got %s", found.Args[3])
-	}
-	// The shell command should contain cat > and chmod
-	if len(found.Args) > 4 {
-		shellCmd := found.Args[4]
-		if !strings.Contains(shellCmd, "cat >") {
-			t.Errorf("expected 'cat >' in shell cmd, got %s", shellCmd)
-		}
-		if !strings.Contains(shellCmd, "chmod 0644") {
-			t.Errorf("expected 'chmod 0644' in shell cmd, got %s", shellCmd)
-		}
+	if !strings.Contains(shellCmd, "chmod 0644") {
+		t.Errorf("expected 'chmod 0644' in shell cmd, got %s", shellCmd)
 	}
 
 	// Reason should contain file info and content preview
@@ -416,7 +408,8 @@ func TestWriteFileDefaultMode(t *testing.T) {
 	found := findRequestByID(t, c, 3, wfr.RequestID)
 
 	// Shell cmd should contain chmod 0644 (default)
-	shellCmd := found.Args[4]
+	// Args: [root@host, --, shellCmd]
+	shellCmd := found.Args[2]
 	if !strings.Contains(shellCmd, "chmod 0644") {
 		t.Errorf("expected 'chmod 0644' (default mode) in shell cmd, got %s", shellCmd)
 	}
@@ -444,7 +437,8 @@ func TestWriteFileExecutableMode(t *testing.T) {
 	wfr := extractWriteFileResponse(t, resp)
 	found := findRequestByID(t, c, 3, wfr.RequestID)
 
-	shellCmd := found.Args[4]
+	// Args: [root@host, --, shellCmd]
+	shellCmd := found.Args[2]
 	if !strings.Contains(shellCmd, "chmod 0755") {
 		t.Errorf("expected 'chmod 0755' in shell cmd, got %s", shellCmd)
 	}

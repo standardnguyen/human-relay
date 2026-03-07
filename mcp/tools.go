@@ -192,14 +192,29 @@ var ToolDefinitions = []Tool{
 }
 
 type ToolHandler struct {
-	store      *store.Store
-	containers *containers.Store
-	hostIP     string
-	audit      *audit.Logger
+	store         *store.Store
+	containers    *containers.Store
+	hostIP        string
+	audit         *audit.Logger
+	sshConfigFile string
 }
 
 func NewToolHandler(s *store.Store, cs *containers.Store, hostIP string, al *audit.Logger) *ToolHandler {
 	return &ToolHandler{store: s, containers: cs, hostIP: hostIP, audit: al}
+}
+
+// SetSSHConfig sets a custom SSH config file path. When set, all internally-
+// constructed SSH commands will include -F <path>.
+func (h *ToolHandler) SetSSHConfig(path string) {
+	h.sshConfigFile = path
+}
+
+// sshPrefix returns the args to prepend before SSH arguments (e.g. ["-F", "/path/to/config"]).
+func (h *ToolHandler) sshPrefix() []string {
+	if h.sshConfigFile != "" {
+		return []string{"-F", h.sshConfigFile}
+	}
+	return nil
 }
 
 func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallToolResult {
@@ -412,29 +427,31 @@ func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult
 	}
 
 	// Build the SSH command
-	var sshArgs []string
+	sshArgs := append([]string{}, h.sshPrefix()...)
 	if c.HasRelaySSH {
-		// Direct SSH to container
+		// Direct SSH to container — SSH passes remote args to the remote
+		// login shell, so we don't need sh -c for shell mode.
 		sshArgs = append(sshArgs, fmt.Sprintf("root@%s", c.IP), "--")
 		if shell {
 			full := command
 			for _, a := range cmdArgs {
 				full += " " + a
 			}
-			sshArgs = append(sshArgs, "sh", "-c", full)
+			sshArgs = append(sshArgs, full)
 		} else {
 			sshArgs = append(sshArgs, command)
 			sshArgs = append(sshArgs, cmdArgs...)
 		}
 	} else {
-		// Fallback: SSH to host, then pct exec
+		// Fallback: SSH to host, then pct exec. Shell-quote the command
+		// so the host's shell passes it intact to pct exec → container.
 		sshArgs = append(sshArgs, fmt.Sprintf("root@%s", h.hostIP), "pct", "exec", fmt.Sprintf("%d", ctid), "--")
 		if shell {
 			full := command
 			for _, a := range cmdArgs {
 				full += " " + a
 			}
-			sshArgs = append(sshArgs, "sh", "-c", full)
+			sshArgs = append(sshArgs, "sh", "-c", shellQuote(full))
 		} else {
 			sshArgs = append(sshArgs, command)
 			sshArgs = append(sshArgs, cmdArgs...)
@@ -534,6 +551,7 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 		timeout = int(t)
 	}
 
+	pfx := h.sshPrefix()
 	var sshArgs []string
 	var target string
 	var route string
@@ -551,19 +569,19 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 		if c.HasRelaySSH {
 			route = "direct_ssh"
 			shellCmd := fmt.Sprintf("cat > %s && chmod %s %s", shellQuote(path), mode, shellQuote(path))
-			sshArgs = []string{fmt.Sprintf("root@%s", c.IP), "--", "sh", "-c", shellCmd}
+			sshArgs = append(pfx, fmt.Sprintf("root@%s", c.IP), "--", shellCmd)
 		} else {
 			route = "pct_push"
 			tmpFile := fmt.Sprintf("/tmp/mhr-%d", time.Now().UnixNano())
 			shellCmd := fmt.Sprintf("cat > %s && pct push %d %s %s && pct exec %d -- chmod %s %s && rm %s",
 				tmpFile, c.CTID, tmpFile, shellQuote(path), c.CTID, mode, shellQuote(path), tmpFile)
-			sshArgs = []string{fmt.Sprintf("root@%s", h.hostIP), "--", "sh", "-c", shellCmd}
+			sshArgs = append(pfx, fmt.Sprintf("root@%s", h.hostIP), "--", "sh", "-c", shellCmd)
 		}
 	} else {
 		target = host
 		route = "direct_ssh"
 		shellCmd := fmt.Sprintf("cat > %s && chmod %s %s", shellQuote(path), mode, shellQuote(path))
-		sshArgs = []string{fmt.Sprintf("root@%s", host), "--", "sh", "-c", shellCmd}
+		sshArgs = append(pfx, fmt.Sprintf("root@%s", host), "--", shellCmd)
 	}
 
 	// Build content preview for the human reviewer

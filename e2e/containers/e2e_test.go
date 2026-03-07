@@ -151,11 +151,12 @@ func mustGetwd() string {
 // --- Test server helpers (adapted from integration/) ---
 
 type testServer struct {
-	cmd     *exec.Cmd
-	mcpPort int
-	webPort int
-	token   string
-	dataDir string
+	cmd           *exec.Cmd
+	mcpPort       int
+	webPort       int
+	token         string
+	dataDir       string
+	sshConfigPath string
 }
 
 func startServer(t *testing.T, extraEnv ...string) *testServer {
@@ -166,11 +167,13 @@ func startServer(t *testing.T, extraEnv ...string) *testServer {
 	webPort := 29090 + os.Getpid()%1000
 	dataDir := t.TempDir()
 
+	sshConfigPath := filepath.Join(dataDir, "ssh_config")
 	s := &testServer{
-		mcpPort: mcpPort,
-		webPort: webPort,
-		token:   testToken,
-		dataDir: dataDir,
+		mcpPort:       mcpPort,
+		webPort:       webPort,
+		token:         testToken,
+		dataDir:       dataDir,
+		sshConfigPath: sshConfigPath,
 	}
 
 	// Write an SSH config that uses our ephemeral key
@@ -180,18 +183,7 @@ func startServer(t *testing.T, extraEnv ...string) *testServer {
   UserKnownHostsFile /dev/null
   LogLevel ERROR
 `, env.keyFile)
-	sshConfigPath := filepath.Join(dataDir, "ssh_config")
 	os.WriteFile(sshConfigPath, []byte(sshConfig), 0644)
-
-	// Set up HOME/.ssh so the relay's ssh commands use our ephemeral key
-	sshDir := filepath.Join(dataDir, ".ssh")
-	os.MkdirAll(sshDir, 0700)
-	os.WriteFile(filepath.Join(sshDir, "config"), []byte(sshConfig), 0600)
-	// Copy the key (symlinks can have permission issues with ssh)
-	keyData, _ := os.ReadFile(env.keyFile)
-	os.WriteFile(filepath.Join(sshDir, "id_ed25519"), keyData, 0600)
-	pubData, _ := os.ReadFile(env.keyFile + ".pub")
-	os.WriteFile(filepath.Join(sshDir, "id_ed25519.pub"), pubData, 0644)
 
 	s.cmd = exec.Command(bin)
 	s.cmd.Env = append(os.Environ(),
@@ -199,11 +191,11 @@ func startServer(t *testing.T, extraEnv ...string) *testServer {
 		fmt.Sprintf("MHR_WEB_PORT=%d", webPort),
 		fmt.Sprintf("MHR_AUTH_TOKEN=%s", testToken),
 		fmt.Sprintf("MHR_DATA_DIR=%s", dataDir),
+		fmt.Sprintf("MHR_SSH_CONFIG=%s", sshConfigPath),
 		"MHR_HOST_IP=192.168.10.50",
 		"MHR_DEFAULT_TIMEOUT=10",
 		"MHR_MAX_TIMEOUT=30",
 		"MHR_APPROVAL_COOLDOWN=0",
-		fmt.Sprintf("HOME=%s", dataDir),
 	)
 	s.cmd.Env = append(s.cmd.Env, extraEnv...)
 

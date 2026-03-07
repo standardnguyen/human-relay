@@ -261,11 +261,11 @@ func TestWhitelistAutoApprovesContainerExec(t *testing.T) {
 	registerNode(t, c, 9001, env.nodes[0].ip, "test-node-1", 100)
 
 	// The exec_container for "hostname" on node1 translates to:
-	//   ssh root@<ip> -- hostname
+	//   ssh -F <config> root@<ip> -- hostname
 	// Whitelist that exact command.
 	code, _ := webPost(t, s.webURL()+"/api/whitelist", s.token, map[string]interface{}{
 		"command": "ssh",
-		"args":    []string{fmt.Sprintf("root@%s", env.nodes[0].ip), "--", "hostname"},
+		"args":    []string{"-F", s.sshConfigPath, fmt.Sprintf("root@%s", env.nodes[0].ip), "--", "hostname"},
 	})
 	if code != 200 {
 		t.Fatalf("whitelist add returned %d", code)
@@ -319,7 +319,7 @@ func TestRequestCommandDirectSSH(t *testing.T) {
 		"name": "request_command",
 		"arguments": map[string]interface{}{
 			"command": "ssh",
-			"args":    []string{fmt.Sprintf("root@%s", env.nodes[0].ip), "uname", "-s"},
+			"args":    []string{"-F", s.sshConfigPath, fmt.Sprintf("root@%s", env.nodes[0].ip), "uname", "-s"},
 			"reason":  "test direct ssh",
 		},
 	})

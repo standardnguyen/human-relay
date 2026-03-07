@@ -236,8 +236,9 @@ func TestExecContainerShellMode(t *testing.T) {
 
 	reqID := resp["request_id"].(string)
 	req := h.store.Get(reqID)
-	// Should be: ssh root@192.168.10.90 -- sh -c "cat /etc/hostname | head -1"
-	expected := []string{"root@192.168.10.90", "--", "sh", "-c", "cat /etc/hostname | head -1"}
+	// Should be: ssh root@192.168.10.90 -- "cat /etc/hostname | head -1"
+	// (no sh -c: SSH passes args to the remote shell directly)
+	expected := []string{"root@192.168.10.90", "--", "cat /etc/hostname | head -1"}
 	if len(req.Args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(req.Args), req.Args)
 	}

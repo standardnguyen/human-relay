@@ -416,9 +416,10 @@ func TestExecContainerShellMode(t *testing.T) {
 
 	er := extractExecResponse(t, resp)
 
-	// Verify SSH args: ssh root@192.168.10.90 -- sh -c "cat /etc/hostname | head -1"
+	// Verify SSH args: ssh root@192.168.10.90 -- "cat /etc/hostname | head -1"
+	// (no sh -c: SSH passes args to the remote shell directly)
 	found := findRequestByID(t, c, 4, er.RequestID)
-	assertArgs(t, found.Args, []string{"root@192.168.10.90", "--", "sh", "-c", "cat /etc/hostname | head -1"})
+	assertArgs(t, found.Args, []string{"root@192.168.10.90", "--", "cat /etc/hostname | head -1"})
 
 	WebPost(t,
 		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), er.RequestID),
@@ -497,9 +498,9 @@ func TestExecContainerPctExecShellMode(t *testing.T) {
 		t.Errorf("expected route pct_exec, got %s", er.Route)
 	}
 
-	// Verify: ssh root@192.168.10.50 pct exec 133 -- sh -c "ls -la /opt"
+	// Verify: ssh root@192.168.10.50 pct exec 133 -- sh -c 'ls -la /opt'
 	found := findRequestByID(t, c, 4, er.RequestID)
-	assertArgs(t, found.Args, []string{"root@192.168.10.50", "pct", "exec", "133", "--", "sh", "-c", "ls -la /opt"})
+	assertArgs(t, found.Args, []string{"root@192.168.10.50", "pct", "exec", "133", "--", "sh", "-c", "'ls -la /opt'"})
 
 	WebPost(t,
 		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), er.RequestID),

@@ -310,6 +310,8 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Send an initial comment so EventSource fires onopen in all browsers
+	fmt.Fprintf(w, ": connected\n\n")
 	flusher.Flush()
 
 	ctx := r.Context()

@@ -386,8 +386,8 @@
   <button data-filter="error">Error</button>
 </div>
 
-<div class="whitelist-panel" id="whitelistPanel" style="display:none">
-  <h2 onclick="toggleWhitelistPanel()"><span id="wlArrow">&#9660;</span> Whitelist Rules</h2>
+<div class="whitelist-panel" id="whitelistPanel">
+  <h2 onclick="toggleWhitelistPanel()"><span id="wlArrow">&#9660;</span> Whitelist Rules <span id="wlCount" style="font-size:0.8rem;color:var(--text-muted);font-weight:400"></span></h2>
   <div id="whitelistBody">
     <div id="whitelistRules"></div>
   </div>
@@ -721,13 +721,13 @@ function isWhitelisted(command, args) {
 }
 
 function renderWhitelist() {
-  const panel = document.getElementById('whitelistPanel');
   const el = document.getElementById('whitelistRules');
+  const countEl = document.getElementById('wlCount');
+  countEl.textContent = whitelistRules.length > 0 ? '(' + whitelistRules.length + ')' : '';
   if (whitelistRules.length === 0) {
-    panel.style.display = 'none';
+    el.innerHTML = '<div class="wl-empty">No whitelisted commands. Use the "Whitelist" button on a completed request to auto-approve it next time.</div>';
     return;
   }
-  panel.style.display = '';
   el.innerHTML = whitelistRules.map((r, i) => {
     const cmd = escapeHtml(r.command);
     const args = (r.args || []).map(a => '<span class="arg-token">' + escapeHtml(a) + '</span>').join(' ');
@@ -745,17 +745,26 @@ function toggleWhitelistPanel() {
 }
 
 async function addWhitelist(command, args) {
-  await fetch('/api/whitelist', {
+  const argsStr = (args || []).length ? ' ' + (args || []).join(' ') : '';
+  if (!confirm('Whitelist this command for auto-approval?\n\n' + command + argsStr)) return;
+  const resp = await fetch('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ command, args: args || [] })
   });
-  fetchWhitelist();
+  if (resp.ok) {
+    await fetchWhitelist();
+    render();
+    // Open panel and scroll to it so user sees the new rule
+    if (!wlPanelOpen) toggleWhitelistPanel();
+    document.getElementById('whitelistPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }
 
 async function removeWhitelist(index) {
   const rule = whitelistRules[index];
   if (!rule) return;
+  if (!confirm('Remove this whitelist rule?')) return;
   await fetch('/api/whitelist/remove', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },

@@ -10,6 +10,68 @@
 ```
 --- SESSION LOG START ---
 
+## Run 1: Initial assessment
+- Checked out scratch/autonomous-task, read AUTONOMOUS-TASK.md
+- Read dashboard.spec.ts, fixtures.ts, index.html, mcp/server.go
+- Installed Go 1.24.0, Node 20.x, Playwright browsers (fresh container)
+
+## Run 2: First test run (no changes yet)
+- 7 failures: 5 MCP timeouts + 2 whitelist button timeouts
+- MCP timeouts were NOT in the original 6 failures — new issue caused by race condition
+
+## Root cause analysis
+
+### Bug 1: Whitelist button onclick (genuine frontend bug in index.html:645)
+The `onclick` attribute for the Whitelist button embeds `JSON.stringify(r.args || [])`
+directly inside a double-quoted HTML attribute. JSON.stringify produces `["arg"]` with
+double quotes that break the attribute boundary. The browser parses
+`onclick="addWhitelist('echo',["arg"])"` incorrectly — the `"` in `["` ends the attribute.
+
+Fix: `.replace(/"/g, '&quot;')` on the JSON.stringify output. The browser decodes
+`&quot;` back to `"` before executing the JS. Note: `escapeHtml()` does NOT escape `"`
+(it uses textContent/innerHTML which only escapes <, >, &).
+
+### Bug 2: MCP SSE race condition (fixtures.ts:mcpCall)
+`mcpCall` did `await httpReq('POST', ...)` then set up the SSE waiter. But the server
+sends the SSE response almost immediately after processing the request. If the SSE
+`data` event arrives before `httpReq` resolves (same event loop tick), the handler finds
+no waiter in the queue, the response is lost, and the call times out.
+
+Fix: Set up the SSE waiter BEFORE sending the HTTP POST. The Promise executor runs
+synchronously, so the waiter is in the queue before any I/O happens.
+
+### Bug 3: Deny reason locator strict mode (dashboard.spec.ts:190)
+`page.locator('.deny-reason').toContainText(...)` fails with strict mode violation
+because accumulated state means 3 deny-reason elements exist. Fix: use
+`{ hasText: 'rejected via UI test' }` filter to scope to the specific element.
+
+## Changes made
+
+### web/templates/index.html (line 645)
+- `JSON.stringify(r.args || [])` → `JSON.stringify(r.args || []).replace(/"/g, '&quot;')`
+
+### e2e/frontend/tests/fixtures.ts (mcpCall function)
+- Moved SSE waiter setup BEFORE `await httpReq('POST', ...)` to prevent race
+
+### e2e/frontend/tests/dashboard.spec.ts
+- Line 142: Replaced `waitForTimeout(500)` + `expect(.btn-whitelist.active).toBeVisible()`
+  with `waitForSelector('.btn-whitelist.active', { timeout: 5000 })`
+- Line 190: Changed `.locator('.deny-reason').toContainText(...)` to
+  `.locator('.deny-reason', { hasText: 'rejected via UI test' }).toBeVisible()`
+
+### Golden screenshots
+- Regenerated all 40 screenshots via `make test-e2e-frontend-update`
+
+## Final verification
+
+### Playwright e2e: 42 passed (44.0s)
+  21 chromium + 21 firefox, all green
+
+### Go tests: 75 passed (21.6s)
+  Unit (whitelist + mcp) + integration, all green
+
+## Commit
+SHA: 1bdecc8 on scratch/autonomous-task
 
 --- SESSION LOG END ---
 ```

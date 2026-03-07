@@ -144,6 +144,8 @@ Features:
 - 30-second cooldown between approvals (prevents reflexive clicking)
 - Turbocharge mode to temporarily reduce cooldown during batch operations
 - Browser notifications for new requests
+- Command whitelist with auto-approval for trusted command+args patterns
+- Collapsible whitelist panel; one-click "Whitelist" button on completed requests
 
 ## Configuration
 
@@ -156,8 +158,10 @@ Features:
 | `MHR_MAX_TIMEOUT` | `300` | Maximum allowed timeout |
 | `MHR_APPROVAL_COOLDOWN` | `30` | Seconds between approvals (0 to disable) |
 | `MHR_ALLOWED_DIRS` | (none) | Comma-separated allowed working directories |
-| `MHR_DATA_DIR` | `/opt/human-relay/data` | Persistent data directory (audit log, container registry) |
+| `MHR_DATA_DIR` | `/opt/human-relay/data` | Persistent data directory (audit log, container registry, whitelist, SSH known hosts) |
 | `MHR_HOST_IP` | (none) | Fallback host IP for `exec_container` routing when direct SSH is unavailable |
+| `MHR_WHITELIST_FILE` | `<data_dir>/whitelist.json` | Path to whitelist rules file; matching commands are auto-approved |
+| `MHR_SSH_CONFIG` | (none) | Path to custom SSH config; prepends `-F <path>` to all SSH commands |
 
 ## Security
 
@@ -178,7 +182,7 @@ Human Relay is designed for **private networks**. It is not suitable for public 
 
 - No TLS (use a reverse proxy)
 - No per-user auth (single shared token)
-- No command allowlist (the human is the filter)
+- Whitelist is exact-match only (no glob/regex patterns)
 - SSE metadata endpoint is unauthenticated (EventSource can't set headers)
 
 ## Development
@@ -204,6 +208,7 @@ human-relay/
 ├── store/               # In-memory request queue
 ├── containers/          # JSON-backed container/host registry
 ├── executor/            # Command execution (timeout, output capping)
+├── whitelist/           # JSON-backed command whitelist (exact match)
 ├── web/                 # Dashboard HTTP handlers, SSE, auth
 │   └── templates/       # Single-page dashboard (vanilla JS)
 ├── integration/         # Integration test suite

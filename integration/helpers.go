@@ -288,6 +288,21 @@ func WebGetResp(t *testing.T, url, token string) *http.Response {
 	return resp
 }
 
+func WebDelete(t *testing.T, url, token string) (int, []byte) {
+	t.Helper()
+	req, _ := http.NewRequest("DELETE", url, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("web DELETE failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, body
+}
+
 func WebPost(t *testing.T, url, token string, payload interface{}) (int, []byte) {
 	t.Helper()
 	var body io.Reader

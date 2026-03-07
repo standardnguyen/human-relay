@@ -801,7 +801,7 @@ async function fetchRequests() {
       if (cdMs > 0) {
         cooldownUntil = Date.now() + cdMs;
         startCooldownTimer();
-      } else if (cooldownUntil > 0 && Date.now() >= cooldownUntil) {
+      } else {
         cooldownUntil = 0;
       }
       // Sync turbo state from headers

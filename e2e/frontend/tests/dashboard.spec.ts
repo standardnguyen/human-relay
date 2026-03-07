@@ -132,6 +132,10 @@ test.describe('Whitelist Panel', () => {
     await relay.waitForComplete(id);
 
     await openDashboard(page, relay);
+    // Auto-accept the confirm dialog that addWhitelist() triggers
+    page.on('dialog', async (dialog) => {
+      await dialog.accept();
+    });
     // Find the whitelist button for this specific command and click it
     const btn = page.locator('.btn-whitelist:not(.active)').first();
     await btn.click();

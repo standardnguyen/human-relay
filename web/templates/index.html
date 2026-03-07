@@ -745,17 +745,23 @@ function toggleWhitelistPanel() {
 }
 
 async function addWhitelist(command, args) {
-  await fetch('/api/whitelist', {
+  const argsStr = (args || []).length ? ' ' + (args || []).join(' ') : '';
+  if (!confirm('Whitelist this command for auto-approval?\n\n' + command + argsStr)) return;
+  const resp = await fetch('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ command, args: args || [] })
   });
-  fetchWhitelist();
+  if (resp.ok) {
+    fetchWhitelist();
+    render();
+  }
 }
 
 async function removeWhitelist(index) {
   const rule = whitelistRules[index];
   if (!rule) return;
+  if (!confirm('Remove this whitelist rule?')) return;
   await fetch('/api/whitelist/remove', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },

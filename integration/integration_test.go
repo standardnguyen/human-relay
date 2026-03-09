@@ -934,6 +934,52 @@ func TestDashboardBase64DecodeFeature(t *testing.T) {
 	}
 }
 
+func TestDashboardWhitelistFilter(t *testing.T) {
+	s := StartServer(t)
+
+	code, body := WebGet(t, s.WebURL()+"/", "")
+	if code != 200 {
+		t.Fatalf("expected 200, got %d", code)
+	}
+
+	html := string(body)
+
+	// Verify the whitelist filter button is in the filter bar
+	if !strings.Contains(html, `data-filter="whitelist"`) {
+		t.Error("expected dashboard HTML to contain whitelist filter button")
+	}
+	if !strings.Contains(html, "filter-whitelist") {
+		t.Error("expected dashboard HTML to contain filter-whitelist CSS class")
+	}
+
+	// Verify the filter divider separating whitelist from status filters
+	if !strings.Contains(html, "filter-divider") {
+		t.Error("expected dashboard HTML to contain filter-divider")
+	}
+
+	// Verify whitelist view rendering functions
+	for _, fn := range []string{"renderWhitelistView", "updateWhitelistCount", "fetchWhitelist"} {
+		if !strings.Contains(html, fn) {
+			t.Errorf("expected dashboard HTML to contain function %q", fn)
+		}
+	}
+
+	// Verify whitelist rule CSS classes
+	for _, cls := range []string{".wl-rule", ".wl-cmd", ".btn-wl-remove", ".filter-divider"} {
+		if !strings.Contains(html, cls) {
+			t.Errorf("expected dashboard HTML to contain CSS class %q", cls)
+		}
+	}
+
+	// Verify the old whitelist panel is gone
+	if strings.Contains(html, "whitelistPanel") {
+		t.Error("expected old whitelistPanel element to be removed")
+	}
+	if strings.Contains(html, "toggleWhitelistPanel") {
+		t.Error("expected old toggleWhitelistPanel function to be removed")
+	}
+}
+
 func TestBase64CommandPreserved(t *testing.T) {
 	s := StartServer(t)
 	c := NewMCPClient(t, s.MCPURL())

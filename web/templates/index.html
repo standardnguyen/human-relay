@@ -246,6 +246,34 @@
     margin-left: 0.5rem;
     font-weight: 600;
   }
+  .filter-divider {
+    width: 1px;
+    height: 1.2rem;
+    background: var(--border);
+    align-self: center;
+  }
+  .filter-whitelist {
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .filter-whitelist:hover { border-color: var(--green); color: var(--green); }
+  .filter-whitelist.active {
+    background: rgba(63,185,80,0.2);
+    color: var(--green);
+    border-color: var(--green);
+  }
+  .filter-whitelist #wlCount {
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: inherit;
+  }
   .btn-whitelist {
     padding: 0.3rem 0.8rem;
     border: 1px solid var(--border);
@@ -264,20 +292,6 @@
     color: var(--green);
     cursor: default;
   }
-  .whitelist-panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 1rem;
-    margin-bottom: 1rem;
-  }
-  .whitelist-panel h2 {
-    font-size: 1rem;
-    margin-bottom: 0.75rem;
-    cursor: pointer;
-    user-select: none;
-  }
-  .whitelist-panel h2:hover { color: var(--blue); }
   .wl-rule {
     display: flex;
     align-items: center;
@@ -387,13 +401,8 @@
   <button data-filter="complete">Complete</button>
   <button data-filter="denied">Denied</button>
   <button data-filter="error">Error</button>
-</div>
-
-<div class="whitelist-panel" id="whitelistPanel">
-  <h2 onclick="toggleWhitelistPanel()"><span id="wlArrow">&#9660;</span> Whitelist Rules <span id="wlCount" style="font-size:0.8rem;color:var(--text-muted);font-weight:400"></span></h2>
-  <div id="whitelistBody">
-    <div id="whitelistRules"></div>
-  </div>
+  <span class="filter-divider"></span>
+  <button class="filter-whitelist" data-filter="whitelist">Whitelist <span id="wlCount"></span></button>
 </div>
 
 <div id="requests" class="request-list"></div>
@@ -596,6 +605,12 @@ function toggleTruncate(id) {
 
 function render() {
   const el = document.getElementById('requests');
+
+  if (currentFilter === 'whitelist') {
+    renderWhitelistView(el);
+    return;
+  }
+
   const filtered = (currentFilter
     ? requests.filter(r => r.status === currentFilter)
     : requests
@@ -740,14 +755,14 @@ function render() {
 
 // Whitelist management
 let whitelistRules = [];
-let wlPanelOpen = true;
 
 async function fetchWhitelist() {
   try {
     const resp = await fetch('/api/whitelist', { headers });
     if (resp.ok) {
       whitelistRules = await resp.json();
-      renderWhitelist();
+      updateWhitelistCount();
+      if (currentFilter === 'whitelist') render();
     }
   } catch(e) { console.error('whitelist fetch:', e); }
 }
@@ -759,12 +774,19 @@ function isWhitelisted(command, args) {
   );
 }
 
-function renderWhitelist() {
-  const el = document.getElementById('whitelistRules');
+function updateWhitelistCount() {
   const countEl = document.getElementById('wlCount');
   countEl.textContent = whitelistRules.length > 0 ? '(' + whitelistRules.length + ')' : '';
+}
+
+function renderWhitelistView(el) {
+  // Update count badge and pending count in status bar
+  const pending = requests.filter(r => r.status === 'pending').length;
+  document.getElementById('requestCount').textContent =
+    pending > 0 ? pending + ' pending' : requests.length + ' total';
+
   if (whitelistRules.length === 0) {
-    el.innerHTML = '<div class="wl-empty">No whitelisted commands. Use the "Whitelist" button on a completed request to auto-approve it next time.</div>';
+    el.innerHTML = '<div class="empty">No whitelisted commands.<br>Use the "Whitelist" button on a completed request to auto-approve it next time.</div>';
     return;
   }
   el.innerHTML = whitelistRules.map((r, i) => {
@@ -773,14 +795,6 @@ function renderWhitelist() {
     return '<div class="wl-rule"><span class="wl-cmd"><span class="cmd-token">' + cmd + '</span> ' + args + '</span>' +
       '<button class="btn-wl-remove" onclick="removeWhitelist(' + i + ')">Remove</button></div>';
   }).join('');
-}
-
-function toggleWhitelistPanel() {
-  const body = document.getElementById('whitelistBody');
-  const arrow = document.getElementById('wlArrow');
-  wlPanelOpen = !wlPanelOpen;
-  body.style.display = wlPanelOpen ? '' : 'none';
-  arrow.innerHTML = wlPanelOpen ? '&#9660;' : '&#9654;';
 }
 
 async function addWhitelist(command, args) {
@@ -794,9 +808,6 @@ async function addWhitelist(command, args) {
   if (resp.ok) {
     await fetchWhitelist();
     render();
-    // Open panel and scroll to it so user sees the new rule
-    if (!wlPanelOpen) toggleWhitelistPanel();
-    document.getElementById('whitelistPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 }
 

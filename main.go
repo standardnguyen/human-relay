@@ -89,6 +89,9 @@ func main() {
 		toolHandler.SetSSHConfig(sshCfg)
 		log.Printf("  SSH config: %s", sshCfg)
 	}
+	relayPubkey := envString("MHR_RELAY_PUBKEY_FILE", "/root/.ssh/id_ed25519.pub")
+	toolHandler.SetRelayPubkeyFile(relayPubkey)
+	log.Printf("  Relay pubkey: %s", relayPubkey)
 	mcpServer := mcp.NewServer(toolHandler)
 
 	// Web dashboard

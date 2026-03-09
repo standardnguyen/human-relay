@@ -44,7 +44,7 @@
     display: inline-block;
   }
   .status-bar .dot.disconnected { background: var(--red); }
-  .btn-turbo {
+  .btn-turbo, .btn-clear {
     padding: 0.2rem 0.6rem;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -57,6 +57,7 @@
     transition: all 0.15s;
   }
   .btn-turbo:hover { border-color: var(--yellow); color: var(--yellow); }
+  .btn-clear:hover { border-color: var(--red); color: var(--red); }
   .btn-turbo.active {
     background: rgba(210,153,34,0.2);
     border-color: var(--yellow);
@@ -376,6 +377,7 @@
   <span style="margin-left:auto" id="requestCount"></span>
   <button class="btn-turbo" id="turboBtn" onclick="toggleTurbo()">Turbo</button>
   <span class="turbo-info" id="turboInfo"></span>
+  <button class="btn-clear" onclick="clearHistory()">Clear History</button>
 </div>
 
 <div class="filters">
@@ -403,6 +405,9 @@ if (TOKEN) localStorage.setItem('mhr_token', TOKEN);
 const headers = { 'Authorization': 'Bearer ' + TOKEN };
 let currentFilter = '';
 let requests = [];
+let showAll = false;
+const DISPLAY_LIMIT = 20;
+let hiddenIDs = new Set();
 let cooldownUntil = 0;
 let cooldownDuration = 30000;
 let cooldownInterval = null;
@@ -419,6 +424,7 @@ document.querySelectorAll('.filters button').forEach(btn => {
     document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentFilter = btn.dataset.filter;
+    showAll = false;
     render();
   });
 });
@@ -590,9 +596,10 @@ function toggleTruncate(id) {
 
 function render() {
   const el = document.getElementById('requests');
-  const filtered = currentFilter
+  const filtered = (currentFilter
     ? requests.filter(r => r.status === currentFilter)
-    : requests;
+    : requests
+  ).filter(r => !hiddenIDs.has(r.id));
 
   // Sort: status-filtered views for complete/denied/error show newest first.
   // "All" view: pending oldest-first at top, non-pending newest-first after.
@@ -623,9 +630,14 @@ function render() {
     return;
   }
 
+  const totalCount = filtered.length;
+  const limited = (!showAll && totalCount > DISPLAY_LIMIT)
+    ? filtered.slice(0, DISPLAY_LIMIT)
+    : filtered;
+
   truncateCounter = 0;
 
-  el.innerHTML = filtered.map(r => {
+  let html = limited.map(r => {
     const cmdDisplay = buildCommandDisplay(r);
     const b64Display = buildBase64Display(r);
     const shellBadge = r.shell ? '<span class="shell-badge">SHELL</span>' : '';
@@ -714,6 +726,16 @@ function render() {
       ${wlBtnHtml ? '<div style="margin-top:0.5rem">' + wlBtnHtml + '</div>' : ''}
     </div>`;
   }).join('');
+
+  if (!showAll && totalCount > DISPLAY_LIMIT) {
+    html += '<div class="empty" style="cursor:pointer" onclick="showAll=true;render()">' +
+      'Showing ' + DISPLAY_LIMIT + ' of ' + totalCount + ' — click to show all</div>';
+  } else if (showAll && totalCount > DISPLAY_LIMIT) {
+    html += '<div class="empty" style="cursor:pointer" onclick="showAll=false;render()">' +
+      'Showing all ' + totalCount + ' — click to collapse</div>';
+  }
+
+  el.innerHTML = html;
 }
 
 // Whitelist management
@@ -895,6 +917,16 @@ async function toggleTurbo() {
     });
   }
   fetchRequests();
+}
+
+function clearHistory() {
+  const terminal = requests.filter(r =>
+    r.status === 'complete' || r.status === 'denied' || r.status === 'error' || r.status === 'timeout'
+  );
+  if (terminal.length === 0) return;
+  terminal.forEach(r => hiddenIDs.add(r.id));
+  showAll = false;
+  render();
 }
 
 function startTurboTimer() {

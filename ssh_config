@@ -1,6 +1,6 @@
 # Example: auto-accept host keys for your private subnet.
 # Adjust the Host pattern to match your network.
-Host 192.168.10.*
+Host 192.168.10.* 192.168.20.* 192.168.30.* 192.168.40.*
     StrictHostKeyChecking accept-new
     UserKnownHostsFile /root/.ssh-data/known_hosts
     User root

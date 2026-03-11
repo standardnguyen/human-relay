@@ -55,5 +55,5 @@ jobs:
             $SSH root@192.168.40.13 'docker load'
           # Restart service with new image
           $SSH root@192.168.40.13 \
-            'cd /opt/human-relay && docker compose up -d --force-recreate --no-build && docker image prune -f'
+            'cd /opt/human-relay/hr-deploy && docker compose up -d --force-recreate --no-build && docker image prune -f'
           rm /tmp/deploy_key

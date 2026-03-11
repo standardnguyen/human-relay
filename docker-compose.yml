@@ -12,6 +12,7 @@ services:
       - /root/.ssh/id_ed25519.pub:/root/.ssh/id_ed25519.pub:ro
       - relay-ssh:/root/.ssh-data
       - relay-data:/opt/human-relay/data
+      # Mount target must match MHR_SSH_CONFIG if set, or /root/.ssh/config if unset
       - ./ssh_config:/root/.ssh/config:ro
 
 volumes:

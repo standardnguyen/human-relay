@@ -1,7 +1,28 @@
-# Example: auto-accept host keys for your private subnet.
-# Adjust the Host pattern to match your network.
-Host 192.168.10.* 192.168.20.* 192.168.30.* 192.168.40.*
+# Human Relay SSH config
+#
+# This file is bind-mounted into the Docker container. When MHR_SSH_CONFIG
+# is set, the relay passes -F <path> to all internally-constructed SSH
+# commands. When MHR_SSH_CONFIG is NOT set, mount this to /root/.ssh/config
+# so SSH reads it by default.
+#
+# The docker-compose mount target must match MHR_SSH_CONFIG if set.
+# Example: MHR_SSH_CONFIG=/opt/human-relay/ssh_config
+#          -> ./ssh_config:/opt/human-relay/ssh_config:ro
+#
+# If MHR_SSH_CONFIG is unset (relay won't pass -F):
+#          -> ./ssh_config:/root/.ssh/config:ro
+
+# Global defaults for all internal hosts.
+# accept-new: auto-accept first-connect keys, reject changed keys (MITM protection).
+# UserKnownHostsFile: persist to the relay-ssh Docker volume, not ephemeral container fs.
+Host *
     StrictHostKeyChecking accept-new
     UserKnownHostsFile /root/.ssh-data/known_hosts
     User root
+    IdentityFile /root/.ssh/id_ed25519
     ConnectTimeout 5
+
+# Override for the Proxmox host if needed (e.g. different user or key).
+# Host 192.168.10.50
+#     User root
+#     IdentityFile /root/.ssh/id_ed25519

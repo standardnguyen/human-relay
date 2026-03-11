@@ -339,7 +339,15 @@ func (h *ToolHandler) requestCommand(args map[string]interface{}) *CallToolResul
 		"timeout":     timeout,
 	})
 
-	return textResult(fmt.Sprintf(`{"request_id": "%s", "status": "pending"}`, r.ID))
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+	}
+	if warnings := detectWarnings(command, cmdArgs, shell); len(warnings) > 0 {
+		result["warnings"] = warnings
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
 }
 
 func (h *ToolHandler) getResult(args map[string]interface{}) *CallToolResult {
@@ -579,6 +587,70 @@ var validModeRe = regexp.MustCompile(`^0[0-7]{3}$`)
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// shellMetachars are characters/sequences that only work when interpreted by a shell.
+var shellMetachars = []string{">>", "||", "&&", "|", ";", ">", "<"}
+
+// detectWarnings returns advisory warnings for command patterns that are likely
+// to produce unexpected results. The command still proceeds — these are hints
+// to help agents correct their approach.
+func detectWarnings(command string, args []string, shell bool) []string {
+	var warnings []string
+
+	// 1. Shell metacharacters in non-shell mode args
+	if !shell {
+		for _, arg := range args {
+			for _, mc := range shellMetachars {
+				if strings.Contains(arg, mc) {
+					warnings = append(warnings, fmt.Sprintf(
+						"args contain shell metacharacter %q but shell=false -- "+
+							"it will be passed as a literal string, not interpreted by a shell. "+
+							"Use write_file for file operations, or set shell=true if you need shell features.",
+						mc))
+					goto doneMetachar // one warning is enough
+				}
+			}
+		}
+	}
+doneMetachar:
+
+	// 2. bash -c / sh -c as separate args in an SSH command chain
+	if command == "ssh" && !shell && len(args) >= 3 {
+		for i := 1; i < len(args)-1; i++ {
+			if (args[i] == "bash" || args[i] == "sh") && args[i+1] == "-c" {
+				// Check this isn't the intended remote command pattern:
+				// ssh host -- sh -c 'command' (where sh is right after --)
+				if i >= 2 && args[i-1] == "--" {
+					break // this is the correct pattern
+				}
+				warnings = append(warnings, fmt.Sprintf(
+					"%s -c as separate SSH args causes arg-splitting: "+
+						"SSH concatenates args with spaces, so -c only gets the next word as its command. "+
+						"Pass the full command as a single SSH arg instead, or use write_file for file operations.",
+					args[i]))
+				break
+			}
+		}
+	}
+
+	// 3. shell:true with SSH + redirects (redirect runs on relay, not remote)
+	if shell && len(args) > 0 {
+		full := command + " " + strings.Join(args, " ")
+		if strings.Contains(full, "ssh ") || strings.HasPrefix(command, "ssh") {
+			for _, redir := range []string{">>", ">"} {
+				if strings.Contains(full, redir) {
+					warnings = append(warnings,
+						"shell=true with SSH + redirect: the redirect ("+redir+") executes on the relay machine, "+
+							"not the remote host. The remote command's output is being redirected locally. "+
+							"Use write_file instead, or pass the full command including redirect as a single SSH arg in non-shell mode.")
+					break
+				}
+			}
+		}
+	}
+
+	return warnings
 }
 
 func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {

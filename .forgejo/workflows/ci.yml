@@ -38,3 +38,22 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i /tmp/deploy_key root@192.168.10.88 \
             '/opt/human-relay/deploy.sh'
           rm /tmp/deploy_key
+
+  deploy-cobble:
+    needs: deploy
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    steps:
+      - name: Transfer image and deploy to CTID 2009
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          echo "$DEPLOY_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
+          SSH="ssh -o StrictHostKeyChecking=no -i /tmp/deploy_key"
+          # Transfer freshly built image from CTID 131 to CTID 2009
+          $SSH root@192.168.10.88 'docker save human-relay-human-relay:latest' | \
+            $SSH root@192.168.40.13 'docker load'
+          # Restart service with new image
+          $SSH root@192.168.40.13 \
+            'cd /opt/human-relay && docker compose up -d --force-recreate --no-build && docker image prune -f'
+          rm /tmp/deploy_key

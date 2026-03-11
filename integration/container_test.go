@@ -14,6 +14,7 @@ type Container struct {
 	IP          string `json:"ip"`
 	Hostname    string `json:"hostname"`
 	HasRelaySSH bool   `json:"has_relay_ssh"`
+	SSHUser     string `json:"ssh_user,omitempty"`
 }
 
 // ExecResponse matches the JSON returned by exec_container.
@@ -601,5 +602,184 @@ func TestContainerRegistryPersistence(t *testing.T) {
 	}
 	if !list2[0].HasRelaySSH {
 		t.Error("expected has_relay_ssh to be true after restart")
+	}
+}
+
+// --- ssh_user tests ---
+
+func TestRegisterContainerWithSSHUser(t *testing.T) {
+	_, c := initClient(t)
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "register_container",
+		"arguments": map[string]interface{}{
+			"ctid":          float64(9999),
+			"ip":            "192.168.10.104",
+			"hostname":      "corsair",
+			"has_relay_ssh": true,
+			"ssh_user":      "Lara Duong",
+		},
+	})
+
+	if isErrorResponse(resp) {
+		t.Fatal("unexpected error")
+	}
+
+	ct := extractContainer(t, resp)
+	if ct.SSHUser != "Lara Duong" {
+		t.Errorf("expected ssh_user 'Lara Duong', got %q", ct.SSHUser)
+	}
+}
+
+func TestExecContainerCustomSSHUser(t *testing.T) {
+	s, c := initClient(t)
+
+	// Register with custom ssh_user
+	c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "register_container",
+		"arguments": map[string]interface{}{
+			"ctid":          float64(9999),
+			"ip":            "192.168.10.104",
+			"hostname":      "corsair",
+			"has_relay_ssh": true,
+			"ssh_user":      "Lara Duong",
+		},
+	})
+
+	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
+		"name": "exec_container",
+		"arguments": map[string]interface{}{
+			"ctid":    float64(9999),
+			"command": "whoami",
+			"reason":  "test custom ssh user",
+		},
+	})
+
+	if isErrorResponse(resp) {
+		t.Fatal("unexpected error")
+	}
+
+	er := extractExecResponse(t, resp)
+	found := findRequestByID(t, c, 4, er.RequestID)
+
+	// Should use "Lara Duong@192.168.10.104" not "root@192.168.10.104"
+	assertArgs(t, found.Args, []string{"Lara Duong@192.168.10.104", "--", "whoami"})
+
+	WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), er.RequestID),
+		s.token, map[string]string{"reason": "test only"})
+}
+
+func TestExecContainerDefaultSSHUser(t *testing.T) {
+	s, c := initClient(t)
+
+	// Register without ssh_user — should default to root
+	registerContainer(t, c, 2, 133, "192.168.10.90", "archivebox", true)
+
+	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
+		"name": "exec_container",
+		"arguments": map[string]interface{}{
+			"ctid":    float64(133),
+			"command": "whoami",
+			"reason":  "test default ssh user",
+		},
+	})
+
+	er := extractExecResponse(t, resp)
+	found := findRequestByID(t, c, 4, er.RequestID)
+
+	// Should still use root@ when no ssh_user set
+	assertArgs(t, found.Args, []string{"root@192.168.10.90", "--", "whoami"})
+
+	WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), er.RequestID),
+		s.token, map[string]string{"reason": "test only"})
+}
+
+func TestSSHUserPreservedOnUpsert(t *testing.T) {
+	_, c := initClient(t)
+
+	// Register with ssh_user
+	c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "register_container",
+		"arguments": map[string]interface{}{
+			"ctid":          float64(9999),
+			"ip":            "192.168.10.104",
+			"hostname":      "corsair",
+			"has_relay_ssh": true,
+			"ssh_user":      "Lara Duong",
+		},
+	})
+
+	// Upsert without ssh_user — should preserve existing value
+	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
+		"name": "register_container",
+		"arguments": map[string]interface{}{
+			"ctid":          float64(9999),
+			"ip":            "192.168.10.105",
+			"hostname":      "corsair-v2",
+			"has_relay_ssh": true,
+		},
+	})
+
+	ct := extractContainer(t, resp)
+	if ct.IP != "192.168.10.105" {
+		t.Errorf("expected updated IP, got %s", ct.IP)
+	}
+	if ct.SSHUser != "Lara Duong" {
+		t.Errorf("expected ssh_user preserved as 'Lara Duong', got %q", ct.SSHUser)
+	}
+}
+
+func TestSSHUserPersistence(t *testing.T) {
+	dataDir, err := os.MkdirTemp("", "hr-sshuser-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dataDir)
+
+	// Start server 1, register with ssh_user
+	s1 := StartServer(t, WithDataDir(dataDir), WithPorts(18380+os.Getpid()%1000, 19390+os.Getpid()%1000))
+	c1 := NewMCPClient(t, s1.MCPURL())
+	c1.Call(t, 1, "initialize", map[string]interface{}{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]interface{}{},
+		"clientInfo":      map[string]string{"name": "test", "version": "1.0"},
+	})
+	c1.Notify(t, "notifications/initialized", nil)
+
+	c1.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "register_container",
+		"arguments": map[string]interface{}{
+			"ctid":          float64(9999),
+			"ip":            "192.168.10.104",
+			"hostname":      "corsair",
+			"has_relay_ssh": true,
+			"ssh_user":      "Lara Duong",
+		},
+	})
+
+	s1.cmd.Process.Kill()
+	s1.cmd.Wait()
+
+	// Start server 2 with same data dir
+	s2 := StartServer(t, WithDataDir(dataDir), WithPorts(18480+os.Getpid()%1000, 19490+os.Getpid()%1000))
+	c2 := NewMCPClient(t, s2.MCPURL())
+	c2.Call(t, 1, "initialize", map[string]interface{}{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]interface{}{},
+		"clientInfo":      map[string]string{"name": "test", "version": "1.0"},
+	})
+	c2.Notify(t, "notifications/initialized", nil)
+
+	listResp := c2.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "list_containers", "arguments": map[string]interface{}{},
+	})
+	list := extractContainerList(t, listResp)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 container after restart, got %d", len(list))
+	}
+	if list[0].SSHUser != "Lara Duong" {
+		t.Errorf("expected ssh_user 'Lara Duong' after restart, got %q", list[0].SSHUser)
 	}
 }

@@ -105,6 +105,11 @@ var ToolDefinitions = []Tool{
 					Description: "Whether the relay has direct SSH access to this container (default: false)",
 					Default:     false,
 				},
+				"ssh_user": {
+					Type:        "string",
+					Description: "SSH username for this container (default: root)",
+					Default:     "root",
+				},
 			},
 			Required: []string{"ctid", "ip", "hostname"},
 		},
@@ -423,8 +428,9 @@ func (h *ToolHandler) registerContainer(args map[string]interface{}) *CallToolRe
 	}
 
 	hasRelaySSH, _ := args["has_relay_ssh"].(bool)
+	sshUser, _ := args["ssh_user"].(string)
 
-	c, err := h.containers.Register(ctid, ip, hostname, hasRelaySSH)
+	c, err := h.containers.Register(ctid, ip, hostname, hasRelaySSH, sshUser)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to register container: %v", err))
 	}
@@ -486,12 +492,18 @@ func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult
 		return errorResult(fmt.Sprintf("container %d not found in registry. Use register_container first.", ctid))
 	}
 
+	// Determine SSH user for direct container access
+	sshUser := "root"
+	if c.SSHUser != "" {
+		sshUser = c.SSHUser
+	}
+
 	// Build the SSH command
 	sshArgs := append([]string{}, h.sshPrefix()...)
 	if c.HasRelaySSH {
 		// Direct SSH to container — SSH passes remote args to the remote
 		// login shell, so we don't need sh -c for shell mode.
-		sshArgs = append(sshArgs, fmt.Sprintf("root@%s", c.IP), "--")
+		sshArgs = append(sshArgs, fmt.Sprintf("%s@%s", sshUser, c.IP), "--")
 		if shell {
 			full := command
 			for _, a := range cmdArgs {
@@ -628,8 +640,12 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 
 		if c.HasRelaySSH {
 			route = "direct_ssh"
+			wfUser := "root"
+			if c.SSHUser != "" {
+				wfUser = c.SSHUser
+			}
 			shellCmd := fmt.Sprintf("cat > %s && chmod %s %s", shellQuote(path), mode, shellQuote(path))
-			sshArgs = append(pfx, fmt.Sprintf("root@%s", c.IP), "--", shellCmd)
+			sshArgs = append(pfx, fmt.Sprintf("%s@%s", wfUser, c.IP), "--", shellCmd)
 		} else {
 			route = "pct_push"
 			tmpFile := fmt.Sprintf("/tmp/mhr-%d", time.Now().UnixNano())
@@ -816,8 +832,12 @@ func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult
 	if c.HasRelaySSH {
 		// Direct SSH: pipe the key and append to authorized_keys
 		route = "direct_ssh"
+		keyUser := "root"
+		if c.SSHUser != "" {
+			keyUser = c.SSHUser
+		}
 		shellCmd := "mkdir -p /root/.ssh && cat >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys && chmod 700 /root/.ssh"
-		sshArgs = append(pfx, fmt.Sprintf("root@%s", c.IP), "--", "sh", "-c", shellCmd)
+		sshArgs = append(pfx, fmt.Sprintf("%s@%s", keyUser, c.IP), "--", "sh", "-c", shellCmd)
 	} else {
 		// pct push fallback
 		route = "pct_push"

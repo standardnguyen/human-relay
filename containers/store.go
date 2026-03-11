@@ -14,6 +14,7 @@ type Container struct {
 	IP          string    `json:"ip"`
 	Hostname    string    `json:"hostname"`
 	HasRelaySSH bool      `json:"has_relay_ssh"`
+	SSHUser     string    `json:"ssh_user,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -70,7 +71,7 @@ func (s *Store) sorted() []*Container {
 }
 
 // Register upserts a container record.
-func (s *Store) Register(ctid int, ip, hostname string, hasRelaySSH bool) (*Container, error) {
+func (s *Store) Register(ctid int, ip, hostname string, hasRelaySSH bool, sshUser string) (*Container, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -82,10 +83,14 @@ func (s *Store) Register(ctid int, ip, hostname string, hasRelaySSH bool) (*Cont
 		IP:          ip,
 		Hostname:    hostname,
 		HasRelaySSH: hasRelaySSH,
+		SSHUser:     sshUser,
 		UpdatedAt:   now,
 	}
 	if existing != nil {
 		c.CreatedAt = existing.CreatedAt
+		if c.SSHUser == "" {
+			c.SSHUser = existing.SSHUser
+		}
 	} else {
 		c.CreatedAt = now
 	}

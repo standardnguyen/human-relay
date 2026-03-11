@@ -855,3 +855,167 @@ func TestExistingToolsUnchanged(t *testing.T) {
 		t.Fatalf("list_requests failed: %s", result.Content[0].Text)
 	}
 }
+
+// --- detectWarnings tests ---
+
+func parseWarnings(t *testing.T, result *CallToolResult) []string {
+	t.Helper()
+	var resp map[string]interface{}
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	raw, ok := resp["warnings"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]interface{})
+	if !ok {
+		t.Fatalf("warnings is not an array: %T", raw)
+	}
+	var out []string
+	for _, v := range arr {
+		out = append(out, v.(string))
+	}
+	return out
+}
+
+func TestWarningShellMetacharsInNonShellMode(t *testing.T) {
+	h := setup(t)
+
+	tests := []struct {
+		name string
+		args []interface{}
+	}{
+		{"redirect append", []interface{}{"root@host", "echo", "hi", ">>", "/tmp/file"}},
+		{"pipe", []interface{}{"root@host", "cat /tmp/file", "|", "grep", "foo"}},
+		{"and chain", []interface{}{"root@host", "cmd1", "&&", "cmd2"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("request_command", map[string]interface{}{
+				"command": "ssh",
+				"args":    tt.args,
+				"reason":  "test metachar warning",
+			})
+			if result.IsError {
+				t.Fatalf("unexpected error: %s", result.Content[0].Text)
+			}
+			warnings := parseWarnings(t, result)
+			if len(warnings) == 0 {
+				t.Fatal("expected warning about shell metacharacters")
+			}
+			if !strings.Contains(warnings[0], "shell metacharacter") {
+				t.Fatalf("expected shell metacharacter warning, got: %s", warnings[0])
+			}
+		})
+	}
+}
+
+func TestNoWarningShellMetacharsInShellMode(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command", map[string]interface{}{
+		"command": "ssh",
+		"args":    []interface{}{"root@host", "echo hi >> /tmp/file"},
+		"reason":  "test no false positive",
+		"shell":   true,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+	// shell:true with SSH + redirect WILL trigger warning #3, but NOT #1
+	warnings := parseWarnings(t, result)
+	for _, w := range warnings {
+		if strings.Contains(w, "shell=false") {
+			t.Fatalf("should not warn about shell=false when shell is true: %s", w)
+		}
+	}
+}
+
+func TestWarningBashCThroughSSH(t *testing.T) {
+	h := setup(t)
+
+	// ssh root@host bash -c "echo hi >> /tmp/file" — bash and -c are separate args
+	result := h.Handle("request_command", map[string]interface{}{
+		"command": "ssh",
+		"args":    []interface{}{"root@host", "bash", "-c", "echo hi >> /tmp/file"},
+		"reason":  "test bash -c warning",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+	warnings := parseWarnings(t, result)
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "arg-splitting") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected arg-splitting warning, got: %v", warnings)
+	}
+}
+
+func TestNoWarningShDashCAfterDoubleDash(t *testing.T) {
+	h := setup(t)
+
+	// ssh root@host -- sh -c 'command' — this is the correct pattern
+	result := h.Handle("request_command", map[string]interface{}{
+		"command": "ssh",
+		"args":    []interface{}{"root@host", "--", "sh", "-c", "echo hello"},
+		"reason":  "test no false positive for correct pattern",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+	warnings := parseWarnings(t, result)
+	for _, w := range warnings {
+		if strings.Contains(w, "arg-splitting") {
+			t.Fatalf("should not warn about sh -c after --: %s", w)
+		}
+	}
+}
+
+func TestWarningShellTrueSSHRedirect(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command", map[string]interface{}{
+		"command": "ssh",
+		"args":    []interface{}{"root@192.168.10.50", "echo 'key' >> /root/.ssh/authorized_keys"},
+		"reason":  "test shell+redirect warning",
+		"shell":   true,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+	warnings := parseWarnings(t, result)
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "executes on the relay") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected relay redirect warning, got: %v", warnings)
+	}
+}
+
+func TestNoWarningsForCleanCommand(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command", map[string]interface{}{
+		"command": "ssh",
+		"args":    []interface{}{"root@192.168.10.50", "hostname"},
+		"reason":  "simple clean command",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+	warnings := parseWarnings(t, result)
+	if len(warnings) > 0 {
+		t.Fatalf("expected no warnings for clean command, got: %v", warnings)
+	}
+}

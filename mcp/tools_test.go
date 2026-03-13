@@ -933,17 +933,111 @@ func TestNoWarningShellMetacharsInShellMode(t *testing.T) {
 	}
 }
 
-func TestWarningBashCThroughSSH(t *testing.T) {
+func TestBashCArgSplittingHardReject(t *testing.T) {
 	h := setup(t)
 
-	// ssh root@host bash -c "echo hi >> /tmp/file" — bash and -c are separate args
+	tests := []struct {
+		name string
+		args []interface{}
+	}{
+		{
+			"ssh bash -c crontab -l",
+			[]interface{}{"root@host", "bash", "-c", "crontab", "-l"},
+		},
+		{
+			"ssh sh -c command flag",
+			[]interface{}{"root@host", "sh", "-c", "systemctl", "status", "cron"},
+		},
+		{
+			"ssh with -- still catches splitting",
+			[]interface{}{"root@host", "--", "bash", "-c", "crontab", "-l"},
+		},
+		{
+			"command is bash directly",
+			[]interface{}{"-c", "crontab", "-l"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := "ssh"
+			if tt.name == "command is bash directly" {
+				cmd = "bash"
+			}
+			result := h.Handle("request_command", map[string]interface{}{
+				"command": cmd,
+				"args":    tt.args,
+				"reason":  "test bash -c rejection",
+			})
+			if !result.IsError {
+				t.Fatal("expected hard rejection for bash -c arg-splitting")
+			}
+			if !strings.Contains(result.Content[0].Text, "BLOCKED") {
+				t.Fatalf("expected BLOCKED message, got: %s", result.Content[0].Text)
+			}
+			if !strings.Contains(result.Content[0].Text, "arg-splitting") {
+				t.Fatalf("expected arg-splitting explanation, got: %s", result.Content[0].Text)
+			}
+		})
+	}
+}
+
+func TestBashCArgSplittingAllowsSafePatterns(t *testing.T) {
+	h := setup(t)
+
+	tests := []struct {
+		name string
+		cmd  string
+		args []interface{}
+	}{
+		{
+			"properly quoted command (contains space)",
+			"ssh",
+			[]interface{}{"root@host", "bash", "-c", "crontab -l"},
+		},
+		{
+			"single-word command with no extra args",
+			"ssh",
+			[]interface{}{"root@host", "bash", "-c", "hostname"},
+		},
+		{
+			"sh -c with quoted compound command",
+			"ssh",
+			[]interface{}{"root@host", "--", "sh", "-c", "crontab -l | wc -l"},
+		},
+		{
+			"bash -c with quoted command and positional params",
+			"ssh",
+			[]interface{}{"root@host", "bash", "-c", "echo $0 $1", "hello", "world"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("request_command", map[string]interface{}{
+				"command": tt.cmd,
+				"args":    tt.args,
+				"reason":  "test no false positive",
+			})
+			if result.IsError {
+				t.Fatalf("expected safe command to be accepted, got error: %s", result.Content[0].Text)
+			}
+		})
+	}
+}
+
+func TestBashCArgSplittingShellModeWarning(t *testing.T) {
+	h := setup(t)
+
+	// In shell mode, bash -c word word triggers a warning (not hard reject)
 	result := h.Handle("request_command", map[string]interface{}{
 		"command": "ssh",
-		"args":    []interface{}{"root@host", "bash", "-c", "echo hi >> /tmp/file"},
-		"reason":  "test bash -c warning",
+		"args":    []interface{}{"root@host", "bash -c crontab -l | wc -l"},
+		"reason":  "test shell mode warning",
+		"shell":   true,
 	})
 	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+		t.Fatalf("shell mode should warn, not reject: %s", result.Content[0].Text)
 	}
 	warnings := parseWarnings(t, result)
 	found := false
@@ -954,18 +1048,19 @@ func TestWarningBashCThroughSSH(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected arg-splitting warning, got: %v", warnings)
+		t.Fatalf("expected arg-splitting warning for shell mode, got: %v", warnings)
 	}
 }
 
-func TestNoWarningShDashCAfterDoubleDash(t *testing.T) {
+func TestBashCArgSplittingShellModeNoFalsePositive(t *testing.T) {
 	h := setup(t)
 
-	// ssh root@host -- sh -c 'command' — this is the correct pattern
+	// Properly quoted: bash -c 'crontab -l' — no warning
 	result := h.Handle("request_command", map[string]interface{}{
 		"command": "ssh",
-		"args":    []interface{}{"root@host", "--", "sh", "-c", "echo hello"},
-		"reason":  "test no false positive for correct pattern",
+		"args":    []interface{}{"root@host", "bash -c 'crontab -l' | wc -l"},
+		"reason":  "test no false positive in shell mode",
+		"shell":   true,
 	})
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -973,7 +1068,7 @@ func TestNoWarningShDashCAfterDoubleDash(t *testing.T) {
 	warnings := parseWarnings(t, result)
 	for _, w := range warnings {
 		if strings.Contains(w, "arg-splitting") {
-			t.Fatalf("should not warn about sh -c after --: %s", w)
+			t.Fatalf("should not warn about properly quoted bash -c: %s", w)
 		}
 	}
 }

@@ -327,6 +327,14 @@ func (h *ToolHandler) requestCommand(args map[string]interface{}) *CallToolResul
 		timeout = int(t)
 	}
 
+	// Hard rejection for bash/sh -c arg-splitting (non-shell mode only;
+	// shell mode gets an advisory warning in detectWarnings).
+	if !shell {
+		if errMsg := checkBashCArgSplitting(command, cmdArgs); errMsg != "" {
+			return errorResult(errMsg)
+		}
+	}
+
 	r := h.store.Add(command, cmdArgs, reason, workingDir, shell, timeout)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
@@ -491,6 +499,14 @@ func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult
 		}
 	}
 
+	// Hard rejection for bash/sh -c arg-splitting (non-shell mode only;
+	// shell mode gets an advisory warning in detectWarnings).
+	if !shell {
+		if errMsg := checkBashCArgSplitting(command, cmdArgs); errMsg != "" {
+			return errorResult(errMsg)
+		}
+	}
+
 	// Look up container
 	c, err := h.containers.Get(ctid)
 	if err != nil {
@@ -585,12 +601,62 @@ func intArg(args map[string]interface{}, key string) int {
 var validPathRe = regexp.MustCompile(`^/[a-zA-Z0-9._/\-]+$`)
 var validModeRe = regexp.MustCompile(`^0[0-7]{3}$`)
 
+// bashCShellRe matches "bash -c word word" or "sh -c word word" patterns in a
+// concatenated shell command string. The first word after -c is an unquoted
+// single-word command, followed by another word — indicating arg-splitting.
+// Does NOT match when the command after -c starts with a quote (properly quoted).
+var bashCShellRe = regexp.MustCompile(`\b(?:bash|sh)\s+-c\s+([^\s'"` + "`" + `]+)\s+\S+`)
+
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 // shellMetachars are characters/sequences that only work when interpreted by a shell.
 var shellMetachars = []string{">>", "||", "&&", "|", ";", ">", "<"}
+
+// checkBashCArgSplitting detects the bash/sh -c arg-splitting anti-pattern where
+// `bash -c word extra_args...` only executes `word` — the extra args silently
+// become positional parameters ($0, $1, ...) instead of part of the command.
+// Returns an error string if detected, empty string if safe.
+//
+// This has caused production incidents: `bash -c crontab -l` runs bare `crontab`
+// (which reads empty stdin and wipes the crontab) instead of `crontab -l`.
+func checkBashCArgSplitting(command string, args []string) string {
+	// Case 1: command itself is bash/sh with -c
+	if (command == "bash" || command == "sh") && len(args) >= 2 && args[0] == "-c" {
+		cmdStr := args[1]
+		if !strings.Contains(cmdStr, " ") && len(args) >= 3 {
+			return fmt.Sprintf(
+				"BLOCKED: %s -c arg-splitting — '%s -c %s %s' only executes '%s', "+
+					"the remaining args become positional parameters ($0, $1, ...) and are NOT "+
+					"part of the command. This can cause destructive behavior (e.g., bare 'crontab' "+
+					"wipes the crontab). Fix: quote the full command as a single arg: "+
+					"%s -c '%s'",
+				command, command, cmdStr, strings.Join(args[2:], " "), cmdStr,
+				command, strings.Join(args[1:], " "))
+		}
+	}
+
+	// Case 2: bash/sh -c appears somewhere in the args (e.g., SSH remote command)
+	for i := 0; i < len(args)-2; i++ {
+		if (args[i] == "bash" || args[i] == "sh") && args[i+1] == "-c" {
+			cmdStr := args[i+2]
+			if !strings.Contains(cmdStr, " ") && i+3 < len(args) {
+				return fmt.Sprintf(
+					"BLOCKED: %s -c arg-splitting — '%s -c %s %s' only executes '%s', "+
+						"the remaining args become positional parameters ($0, $1, ...) and are NOT "+
+						"part of the command. This can cause destructive behavior (e.g., bare 'crontab' "+
+						"wipes the crontab). Fix: quote the full command as a single arg: "+
+						"%s -c '%s'",
+					args[i], args[i], cmdStr, args[i+3], cmdStr,
+					args[i], strings.Join(args[i+2:], " "))
+			}
+			break
+		}
+	}
+
+	return ""
+}
 
 // detectWarnings returns advisory warnings for command patterns that are likely
 // to produce unexpected results. The command still proceeds — these are hints
@@ -615,22 +681,18 @@ func detectWarnings(command string, args []string, shell bool) []string {
 	}
 doneMetachar:
 
-	// 2. bash -c / sh -c as separate args in an SSH command chain
-	if command == "ssh" && !shell && len(args) >= 3 {
-		for i := 1; i < len(args)-1; i++ {
-			if (args[i] == "bash" || args[i] == "sh") && args[i+1] == "-c" {
-				// Check this isn't the intended remote command pattern:
-				// ssh host -- sh -c 'command' (where sh is right after --)
-				if i >= 2 && args[i-1] == "--" {
-					break // this is the correct pattern
-				}
-				warnings = append(warnings, fmt.Sprintf(
-					"%s -c as separate SSH args causes arg-splitting: "+
-						"SSH concatenates args with spaces, so -c only gets the next word as its command. "+
-						"Pass the full command as a single SSH arg instead, or use write_file for file operations.",
-					args[i]))
-				break
-			}
+	// 2. bash -c / sh -c arg-splitting warning (shell mode — string-based detection).
+	// Non-shell mode is caught by checkBashCArgSplitting() as a hard error.
+	// For shell mode, the args are concatenated into a single string, so we
+	// do a best-effort regex check for the pattern in the full command.
+	if shell && len(args) > 0 {
+		full := command + " " + strings.Join(args, " ")
+		if bashCShellRe.MatchString(full) {
+			warnings = append(warnings,
+				"possible bash/sh -c arg-splitting in shell command: when the remote shell "+
+					"processes 'bash -c word extra_args', only 'word' is executed — the rest become "+
+					"positional parameters. This can be destructive (e.g., bare 'crontab' wipes the crontab). "+
+					"Ensure the command after -c is properly quoted as a single string.")
 		}
 	}
 

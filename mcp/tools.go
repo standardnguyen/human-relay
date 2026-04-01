@@ -14,6 +14,8 @@ import (
 	"git.ekaterina.net/administrator/human-relay/store"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 var ToolDefinitions = []Tool{
 	{
 		Name:        "request_command",
@@ -49,6 +51,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"command", "reason"},
 		},
+		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
 	},
 	{
 		Name:        "get_result",
@@ -67,6 +70,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"request_id"},
 		},
+		Annotations: &ToolAnnotations{ReadOnlyHint: boolPtr(true)},
 	},
 	{
 		Name:        "list_requests",
@@ -81,6 +85,7 @@ var ToolDefinitions = []Tool{
 				},
 			},
 		},
+		Annotations: &ToolAnnotations{ReadOnlyHint: boolPtr(true)},
 	},
 	{
 		Name:        "register_container",
@@ -113,6 +118,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"ctid", "ip", "hostname"},
 		},
+		Annotations: &ToolAnnotations{IdempotentHint: boolPtr(true)},
 	},
 	{
 		Name:        "list_containers",
@@ -121,6 +127,7 @@ var ToolDefinitions = []Tool{
 			Type:       "object",
 			Properties: map[string]Property{},
 		},
+		Annotations: &ToolAnnotations{ReadOnlyHint: boolPtr(true)},
 	},
 	{
 		Name:        "exec_container",
@@ -156,6 +163,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"ctid", "command", "reason"},
 		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
 	{
 		Name:        "write_file",
@@ -194,6 +202,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"path", "content_base64", "reason"},
 		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
 	{
 		Name:        "install_relay_ssh",
@@ -216,6 +225,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"ctid", "reason"},
 		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
 	{
 		Name:        "http_request",
@@ -251,6 +261,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"method", "url", "reason"},
 		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
 	{
 		Name:        "run_script",
@@ -273,6 +284,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"name", "reason"},
 		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
 	{
 		Name:        "create_script",
@@ -295,6 +307,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"name", "content", "reason"},
 		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
 	{
 		Name:        "install_ssh_key",
@@ -321,6 +334,7 @@ var ToolDefinitions = []Tool{
 			},
 			Required: []string{"ctid", "public_key", "reason"},
 		},
+		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
 	},
 }
 

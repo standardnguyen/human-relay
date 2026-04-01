@@ -343,7 +343,12 @@ func (h *Handler) watchRequests() {
 		h.broadcastEvent("new", id)
 		if h.whitelist != nil {
 			req := h.store.Get(id)
-			if req != nil && req.Status == store.StatusPending && h.whitelist.Match(req.Command, req.Args) {
+			wlCommand, wlArgs := req.Command, req.Args
+			if req.Type == "http" {
+				wlCommand = req.HTTPMethod
+				wlArgs = []string{req.HTTPURL}
+			}
+			if req != nil && req.Status == store.StatusPending && h.whitelist.Match(wlCommand, wlArgs) {
 				h.autoApprove(req)
 			}
 		}

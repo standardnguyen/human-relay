@@ -781,11 +781,14 @@ function render() {
       : '';
     const cardClass = 'request-card ' + r.status + (isShellPending ? ' shell-warn' : '');
 
-    const wlMatch = !isHTTP && isWhitelisted(r.command, r.args);
-    const wlBtnHtml = (!isHTTP && r.status !== 'pending')
+    // For whitelist matching, HTTP requests use method as command and [url] as args
+    const wlCmdKey = isHTTP ? r.http_method : r.command;
+    const wlArgsKey = isHTTP ? [r.http_url] : (r.args || []);
+    const wlMatch = isWhitelisted(wlCmdKey, wlArgsKey);
+    const wlBtnHtml = (r.status !== 'pending')
       ? (wlMatch
         ? '<button class="btn-whitelist active" disabled>Whitelisted</button>'
-        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + escapeHtml(r.command).replace(/'/g, "\\'") + '\',' + JSON.stringify(r.args || []).replace(/"/g, '&quot;') + ')">Whitelist</button>')
+        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + escapeHtml(wlCmdKey).replace(/'/g, "\\'") + '\',' + JSON.stringify(wlArgsKey).replace(/"/g, '&quot;') + ')">Whitelist</button>')
       : '';
 
     let actions = '';
@@ -799,10 +802,9 @@ function render() {
         ? '<div class="cooldown-bar"><div class="cooldown-bar-fill" style="width:' + pct + '%"></div></div>' +
           '<div class="cooldown-label">' + secs + 's cooldown</div>'
         : '';
-      const wlCmd = escapeHtml(r.command).replace(/'/g, "\\'");
-      const wlArgs = JSON.stringify(r.args || []).replace(/"/g, '&quot;');
-      const approveWlBtn = isHTTP ? '' :
-        '<button class="btn-approve-wl"' + approveDisabled + ' onclick="approveAndWhitelist(\'' + r.id + '\',\'' + wlCmd + '\',' + wlArgs + ')">Approve &amp; Whitelist</button>';
+      const wlCmd = escapeHtml(wlCmdKey).replace(/'/g, "\\'");
+      const wlArgs = JSON.stringify(wlArgsKey).replace(/"/g, '&quot;');
+      const approveWlBtn = '<button class="btn-approve-wl"' + approveDisabled + ' onclick="approveAndWhitelist(\'' + r.id + '\',\'' + wlCmd + '\',' + wlArgs + ')">Approve &amp; Whitelist</button>';
       actions = '<div class="actions">' +
         '<button class="btn-approve"' + approveDisabled + ' onclick="approve(\'' + r.id + '\')">Approve</button>' +
         approveWlBtn +

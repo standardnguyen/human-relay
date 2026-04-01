@@ -95,8 +95,11 @@ func main() {
 	mcpServer := mcp.NewServer(toolHandler)
 
 	// Web dashboard
+	scriptsDir := envString("MHR_SCRIPTS_DIR", "/scripts")
+	toolHandler.SetScriptsDir(scriptsDir)
+
 	cd := envInt("MHR_APPROVAL_COOLDOWN", 30)
-	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl))
+	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir))
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 

@@ -253,6 +253,50 @@ var ToolDefinitions = []Tool{
 		},
 	},
 	{
+		Name:        "run_script",
+		Description: "Run a named script on the relay. Scripts are pre-deployed bash files in the relay's /scripts directory. The script inherits the relay's environment (API keys, tokens, etc.). Requires human approval.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"name": {
+					Type:        "string",
+					Description: "Script name (e.g. 'queue-to-doing'). Must match a file at /scripts/{name}.sh on the relay.",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Why this script needs to run (shown to the human reviewer)",
+				},
+				"timeout": {
+					Type:        "integer",
+					Description: "Script timeout in seconds (default: server default, max: server max)",
+				},
+			},
+			Required: []string{"name", "reason"},
+		},
+	},
+	{
+		Name:        "create_script",
+		Description: "Create or update a script on the relay. The human reviewer sees the full script content before approving. Scripts are stored at /scripts/{name}.sh and can be executed with run_script.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"name": {
+					Type:        "string",
+					Description: "Script name (e.g. 'queue-to-doing'). Alphanumeric, hyphens, and underscores only.",
+				},
+				"content": {
+					Type:        "string",
+					Description: "The full script content (bash). Will be written to /scripts/{name}.sh with executable permissions.",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Why this script is being created/updated (shown to the human reviewer)",
+				},
+			},
+			Required: []string{"name", "content", "reason"},
+		},
+	},
+	{
 		Name:        "install_ssh_key",
 		Description: "Install an arbitrary SSH public key on a container. Routes via direct SSH if the relay has access, otherwise via pct exec through the Proxmox host. WARNING: This tool can grant SSH access to any key — use with caution. Requires human approval.",
 		InputSchema: InputSchema{
@@ -287,10 +331,16 @@ type ToolHandler struct {
 	audit          *audit.Logger
 	sshConfigFile  string
 	relayPubkeyFile string
+	scriptsDir     string
 }
 
 func NewToolHandler(s *store.Store, cs *containers.Store, hostIP string, al *audit.Logger) *ToolHandler {
-	return &ToolHandler{store: s, containers: cs, hostIP: hostIP, audit: al}
+	return &ToolHandler{store: s, containers: cs, hostIP: hostIP, audit: al, scriptsDir: "/scripts"}
+}
+
+// SetScriptsDir overrides the directory where run_script looks for scripts.
+func (h *ToolHandler) SetScriptsDir(dir string) {
+	h.scriptsDir = dir
 }
 
 // SetSSHConfig sets a custom SSH config file path. When set, all internally-
@@ -331,6 +381,10 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 		return h.writeFile(args)
 	case "http_request":
 		return h.httpRequest(args)
+	case "run_script":
+		return h.runScript(args)
+	case "create_script":
+		return h.createScript(args)
 	case "install_relay_ssh":
 		return h.installRelaySSH(args)
 	case "install_ssh_key":
@@ -677,6 +731,95 @@ func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
 		"has_body": body != "",
 		"reason":  reason,
 		"timeout": timeout,
+	})
+
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// validScriptNameRe matches safe script names: alphanumeric, hyphens, underscores.
+var validScriptNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
+	name, _ := args["name"].(string)
+	reason, _ := args["reason"].(string)
+
+	if name == "" || reason == "" {
+		return errorResult("name and reason are required")
+	}
+
+	if !validScriptNameRe.MatchString(name) {
+		return errorResult("script name must be alphanumeric with hyphens/underscores only (no paths, no extensions)")
+	}
+
+	// Check that the script file exists
+	scriptPath := fmt.Sprintf("%s/%s.sh", h.scriptsDir, name)
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		return errorResult(fmt.Sprintf("script not found: %s", scriptPath))
+	}
+
+	timeout := 0
+	if t, ok := args["timeout"].(float64); ok {
+		timeout = int(t)
+	}
+
+	r := h.store.AddScript(name, reason, timeout)
+
+	displayCmd := fmt.Sprintf("run_script %s", name)
+	h.store.SetDisplayCommand(r.ID, displayCmd)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":    "run_script",
+		"script":  name,
+		"reason":  reason,
+		"timeout": timeout,
+	})
+
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult {
+	name, _ := args["name"].(string)
+	content, _ := args["content"].(string)
+	reason, _ := args["reason"].(string)
+
+	if name == "" || content == "" || reason == "" {
+		return errorResult("name, content, and reason are required")
+	}
+
+	if !validScriptNameRe.MatchString(name) {
+		return errorResult("script name must be alphanumeric with hyphens/underscores only (no paths, no extensions)")
+	}
+
+	// Build a reason that shows the full script content for human review
+	preview := content
+	if len(preview) > 4096 {
+		preview = preview[:4096] + "\n... (truncated)"
+	}
+	prefixedReason := fmt.Sprintf("[SCRIPT %s.sh %dB] %s\n---\n%s", name, len(content), reason, preview)
+
+	r := h.store.AddScript(name, prefixedReason, 0)
+	r.Type = "script_create"
+	// Store script content for execution (writing to disk)
+	h.store.SetStdin(r.ID, []byte(content))
+
+	displayCmd := fmt.Sprintf("create_script %s (%dB)", name, len(content))
+	h.store.SetDisplayCommand(r.ID, displayCmd)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":   "create_script",
+		"script": name,
+		"size":   len(content),
+		"reason": reason,
 	})
 
 	result := map[string]interface{}{

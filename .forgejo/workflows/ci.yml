@@ -22,6 +22,9 @@ jobs:
       - name: Build binary
         run: go build -o human-relay .
 
+      - name: Run unit tests
+        run: go test -v -count=1 ./mcp/ ./executor/ ./whitelist/
+
       - name: Run integration tests
         run: HUMAN_RELAY_BIN=${{ github.workspace }}/human-relay go test -v -count=1 ./integration/...
 

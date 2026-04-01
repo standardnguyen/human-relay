@@ -21,7 +21,7 @@ const (
 
 type Request struct {
 	ID         string    `json:"id"`
-	Type       string    `json:"type"` // "command" (default) or "http"
+	Type       string    `json:"type"` // "command" (default), "http", or "script"
 	Command    string    `json:"command"`
 	Args       []string  `json:"args"`
 	Reason     string    `json:"reason"`
@@ -42,6 +42,9 @@ type Request struct {
 	HTTPURL     string            `json:"http_url,omitempty"`
 	HTTPHeaders map[string]string `json:"http_headers,omitempty"`
 	HTTPBody    string            `json:"http_body,omitempty"`
+
+	// Script-specific fields (only when Type == "script")
+	ScriptName string `json:"script_name,omitempty"`
 }
 
 type Result struct {
@@ -106,6 +109,30 @@ func (s *Store) AddHTTP(method, url string, headers map[string]string, body, rea
 		Timeout:     timeout,
 		Status:      StatusPending,
 		CreatedAt:   time.Now(),
+	}
+	s.mu.Lock()
+	s.requests[id] = r
+	s.order = append(s.order, id)
+	s.mu.Unlock()
+
+	select {
+	case s.notify <- id:
+	default:
+	}
+
+	return r
+}
+
+func (s *Store) AddScript(name, reason string, timeout int) *Request {
+	id := generateID()
+	r := &Request{
+		ID:         id,
+		Type:       "script",
+		ScriptName: name,
+		Reason:     reason,
+		Timeout:    timeout,
+		Status:     StatusPending,
+		CreatedAt:  time.Now(),
 	}
 	s.mu.Lock()
 	s.requests[id] = r
@@ -226,6 +253,18 @@ func (s *Store) List(filter Status) []*Request {
 // Subscribe returns a channel that receives request IDs when new requests are added.
 func (s *Store) Subscribe() <-chan string {
 	return s.notify
+}
+
+func (s *Store) SetStdin(id string, data []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.requests[id]
+	if !ok {
+		return false
+	}
+	r.Stdin = data
+	r.StdinLen = len(data)
+	return true
 }
 
 func (s *Store) SetDisplayCommand(id string, cmd string) bool {

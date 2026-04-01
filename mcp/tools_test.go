@@ -1360,3 +1360,306 @@ func TestNoWarningsForCleanCommand(t *testing.T) {
 		t.Fatalf("expected no warnings for clean command, got: %v", warnings)
 	}
 }
+
+// --- run_script tests ---
+
+func setupWithScripts(t *testing.T) (*ToolHandler, string) {
+	t.Helper()
+	h := setup(t)
+	dir := t.TempDir()
+	h.SetScriptsDir(dir)
+	return h, dir
+}
+
+func TestRunScriptBasic(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	os.WriteFile(filepath.Join(dir, "queue-to-doing.sh"), []byte("#!/bin/bash\necho done\n"), 0755)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "queue-to-doing",
+		"reason": "Move top queue card to doing",
+	})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+
+	if resp["request_id"] == "" {
+		t.Fatal("expected request_id")
+	}
+	if resp["status"] != "pending" {
+		t.Fatalf("expected pending status, got %s", resp["status"])
+	}
+
+	reqID := resp["request_id"].(string)
+	req := h.store.Get(reqID)
+	if req.Type != "script" {
+		t.Fatalf("expected type 'script', got %q", req.Type)
+	}
+	if req.ScriptName != "queue-to-doing" {
+		t.Fatalf("expected script name 'queue-to-doing', got %q", req.ScriptName)
+	}
+}
+
+func TestRunScriptDisplayCommand(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	os.WriteFile(filepath.Join(dir, "test.sh"), []byte("#!/bin/bash\n"), 0755)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "test",
+		"reason": "Test",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if req.DisplayCommand != "run_script test" {
+		t.Fatalf("expected display command 'run_script test', got %q", req.DisplayCommand)
+	}
+}
+
+func TestRunScriptNotFound(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "nonexistent",
+		"reason": "Test",
+	})
+
+	if !result.IsError {
+		t.Fatal("expected error for missing script")
+	}
+	if !strings.Contains(result.Content[0].Text, "script not found") {
+		t.Fatalf("expected 'script not found' error, got: %s", result.Content[0].Text)
+	}
+}
+
+func TestRunScriptInvalidName(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	tests := []struct {
+		name string
+		val  string
+	}{
+		{"path traversal", "../etc/passwd"},
+		{"absolute path", "/tmp/evil"},
+		{"dots", "foo.bar"},
+		{"spaces", "foo bar"},
+		{"slash", "foo/bar"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("run_script", map[string]interface{}{
+				"name":   tt.val,
+				"reason": "Test",
+			})
+			if !result.IsError {
+				t.Fatalf("expected error for invalid name %q", tt.val)
+			}
+		})
+	}
+}
+
+func TestRunScriptValidNames(t *testing.T) {
+	h, dir := setupWithScripts(t)
+
+	names := []string{"queue-to-doing", "my_script", "test123", "a"}
+	for _, name := range names {
+		os.WriteFile(filepath.Join(dir, name+".sh"), []byte("#!/bin/bash\n"), 0755)
+	}
+
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			result := h.Handle("run_script", map[string]interface{}{
+				"name":   name,
+				"reason": "Test",
+			})
+			if result.IsError {
+				t.Fatalf("unexpected error for valid name %q: %s", name, result.Content[0].Text)
+			}
+		})
+	}
+}
+
+func TestRunScriptMissingFields(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	os.WriteFile(filepath.Join(dir, "test.sh"), []byte("#!/bin/bash\n"), 0755)
+
+	tests := []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{"missing name", map[string]interface{}{"reason": "Test"}},
+		{"missing reason", map[string]interface{}{"name": "test"}},
+		{"both empty", map[string]interface{}{"name": "", "reason": ""}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("run_script", tt.args)
+			if !result.IsError {
+				t.Fatal("expected error for missing field")
+			}
+		})
+	}
+}
+
+func TestRunScriptWithTimeout(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	os.WriteFile(filepath.Join(dir, "slow.sh"), []byte("#!/bin/bash\nsleep 60\n"), 0755)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":    "slow",
+		"reason":  "Test timeout",
+		"timeout": float64(5),
+	})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if req.Timeout != 5 {
+		t.Fatalf("expected timeout 5, got %d", req.Timeout)
+	}
+}
+
+// --- create_script tests ---
+
+func TestCreateScriptBasic(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	content := "#!/bin/bash\necho hello\n"
+	result := h.Handle("create_script", map[string]interface{}{
+		"name":    "my-script",
+		"content": content,
+		"reason":  "Create a test script",
+	})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+
+	if resp["request_id"] == "" {
+		t.Fatal("expected request_id")
+	}
+	if resp["status"] != "pending" {
+		t.Fatalf("expected pending, got %s", resp["status"])
+	}
+
+	req := h.store.Get(resp["request_id"].(string))
+	if req.Type != "script_create" {
+		t.Fatalf("expected type 'script_create', got %q", req.Type)
+	}
+	if req.ScriptName != "my-script" {
+		t.Fatalf("expected script name 'my-script', got %q", req.ScriptName)
+	}
+	if req.StdinLen != len(content) {
+		t.Fatalf("expected stdin length %d, got %d", len(content), req.StdinLen)
+	}
+}
+
+func TestCreateScriptDisplayCommand(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	result := h.Handle("create_script", map[string]interface{}{
+		"name":    "foo",
+		"content": "#!/bin/bash\necho foo\n",
+		"reason":  "Test",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if !strings.HasPrefix(req.DisplayCommand, "create_script foo") {
+		t.Fatalf("unexpected display command: %q", req.DisplayCommand)
+	}
+}
+
+func TestCreateScriptReasonContainsContent(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	content := "#!/bin/bash\necho 'visible to reviewer'\n"
+	result := h.Handle("create_script", map[string]interface{}{
+		"name":    "review-me",
+		"content": content,
+		"reason":  "Test visibility",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	if !strings.Contains(req.Reason, "visible to reviewer") {
+		t.Fatalf("expected script content in reason for human review, got: %s", req.Reason)
+	}
+	if !strings.Contains(req.Reason, "[SCRIPT review-me.sh") {
+		t.Fatalf("expected script header in reason, got: %s", req.Reason)
+	}
+}
+
+func TestCreateScriptInvalidName(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	tests := []struct {
+		name string
+		val  string
+	}{
+		{"path traversal", "../etc/evil"},
+		{"slash", "foo/bar"},
+		{"dot", "foo.bar"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("create_script", map[string]interface{}{
+				"name":    tt.val,
+				"content": "#!/bin/bash\n",
+				"reason":  "Test",
+			})
+			if !result.IsError {
+				t.Fatalf("expected error for invalid name %q", tt.val)
+			}
+		})
+	}
+}
+
+func TestCreateScriptMissingFields(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	tests := []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{"missing name", map[string]interface{}{"content": "#!/bin/bash\n", "reason": "Test"}},
+		{"missing content", map[string]interface{}{"name": "test", "reason": "Test"}},
+		{"missing reason", map[string]interface{}{"name": "test", "content": "#!/bin/bash\n"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("create_script", tt.args)
+			if !result.IsError {
+				t.Fatal("expected error for missing field")
+			}
+		})
+	}
+}

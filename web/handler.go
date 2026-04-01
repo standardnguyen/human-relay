@@ -36,6 +36,7 @@ type Handler struct {
 	turboCooldown    time.Duration
 	turboExpiry      time.Time
 	whitelist        *whitelist.Whitelist
+	scriptsDir       string
 }
 
 type HandlerOption func(*Handler)
@@ -52,6 +53,12 @@ func WithWhitelist(wl *whitelist.Whitelist) HandlerOption {
 	}
 }
 
+func WithScriptsDir(dir string) HandlerOption {
+	return func(h *Handler) {
+		h.scriptsDir = dir
+	}
+}
+
 func NewHandler(s *store.Store, exec *executor.Executor, al *audit.Logger, opts ...HandlerOption) *Handler {
 	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
 	h := &Handler{
@@ -61,6 +68,7 @@ func NewHandler(s *store.Store, exec *executor.Executor, al *audit.Logger, opts 
 		tmpl:             tmpl,
 		sseClients:       make(map[chan []byte]struct{}),
 		approvalCooldown: defaultApprovalCooldown,
+		scriptsDir:       "/scripts",
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -176,14 +184,27 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		h.cooldownMu.Unlock()
 
 		h.store.SetStatus(id, store.StatusApproved)
-		if req.Type == "http" {
+		switch req.Type {
+		case "http":
 			log.Printf("request %s approved, executing: %s %s", id, req.HTTPMethod, req.HTTPURL)
 			h.audit.Log("request_approved", id, map[string]interface{}{
 				"type":   "http",
 				"method": req.HTTPMethod,
 				"url":    req.HTTPURL,
 			})
-		} else {
+		case "script":
+			log.Printf("request %s approved, executing script: %s", id, req.ScriptName)
+			h.audit.Log("request_approved", id, map[string]interface{}{
+				"type":   "script",
+				"script": req.ScriptName,
+			})
+		case "script_create":
+			log.Printf("request %s approved, creating script: %s", id, req.ScriptName)
+			h.audit.Log("request_approved", id, map[string]interface{}{
+				"type":   "script_create",
+				"script": req.ScriptName,
+			})
+		default:
 			log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
 			h.audit.Log("request_approved", id, map[string]interface{}{
 				"command": req.Command,
@@ -347,6 +368,12 @@ func (h *Handler) watchRequests() {
 			if req.Type == "http" {
 				wlCommand = req.HTTPMethod
 				wlArgs = []string{req.HTTPURL}
+			} else if req.Type == "script" {
+				wlCommand = "run_script"
+				wlArgs = []string{req.ScriptName}
+			} else if req.Type == "script_create" {
+				wlCommand = "create_script"
+				wlArgs = []string{req.ScriptName}
 			}
 			if req != nil && req.Status == store.StatusPending && h.whitelist.Match(wlCommand, wlArgs) {
 				h.autoApprove(req)
@@ -374,9 +401,14 @@ func (h *Handler) executeRequest(req *store.Request) {
 	h.broadcastEvent("update", req.ID)
 
 	var result *store.Result
-	if req.Type == "http" {
+	switch req.Type {
+	case "http":
 		result = h.executor.ExecuteHTTP(req)
-	} else {
+	case "script":
+		result = h.executor.ExecuteScript(req)
+	case "script_create":
+		result = h.executor.ExecuteScriptCreate(req, h.scriptsDir)
+	default:
 		result = h.executor.Execute(req)
 	}
 

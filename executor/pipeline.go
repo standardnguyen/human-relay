@@ -107,7 +107,7 @@ func jsonPath(data []byte, path string) (string, error) {
 	case bool:
 		return strconv.FormatBool(v), nil
 	case nil:
-		return "", fmt.Errorf("value is null")
+		return "", nil
 	default:
 		// Nested object/array — return as JSON
 		b, _ := json.Marshal(v)

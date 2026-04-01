@@ -1373,7 +1373,7 @@ func setupWithScripts(t *testing.T) (*ToolHandler, string) {
 
 func TestRunScriptBasic(t *testing.T) {
 	h, dir := setupWithScripts(t)
-	os.WriteFile(filepath.Join(dir, "queue-to-doing.sh"), []byte("#!/bin/bash\necho done\n"), 0755)
+	os.WriteFile(filepath.Join(dir, "queue-to-doing.json"), []byte(`{"steps":[],"output":"done"}`), 0644)
 
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "queue-to-doing",
@@ -1406,7 +1406,7 @@ func TestRunScriptBasic(t *testing.T) {
 
 func TestRunScriptDisplayCommand(t *testing.T) {
 	h, dir := setupWithScripts(t)
-	os.WriteFile(filepath.Join(dir, "test.sh"), []byte("#!/bin/bash\n"), 0755)
+	os.WriteFile(filepath.Join(dir, "test.json"), []byte(`{"steps":[]}`), 0644)
 
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "test",
@@ -1472,7 +1472,7 @@ func TestRunScriptValidNames(t *testing.T) {
 
 	names := []string{"queue-to-doing", "my_script", "test123", "a"}
 	for _, name := range names {
-		os.WriteFile(filepath.Join(dir, name+".sh"), []byte("#!/bin/bash\n"), 0755)
+		os.WriteFile(filepath.Join(dir, name+".json"), []byte(`{"steps":[]}`), 0644)
 	}
 
 	for _, name := range names {
@@ -1490,7 +1490,7 @@ func TestRunScriptValidNames(t *testing.T) {
 
 func TestRunScriptMissingFields(t *testing.T) {
 	h, dir := setupWithScripts(t)
-	os.WriteFile(filepath.Join(dir, "test.sh"), []byte("#!/bin/bash\n"), 0755)
+	os.WriteFile(filepath.Join(dir, "test.json"), []byte(`{"steps":[]}`), 0644)
 
 	tests := []struct {
 		name string
@@ -1513,7 +1513,7 @@ func TestRunScriptMissingFields(t *testing.T) {
 
 func TestRunScriptWithTimeout(t *testing.T) {
 	h, dir := setupWithScripts(t)
-	os.WriteFile(filepath.Join(dir, "slow.sh"), []byte("#!/bin/bash\nsleep 60\n"), 0755)
+	os.WriteFile(filepath.Join(dir, "slow.json"), []byte(`{"steps":[{"method":"GET","url":"http://localhost:1/hang"}]}`), 0644)
 
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":    "slow",
@@ -1611,7 +1611,7 @@ func TestCreateScriptReasonContainsContent(t *testing.T) {
 	if !strings.Contains(req.Reason, "visible to reviewer") {
 		t.Fatalf("expected script content in reason for human review, got: %s", req.Reason)
 	}
-	if !strings.Contains(req.Reason, "[SCRIPT review-me.sh") {
+	if !strings.Contains(req.Reason, "[SCRIPT review-me.json") {
 		t.Fatalf("expected script header in reason, got: %s", req.Reason)
 	}
 }

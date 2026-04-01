@@ -68,9 +68,20 @@ func (e *Executor) ExecuteHTTP(r *store.Request) *store.Result {
 				Stderr:   fmt.Sprintf("HTTP request timed out after %ds", timeout),
 			}
 		}
+		// Scrub expanded credentials from error messages — Go's HTTP client
+		// includes the full URL in errors (e.g. DNS failures), which would
+		// leak expanded ${VAR} values into the audit log and agent context.
+		errMsg := err.Error()
+		errMsg = strings.ReplaceAll(errMsg, expandedURL, r.HTTPURL)
+		for _, v := range r.HTTPHeaders {
+			expanded := expandEnvVars(v)
+			if expanded != v && expanded != "" {
+				errMsg = strings.ReplaceAll(errMsg, expanded, "${***}")
+			}
+		}
 		return &store.Result{
 			ExitCode: -1,
-			Stderr:   fmt.Sprintf("HTTP request failed: %v", err),
+			Stderr:   fmt.Sprintf("HTTP request failed: %s", errMsg),
 		}
 	}
 	defer resp.Body.Close()

@@ -492,6 +492,31 @@ func TestExecuteHTTPNoExpansionWithoutPlaceholder(t *testing.T) {
 	}
 }
 
+func TestExecuteHTTPErrorScrubsCredentials(t *testing.T) {
+	t.Setenv("TEST_SECRET_KEY", "supersecret123")
+
+	e := newTestExecutor()
+	req := &store.Request{
+		Type:       "http",
+		HTTPMethod: "GET",
+		HTTPURL:    "http://nonexistent.invalid/api?key=${TEST_SECRET_KEY}",
+		Timeout:    2,
+	}
+
+	result := e.ExecuteHTTP(req)
+
+	if result.ExitCode != -1 {
+		t.Fatalf("expected error, got exit code %d", result.ExitCode)
+	}
+	if strings.Contains(result.Stderr, "supersecret123") {
+		t.Fatalf("expanded credential leaked in error message: %s", result.Stderr)
+	}
+	// The unexpanded placeholder should be there instead
+	if !strings.Contains(result.Stderr, "${TEST_SECRET_KEY}") {
+		t.Fatalf("expected unexpanded placeholder in error, got: %s", result.Stderr)
+	}
+}
+
 func TestExecuteHTTPTimeoutOverride(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()

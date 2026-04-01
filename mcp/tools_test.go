@@ -1440,6 +1440,19 @@ func TestRunScriptNotFound(t *testing.T) {
 	}
 }
 
+func TestRunScriptFindsPython(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	os.WriteFile(filepath.Join(dir, "my-py.py"), []byte("print('hi')"), 0755)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "my-py",
+		"reason": "Test python detection",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+}
+
 func TestRunScriptInvalidName(t *testing.T) {
 	h, _ := setupWithScripts(t)
 

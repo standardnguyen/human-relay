@@ -1,9 +1,12 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"time"
 
 	"git.ekaterina.net/administrator/human-relay/store"
 )
@@ -15,15 +18,21 @@ func (e *Executor) ExecuteScript(r *store.Request) *store.Result {
 	return e.ExecuteScriptIn(r, defaultScriptsDir)
 }
 
-// ExecuteScriptIn reads a pipeline JSON file and executes it.
+// ExecuteScriptIn detects the script type (.json or .py) and routes to the
+// appropriate executor.
 func (e *Executor) ExecuteScriptIn(r *store.Request, dir string) *store.Result {
-	scriptPath := fmt.Sprintf("%s/%s.json", dir, r.ScriptName)
+	// Try .py first, then .json
+	pyPath := fmt.Sprintf("%s/%s.py", dir, r.ScriptName)
+	if _, err := os.Stat(pyPath); err == nil {
+		return e.executePython(r, pyPath)
+	}
 
-	data, err := os.ReadFile(scriptPath)
+	jsonPath := fmt.Sprintf("%s/%s.json", dir, r.ScriptName)
+	data, err := os.ReadFile(jsonPath)
 	if err != nil {
 		return &store.Result{
 			ExitCode: -1,
-			Stderr:   fmt.Sprintf("failed to read script: %v", err),
+			Stderr:   fmt.Sprintf("script not found: tried %s.py and %s.json in %s", r.ScriptName, r.ScriptName, dir),
 		}
 	}
 
@@ -31,18 +40,72 @@ func (e *Executor) ExecuteScriptIn(r *store.Request, dir string) *store.Result {
 	if err := json.Unmarshal(data, &p); err != nil {
 		return &store.Result{
 			ExitCode: -1,
-			Stderr:   fmt.Sprintf("failed to parse script: %v", err),
+			Stderr:   fmt.Sprintf("failed to parse pipeline: %v", err),
 		}
 	}
 
 	return e.ExecutePipeline(&p, r.Timeout)
 }
 
-// ExecuteScriptCreate writes a script file to the given directory.
-func (e *Executor) ExecuteScriptCreate(r *store.Request, dir string) *store.Result {
-	scriptPath := fmt.Sprintf("%s/%s.json", dir, r.ScriptName)
+// executePython runs a Python script with the relay's environment.
+func (e *Executor) executePython(r *store.Request, path string) *store.Result {
+	timeout := r.Timeout
+	if timeout <= 0 {
+		timeout = e.config.DefaultTimeout
+	}
+	if timeout > e.config.MaxTimeout {
+		timeout = e.config.MaxTimeout
+	}
 
-	if err := os.WriteFile(scriptPath, r.Stdin, 0644); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "python3", path)
+
+	stdout := &limitedWriter{max: maxOutputBytes}
+	stderr := &limitedWriter{max: maxOutputBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err := cmd.Run()
+	result := &store.Result{
+		Stdout: stdout.buf.String(),
+		Stderr: stderr.buf.String(),
+	}
+	if stdout.hit {
+		result.Stderr += "\n[human-relay: stdout truncated at 1MB]"
+	}
+	if stderr.hit {
+		result.Stderr += "\n[human-relay: stderr truncated at 1MB]"
+	}
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			result.ExitCode = -1
+			result.Stderr = fmt.Sprintf("script timed out after %ds\n%s", timeout, result.Stderr)
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.ExitCode = -1
+			result.Stderr = err.Error()
+		}
+	}
+
+	return result
+}
+
+// ExecuteScriptCreate writes a script file to the given directory.
+// Detects type from content: JSON objects get .json extension, everything else gets .py.
+func (e *Executor) ExecuteScriptCreate(r *store.Request, dir string) *store.Result {
+	ext := detectScriptType(r.Stdin)
+	scriptPath := fmt.Sprintf("%s/%s%s", dir, r.ScriptName, ext)
+
+	mode := os.FileMode(0644)
+	if ext == ".py" {
+		mode = 0755
+	}
+
+	if err := os.WriteFile(scriptPath, r.Stdin, mode); err != nil {
 		return &store.Result{
 			ExitCode: -1,
 			Stderr:   fmt.Sprintf("failed to write script: %v", err),
@@ -53,4 +116,13 @@ func (e *Executor) ExecuteScriptCreate(r *store.Request, dir string) *store.Resu
 		ExitCode: 0,
 		Stdout:   fmt.Sprintf("Created %s (%d bytes)", scriptPath, len(r.Stdin)),
 	}
+}
+
+// detectScriptType returns ".json" if content parses as a JSON object, ".py" otherwise.
+func detectScriptType(content []byte) string {
+	var obj map[string]interface{}
+	if json.Unmarshal(content, &obj) == nil {
+		return ".json"
+	}
+	return ".py"
 }

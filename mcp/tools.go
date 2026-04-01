@@ -254,7 +254,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "run_script",
-		Description: "Run a named script on the relay. Scripts are pre-deployed bash files in the relay's /scripts directory. The script inherits the relay's environment (API keys, tokens, etc.). Requires human approval.",
+		Description: "Run a named pipeline script on the relay. Scripts are JSON pipeline definitions in /scripts/{name}.json that chain HTTP calls with variable extraction between steps. Environment variables (API keys, tokens) are expanded via ${VAR} syntax. Requires human approval.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -276,7 +276,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "create_script",
-		Description: "Create or update a script on the relay. The human reviewer sees the full script content before approving. Scripts are stored at /scripts/{name}.sh and can be executed with run_script.",
+		Description: "Create or update a pipeline script on the relay. The human reviewer sees the full content before approving. Scripts are JSON pipeline definitions stored at /scripts/{name}.json. Use run_script to execute them.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -286,7 +286,7 @@ var ToolDefinitions = []Tool{
 				},
 				"content": {
 					Type:        "string",
-					Description: "The full script content (bash). Will be written to /scripts/{name}.sh with executable permissions.",
+					Description: "The full script content (JSON pipeline definition). Will be written to /scripts/{name}.json.",
 				},
 				"reason": {
 					Type:        "string",
@@ -757,7 +757,7 @@ func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
 	}
 
 	// Check that the script file exists
-	scriptPath := fmt.Sprintf("%s/%s.sh", h.scriptsDir, name)
+	scriptPath := fmt.Sprintf("%s/%s.json", h.scriptsDir, name)
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
 		return errorResult(fmt.Sprintf("script not found: %s", scriptPath))
 	}
@@ -805,7 +805,7 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 	if len(preview) > 4096 {
 		preview = preview[:4096] + "\n... (truncated)"
 	}
-	prefixedReason := fmt.Sprintf("[SCRIPT %s.sh %dB] %s\n---\n%s", name, len(content), reason, preview)
+	prefixedReason := fmt.Sprintf("[SCRIPT %s.json %dB] %s\n---\n%s", name, len(content), reason, preview)
 
 	r := h.store.AddScript(name, prefixedReason, 0)
 	r.Type = "script_create"

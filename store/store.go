@@ -21,6 +21,7 @@ const (
 
 type Request struct {
 	ID         string    `json:"id"`
+	Type       string    `json:"type"` // "command" (default) or "http"
 	Command    string    `json:"command"`
 	Args       []string  `json:"args"`
 	Reason     string    `json:"reason"`
@@ -35,12 +36,20 @@ type Request struct {
 	Stdin          []byte     `json:"-"`
 	StdinLen       int        `json:"stdin_len,omitempty"`
 	DisplayCommand string     `json:"display_command,omitempty"`
+
+	// HTTP-specific fields (only when Type == "http")
+	HTTPMethod  string            `json:"http_method,omitempty"`
+	HTTPURL     string            `json:"http_url,omitempty"`
+	HTTPHeaders map[string]string `json:"http_headers,omitempty"`
+	HTTPBody    string            `json:"http_body,omitempty"`
 }
 
 type Result struct {
-	ExitCode int    `json:"exit_code"`
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
+	ExitCode    int               `json:"exit_code"`
+	Stdout      string            `json:"stdout"`
+	Stderr      string            `json:"stderr"`
+	StatusCode  int               `json:"status_code,omitempty"`
+	RespHeaders map[string]string `json:"response_headers,omitempty"`
 }
 
 type Store struct {
@@ -76,6 +85,33 @@ func (s *Store) Add(cmd string, args []string, reason, workingDir string, shell 
 	s.mu.Unlock()
 
 	// Non-blocking send to notify listeners
+	select {
+	case s.notify <- id:
+	default:
+	}
+
+	return r
+}
+
+func (s *Store) AddHTTP(method, url string, headers map[string]string, body, reason string, timeout int) *Request {
+	id := generateID()
+	r := &Request{
+		ID:          id,
+		Type:        "http",
+		HTTPMethod:  method,
+		HTTPURL:     url,
+		HTTPHeaders: headers,
+		HTTPBody:    body,
+		Reason:      reason,
+		Timeout:     timeout,
+		Status:      StatusPending,
+		CreatedAt:   time.Now(),
+	}
+	s.mu.Lock()
+	s.requests[id] = r
+	s.order = append(s.order, id)
+	s.mu.Unlock()
+
 	select {
 	case s.notify <- id:
 	default:

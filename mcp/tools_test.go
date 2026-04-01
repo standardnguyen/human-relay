@@ -1098,6 +1098,252 @@ func TestWarningShellTrueSSHRedirect(t *testing.T) {
 	}
 }
 
+// --- http_request tests ---
+
+func TestHTTPRequestBasic(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("http_request", map[string]interface{}{
+		"method": "GET",
+		"url":    "https://api.trello.com/1/members/me?key=abc&token=xyz",
+		"reason": "List boards",
+	})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+
+	if resp["request_id"] == "" {
+		t.Fatal("expected request_id")
+	}
+	if resp["status"] != "pending" {
+		t.Fatalf("expected pending status, got %s", resp["status"])
+	}
+
+	// Verify the store request
+	reqID := resp["request_id"].(string)
+	req := h.store.Get(reqID)
+	if req == nil {
+		t.Fatal("request not found in store")
+	}
+	if req.Type != "http" {
+		t.Fatalf("expected type 'http', got %q", req.Type)
+	}
+	if req.HTTPMethod != "GET" {
+		t.Fatalf("expected GET method, got %q", req.HTTPMethod)
+	}
+	if req.HTTPURL != "https://api.trello.com/1/members/me?key=abc&token=xyz" {
+		t.Fatalf("unexpected URL: %s", req.HTTPURL)
+	}
+	if req.Reason != "List boards" {
+		t.Fatalf("unexpected reason: %s", req.Reason)
+	}
+}
+
+func TestHTTPRequestWithHeadersAndBody(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("http_request", map[string]interface{}{
+		"method": "POST",
+		"url":    "https://api.trello.com/1/cards?key=abc&token=xyz",
+		"headers": map[string]interface{}{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer secret-token",
+		},
+		"body":   `{"idList":"abc123","name":"New card"}`,
+		"reason": "Create card",
+	})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	reqID := resp["request_id"].(string)
+	req := h.store.Get(reqID)
+
+	if req.HTTPMethod != "POST" {
+		t.Fatalf("expected POST, got %s", req.HTTPMethod)
+	}
+	if req.HTTPHeaders["Content-Type"] != "application/json" {
+		t.Fatalf("expected Content-Type header, got %v", req.HTTPHeaders)
+	}
+	if req.HTTPHeaders["Authorization"] != "Bearer secret-token" {
+		t.Fatalf("expected Authorization header, got %v", req.HTTPHeaders)
+	}
+	if req.HTTPBody != `{"idList":"abc123","name":"New card"}` {
+		t.Fatalf("unexpected body: %s", req.HTTPBody)
+	}
+}
+
+func TestHTTPRequestDisplayCommand(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("http_request", map[string]interface{}{
+		"method": "DELETE",
+		"url":    "https://api.trello.com/1/cards/abc123",
+		"reason": "Delete card",
+	})
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	reqID := resp["request_id"].(string)
+	req := h.store.Get(reqID)
+
+	if req.DisplayCommand != "DELETE https://api.trello.com/1/cards/abc123" {
+		t.Fatalf("unexpected display command: %s", req.DisplayCommand)
+	}
+}
+
+func TestHTTPRequestAllMethods(t *testing.T) {
+	h := setup(t)
+
+	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			result := h.Handle("http_request", map[string]interface{}{
+				"method": method,
+				"url":    "https://example.com/test",
+				"reason": "test " + method,
+			})
+			if result.IsError {
+				t.Fatalf("%s should be accepted, got: %s", method, result.Content[0].Text)
+			}
+		})
+	}
+}
+
+func TestHTTPRequestInvalidMethod(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("http_request", map[string]interface{}{
+		"method": "TRACE",
+		"url":    "https://example.com/test",
+		"reason": "test",
+	})
+
+	if !result.IsError {
+		t.Fatal("expected error for unsupported method")
+	}
+	if !strings.Contains(result.Content[0].Text, "unsupported HTTP method") {
+		t.Fatalf("expected method error, got: %s", result.Content[0].Text)
+	}
+}
+
+func TestHTTPRequestInvalidURL(t *testing.T) {
+	h := setup(t)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"no scheme", "api.trello.com/1/cards"},
+		{"ftp scheme", "ftp://files.example.com/data"},
+		{"empty", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("http_request", map[string]interface{}{
+				"method": "GET",
+				"url":    tt.url,
+				"reason": "test",
+			})
+			if !result.IsError {
+				t.Fatalf("expected error for URL %q", tt.url)
+			}
+		})
+	}
+}
+
+func TestHTTPRequestMissingFields(t *testing.T) {
+	h := setup(t)
+
+	tests := []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{"missing method", map[string]interface{}{"url": "https://example.com", "reason": "test"}},
+		{"missing url", map[string]interface{}{"method": "GET", "reason": "test"}},
+		{"missing reason", map[string]interface{}{"method": "GET", "url": "https://example.com"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("http_request", tt.args)
+			if !result.IsError {
+				t.Fatal("expected error for missing field")
+			}
+		})
+	}
+}
+
+func TestHTTPRequestWithTimeout(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("http_request", map[string]interface{}{
+		"method":  "GET",
+		"url":     "https://example.com/slow",
+		"reason":  "test timeout",
+		"timeout": float64(60),
+	})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	reqID := resp["request_id"].(string)
+	req := h.store.Get(reqID)
+
+	if req.Timeout != 60 {
+		t.Fatalf("expected timeout 60, got %d", req.Timeout)
+	}
+}
+
+func TestHTTPRequestCommandFieldsEmpty(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("http_request", map[string]interface{}{
+		"method": "GET",
+		"url":    "https://example.com",
+		"reason": "test",
+	})
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	reqID := resp["request_id"].(string)
+	req := h.store.Get(reqID)
+
+	// HTTP requests should NOT have command/args set
+	if req.Command != "" {
+		t.Fatalf("HTTP request should not have Command set, got %q", req.Command)
+	}
+	if len(req.Args) != 0 {
+		t.Fatalf("HTTP request should not have Args set, got %v", req.Args)
+	}
+}
+
+func TestHTTPRequestHTTPSchemeAccepted(t *testing.T) {
+	h := setup(t)
+
+	// http:// (not just https://) should be accepted for internal APIs
+	result := h.Handle("http_request", map[string]interface{}{
+		"method": "GET",
+		"url":    "http://192.168.10.59:3000/api/pages",
+		"reason": "Query internal wiki API",
+	})
+
+	if result.IsError {
+		t.Fatalf("http:// should be accepted: %s", result.Content[0].Text)
+	}
+}
+
 func TestNoWarningsForCleanCommand(t *testing.T) {
 	h := setup(t)
 

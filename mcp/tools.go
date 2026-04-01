@@ -218,6 +218,41 @@ var ToolDefinitions = []Tool{
 		},
 	},
 	{
+		Name:        "http_request",
+		Description: "Make an HTTP request (GET, POST, PUT, PATCH, DELETE) through the human approval flow. The human reviewer sees the full request details before approving. Useful for API calls (Trello, Slack, etc.) where you want human-in-the-loop control.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"method": {
+					Type:        "string",
+					Description: "HTTP method",
+					Enum:        []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"},
+				},
+				"url": {
+					Type:        "string",
+					Description: "The full URL to request (e.g. https://api.trello.com/1/cards)",
+				},
+				"headers": {
+					Type:        "object",
+					Description: "HTTP headers as key-value pairs (e.g. {\"Authorization\": \"Bearer token\", \"Content-Type\": \"application/json\"})",
+				},
+				"body": {
+					Type:        "string",
+					Description: "Request body (typically JSON). Omit for GET/DELETE/HEAD requests.",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Why this request needs to be made (shown to the human reviewer)",
+				},
+				"timeout": {
+					Type:        "integer",
+					Description: "Request timeout in seconds (default: server default, max: server max)",
+				},
+			},
+			Required: []string{"method", "url", "reason"},
+		},
+	},
+	{
 		Name:        "install_ssh_key",
 		Description: "Install an arbitrary SSH public key on a container. Routes via direct SSH if the relay has access, otherwise via pct exec through the Proxmox host. WARNING: This tool can grant SSH access to any key — use with caution. Requires human approval.",
 		InputSchema: InputSchema{
@@ -294,6 +329,8 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 		return h.execContainer(args)
 	case "write_file":
 		return h.writeFile(args)
+	case "http_request":
+		return h.httpRequest(args)
 	case "install_relay_ssh":
 		return h.installRelaySSH(args)
 	case "install_ssh_key":
@@ -585,6 +622,79 @@ func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult
 	}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))
+}
+
+func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
+	method, _ := args["method"].(string)
+	url, _ := args["url"].(string)
+	reason, _ := args["reason"].(string)
+
+	if method == "" || url == "" || reason == "" {
+		return errorResult("method, url, and reason are required")
+	}
+
+	// Validate method
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD":
+	default:
+		return errorResult(fmt.Sprintf("unsupported HTTP method: %s (use GET, POST, PUT, PATCH, DELETE, or HEAD)", method))
+	}
+
+	// Basic URL validation
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return errorResult("url must start with http:// or https://")
+	}
+
+	// Parse headers
+	var headers map[string]string
+	if rawHeaders, ok := args["headers"].(map[string]interface{}); ok {
+		headers = make(map[string]string)
+		for k, v := range rawHeaders {
+			if s, ok := v.(string); ok {
+				headers[k] = s
+			}
+		}
+	}
+
+	body, _ := args["body"].(string)
+
+	timeout := 0
+	if t, ok := args["timeout"].(float64); ok {
+		timeout = int(t)
+	}
+
+	r := h.store.AddHTTP(method, url, headers, body, reason, timeout)
+
+	// Build a friendly display command
+	displayCmd := fmt.Sprintf("%s %s", method, url)
+	h.store.SetDisplayCommand(r.ID, displayCmd)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":    "http_request",
+		"method":  method,
+		"url":     url,
+		"headers": headerKeys(headers),
+		"has_body": body != "",
+		"reason":  reason,
+		"timeout": timeout,
+	})
+
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// headerKeys returns just the header names (not values) for audit logging,
+// avoiding leaking auth tokens into the audit log.
+func headerKeys(headers map[string]string) []string {
+	keys := make([]string, 0, len(headers))
+	for k := range headers {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // intArg extracts an integer from args, handling both float64 (JSON default) and direct int.

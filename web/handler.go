@@ -176,33 +176,24 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		h.cooldownMu.Unlock()
 
 		h.store.SetStatus(id, store.StatusApproved)
-		log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
-		h.audit.Log("request_approved", id, map[string]interface{}{
-			"command": req.Command,
-			"args":    req.Args,
-		})
+		if req.Type == "http" {
+			log.Printf("request %s approved, executing: %s %s", id, req.HTTPMethod, req.HTTPURL)
+			h.audit.Log("request_approved", id, map[string]interface{}{
+				"type":   "http",
+				"method": req.HTTPMethod,
+				"url":    req.HTTPURL,
+			})
+		} else {
+			log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
+			h.audit.Log("request_approved", id, map[string]interface{}{
+				"command": req.Command,
+				"args":    req.Args,
+			})
+		}
 		h.broadcastEvent("update", id)
 
 		// Execute in background
-		go func() {
-			h.store.SetStatus(id, store.StatusRunning)
-			h.audit.Log("execution_started", id, nil)
-			h.broadcastEvent("update", id)
-			result := h.executor.Execute(req)
-			status := store.StatusComplete
-			if result.ExitCode != 0 {
-				status = store.StatusError
-			}
-			h.store.SetResult(id, result, status)
-			log.Printf("request %s completed with exit code %d", id, result.ExitCode)
-			h.audit.Log("execution_completed", id, map[string]interface{}{
-				"exit_code": result.ExitCode,
-				"status":    string(status),
-				"stdout":    audit.Truncate(result.Stdout),
-				"stderr":    audit.Truncate(result.Stderr),
-			})
-			h.broadcastEvent("update", id)
-		}()
+		go h.executeRequest(req)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "approved"})
@@ -368,25 +359,35 @@ func (h *Handler) autoApprove(req *store.Request) {
 	})
 	h.broadcastEvent("update", req.ID)
 
-	go func() {
-		h.store.SetStatus(req.ID, store.StatusRunning)
-		h.audit.Log("execution_started", req.ID, nil)
-		h.broadcastEvent("update", req.ID)
-		result := h.executor.Execute(req)
-		status := store.StatusComplete
-		if result.ExitCode != 0 {
-			status = store.StatusError
-		}
-		h.store.SetResult(req.ID, result, status)
-		log.Printf("request %s completed with exit code %d", req.ID, result.ExitCode)
-		h.audit.Log("execution_completed", req.ID, map[string]interface{}{
-			"exit_code": result.ExitCode,
-			"status":    string(status),
-			"stdout":    audit.Truncate(result.Stdout),
-			"stderr":    audit.Truncate(result.Stderr),
-		})
-		h.broadcastEvent("update", req.ID)
-	}()
+	go h.executeRequest(req)
+}
+
+// executeRequest dispatches to the appropriate executor based on request type.
+func (h *Handler) executeRequest(req *store.Request) {
+	h.store.SetStatus(req.ID, store.StatusRunning)
+	h.audit.Log("execution_started", req.ID, nil)
+	h.broadcastEvent("update", req.ID)
+
+	var result *store.Result
+	if req.Type == "http" {
+		result = h.executor.ExecuteHTTP(req)
+	} else {
+		result = h.executor.Execute(req)
+	}
+
+	status := store.StatusComplete
+	if result.ExitCode != 0 {
+		status = store.StatusError
+	}
+	h.store.SetResult(req.ID, result, status)
+	log.Printf("request %s completed with exit code %d", req.ID, result.ExitCode)
+	h.audit.Log("execution_completed", req.ID, map[string]interface{}{
+		"exit_code": result.ExitCode,
+		"status":    string(status),
+		"stdout":    audit.Truncate(result.Stdout),
+		"stderr":    audit.Truncate(result.Stderr),
+	})
+	h.broadcastEvent("update", req.ID)
 }
 
 func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {

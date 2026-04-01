@@ -781,9 +781,11 @@ function render() {
       : '';
     const cardClass = 'request-card ' + r.status + (isShellPending ? ' shell-warn' : '');
 
-    // For whitelist matching, HTTP requests use method as command and [url] as args
-    const wlCmdKey = isHTTP ? r.http_method : r.command;
-    const wlArgsKey = isHTTP ? [r.http_url] : (r.args || []);
+    // For whitelist matching, map to the same keys the backend uses
+    const isScript = r.type === 'script';
+    const isScriptCreate = r.type === 'script_create';
+    const wlCmdKey = isHTTP ? r.http_method : isScript ? 'run_script' : isScriptCreate ? 'create_script' : r.command;
+    const wlArgsKey = isHTTP ? [r.http_url] : (isScript || isScriptCreate) ? [r.script_name] : (r.args || []);
     const wlMatch = isWhitelisted(wlCmdKey, wlArgsKey);
     const wlBtnHtml = (r.status !== 'pending')
       ? (wlMatch

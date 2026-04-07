@@ -84,6 +84,77 @@ sys.exit(42)
 	}
 }
 
+func TestExecuteScriptShell(t *testing.T) {
+	dir := t.TempDir()
+	writeSh(t, dir, "greet", `#!/bin/bash
+echo "hello from bash"
+echo "var=${TEST_SH_VAR:-unset}"
+`)
+
+	os.Setenv("TEST_SH_VAR", "works")
+	defer os.Unsetenv("TEST_SH_VAR")
+
+	e := newTestExecutor()
+	req := &store.Request{Type: "script", ScriptName: "greet", Timeout: 10}
+	result := e.ExecuteScriptIn(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "hello from bash") {
+		t.Fatalf("expected bash output, got: %s", result.Stdout)
+	}
+	if !strings.Contains(result.Stdout, "var=works") {
+		t.Fatalf("expected env var, got: %s", result.Stdout)
+	}
+}
+
+func TestExecuteScriptShellNonZeroExit(t *testing.T) {
+	dir := t.TempDir()
+	writeSh(t, dir, "fail", `#!/bin/bash
+echo "oops" >&2
+exit 42
+`)
+
+	e := newTestExecutor()
+	req := &store.Request{Type: "script", ScriptName: "fail-sh", Timeout: 10}
+	// Name the file to match
+	writeSh(t, dir, "fail-sh", `#!/bin/bash
+echo "oops" >&2
+exit 42
+`)
+	result := e.ExecuteScriptIn(req, dir)
+
+	if result.ExitCode != 42 {
+		t.Fatalf("expected exit code 42, got %d", result.ExitCode)
+	}
+	if !strings.Contains(result.Stderr, "oops") {
+		t.Fatalf("expected stderr, got: %s", result.Stderr)
+	}
+}
+
+func TestExecuteScriptShTakesPrecedence(t *testing.T) {
+	// When .sh, .py, and .json all exist, .sh wins
+	dir := t.TempDir()
+	writeSh(t, dir, "all", `#!/bin/bash
+echo "from shell"
+`)
+	writePy(t, dir, "all", `print("from python")`)
+	p := Pipeline{Steps: []Step{}, Output: "from json"}
+	writeJSON(t, dir, "all", &p)
+
+	e := newTestExecutor()
+	req := &store.Request{Type: "script", ScriptName: "all", Timeout: 10}
+	result := e.ExecuteScriptIn(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "from shell") {
+		t.Fatalf("expected shell to take precedence, got: %s", result.Stdout)
+	}
+}
+
 func TestExecuteScriptPyTakesPrecedence(t *testing.T) {
 	// When both .py and .json exist, .py wins
 	dir := t.TempDir()
@@ -209,6 +280,39 @@ print("hello")
 	}
 }
 
+func TestExecuteScriptCreateShell(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestExecutor()
+
+	content := "#!/bin/bash\necho hello\n"
+	req := &store.Request{
+		Type:       "script_create",
+		ScriptName: "my-shell",
+		Stdin:      []byte(content),
+	}
+
+	result := e.ExecuteScriptCreate(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+
+	// Should be saved as .sh
+	written, err := os.ReadFile(filepath.Join(dir, "my-shell.sh"))
+	if err != nil {
+		t.Fatalf("shell script not created: %v", err)
+	}
+	if string(written) != content {
+		t.Fatalf("content mismatch: got %q", string(written))
+	}
+
+	// Should be executable
+	info, _ := os.Stat(filepath.Join(dir, "my-shell.sh"))
+	if info.Mode()&0111 == 0 {
+		t.Fatal("shell script should be executable")
+	}
+}
+
 func TestExecuteScriptCreateOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "existing.json"), []byte(`{"steps":[],"output":"old"}`), 0644)
@@ -239,6 +343,10 @@ func TestDetectScriptType(t *testing.T) {
 		want    string
 	}{
 		{"json pipeline", `{"steps":[],"output":"hi"}`, ".json"},
+		{"shell bash", "#!/bin/bash\necho hi", ".sh"},
+		{"shell sh", "#!/bin/sh\necho hi", ".sh"},
+		{"shell env bash", "#!/usr/bin/env bash\necho hi", ".sh"},
+		{"shell env sh", "#!/usr/bin/env sh\necho hi", ".sh"},
 		{"python", `import os\nprint("hi")`, ".py"},
 		{"empty", "", ".py"},
 		{"json array", `[1,2,3]`, ".py"}, // arrays aren't pipeline objects
@@ -269,5 +377,12 @@ func writePy(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name+".py"), []byte(content), 0755); err != nil {
 		t.Fatalf("write python %s: %v", name, err)
+	}
+}
+
+func writeSh(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name+".sh"), []byte(content), 0755); err != nil {
+		t.Fatalf("write shell %s: %v", name, err)
 	}
 }

@@ -265,7 +265,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "run_script",
-		Description: "Run a named pipeline script on the relay. Scripts are JSON pipeline definitions in /scripts/{name}.json that chain HTTP calls with variable extraction between steps. Environment variables (API keys, tokens) are expanded via ${VAR} syntax. Requires human approval.",
+		Description: "Run a named script on the relay. Supports shell scripts (.sh), Python scripts (.py), and JSON pipeline definitions (.json). Lookup order: .sh, .py, .json. Environment variables are available in all script types. Requires human approval.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -288,7 +288,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "create_script",
-		Description: "Create or update a pipeline script on the relay. The human reviewer sees the full content before approving. Scripts are JSON pipeline definitions stored at /scripts/{name}.json. Use run_script to execute them.",
+		Description: "Create or update a script on the relay. The human reviewer sees the full content before approving. Supports JSON pipelines, Python scripts, and shell scripts. Type is auto-detected: JSON objects become .json, shebang lines (#!/bin/bash, #!/bin/sh) become .sh, everything else becomes .py. Use run_script to execute them.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -298,7 +298,7 @@ var ToolDefinitions = []Tool{
 				},
 				"content": {
 					Type:        "string",
-					Description: "The full script content (JSON pipeline definition). Will be written to /scripts/{name}.json.",
+					Description: "The full script content. JSON objects are saved as .json pipelines, scripts starting with #!/bin/bash or #!/bin/sh as .sh, everything else as .py.",
 				},
 				"reason": {
 					Type:        "string",
@@ -822,7 +822,17 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 	if len(preview) > 4096 {
 		preview = preview[:4096] + "\n... (truncated)"
 	}
-	prefixedReason := fmt.Sprintf("[SCRIPT %s.json %dB] %s\n---\n%s", name, len(content), reason, preview)
+	ext := ".py"
+	var obj map[string]interface{}
+	if json.Unmarshal([]byte(content), &obj) == nil {
+		ext = ".json"
+	} else if strings.HasPrefix(content, "#!/bin/bash") ||
+		strings.HasPrefix(content, "#!/bin/sh") ||
+		strings.HasPrefix(content, "#!/usr/bin/env bash") ||
+		strings.HasPrefix(content, "#!/usr/bin/env sh") {
+		ext = ".sh"
+	}
+	prefixedReason := fmt.Sprintf("[SCRIPT %s%s %dB] %s\n---\n%s", name, ext, len(content), reason, preview)
 
 	r := h.store.AddScript(name, prefixedReason, 0)
 	r.Type = "script_create"

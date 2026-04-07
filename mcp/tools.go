@@ -770,13 +770,15 @@ func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
 		return errorResult("script name must be alphanumeric with hyphens/underscores only (no paths, no extensions)")
 	}
 
-	// Check that the script file exists (.py or .json)
+	// Check that the script file exists (.sh, .py, or .json)
+	shPath := fmt.Sprintf("%s/%s.sh", h.scriptsDir, name)
 	pyPath := fmt.Sprintf("%s/%s.py", h.scriptsDir, name)
 	jsonPath := fmt.Sprintf("%s/%s.json", h.scriptsDir, name)
+	_, shErr := os.Stat(shPath)
 	_, pyErr := os.Stat(pyPath)
 	_, jsonErr := os.Stat(jsonPath)
-	if os.IsNotExist(pyErr) && os.IsNotExist(jsonErr) {
-		return errorResult(fmt.Sprintf("script not found: tried %s and %s", pyPath, jsonPath))
+	if os.IsNotExist(shErr) && os.IsNotExist(pyErr) && os.IsNotExist(jsonErr) {
+		return errorResult(fmt.Sprintf("script not found: tried %s, %s, and %s", shPath, pyPath, jsonPath))
 	}
 
 	timeout := 0

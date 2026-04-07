@@ -1624,7 +1624,7 @@ func TestCreateScriptReasonContainsContent(t *testing.T) {
 	if !strings.Contains(req.Reason, "visible to reviewer") {
 		t.Fatalf("expected script content in reason for human review, got: %s", req.Reason)
 	}
-	if !strings.Contains(req.Reason, "[SCRIPT review-me.json") {
+	if !strings.Contains(req.Reason, "[SCRIPT review-me.sh") {
 		t.Fatalf("expected script header in reason, got: %s", req.Reason)
 	}
 }

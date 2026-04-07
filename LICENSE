@@ -1,18 +1,18 @@
-# Standard's Petty Software License v2.0
+# Standard's Petty Software License v2.1.2
 
 ## Definitions
-1. **Licensed Software** means the software to which the Licensor applied this license.
+1. **Licensed Software** means all software, written works, documentation, templates, configuration files, and other copyrightable works to which the Licensor applied this license.
 2. **Licensed Rights** means the rights granted to You subject to the terms and conditions of this license. These rights are limited to rights under copyright and similar rights that apply to Your use of the Licensed Software.
 3. **Adapted Software** means software subject to copyright and similar rights that is derived from or based upon the Licensed Software. This includes Licensed Software that is translated, altered, arranged, transformed, or otherwise modified in a manner requiring permission under the copyright and similar rights held by the Licensor.
 4. **Effective Technological Measures** means any measures that, in the absence of proper authority, may not be circumvented under laws fulfilling obligations under Article 11 of the WIPO Copyright Treaty adopted on December 20, 1996, and/or similar international agreements.
-5. **You/Your** means the individual or entity exercising the Licensed Rights under this license, specifically excluding those on Standard's Blacklist.
-6. **Standard's Blacklist** means a list maintained by Standard, github user "standardnguyen," that defines individuals and entities restricted from accessing this Licensed Software. This may includes those involved in harmful, unethical, or illegal activities or subject to governmental or international sanctions. It can be found at the end of this document.
+5. **You/Your** means the individual or entity exercising the Licensed Rights under this license, specifically excluding those on Standard’s Blacklist.
+6. **Standard's Blacklist** means a list maintained by Standard, github user “standardnguyen,” that defines individuals and entities restricted from accessing this Licensed Software. This may includes those involved in harmful, unethical, or illegal activities or subject to governmental or international sanctions. It can be found at the end of this document.
 7. **Derivative Work** means any work that incorporates, modifies, transforms, adapts, or builds upon the Licensed Software, including but not limited to:
    1. Software containing any portion of the Licensed Software's code
    2. Translations of the Licensed Software into different programming languages
    3. Modified versions of the Licensed Software
    4. Software that statically or dynamically links with the Licensed Software in a manner that creates a unified work
-   5. The legal definition of "derivative work" as defined in the Copyright Act (17 U.S. Code § 101)
+   5. The legal definition of “derivative work” as defined in the Copyright Act (17 U.S. Code § 101)
 8. **Mere Distribution** means the act of placing the Licensed Software alongside other unrelated software on storage media or distribution systems without creating functional interdependence between the works.
 9. **Source Form** means the preferred format for making modifications to software, including all source code files, associated interface definition files, build scripts, compilation instructions, and installation procedures necessary to generate executable versions.
 10. **2019 Dollars** means U.S. dollar amounts adjusted to their equivalent purchasing power as of January 1, 2019, serving as the baseline for all monetary calculations in this license.
@@ -71,7 +71,7 @@ If You wish to incorporate parts of the Licensed Software into other works whose
 The Licensor authorizes You to exercise the Licensed Rights in all media and formats whether now known or hereafter created, and to make technical modifications necessary to do so. The Licensor waives and/or agrees not to assert any right or authority to forbid You from making technical modifications necessary to exercise the Licensed Rights. This includes technical modifications necessary to circumvent Effective Technological Measures when legally permitted.
 
 ### 5. Downstream Recipients
-1. Every recipient of the Licensed Software automatically receives an offer from the Licensor to exercise the Licensed Rights under the terms and conditions of this license, unless the recipient is listed on Standard's Blacklist;
+1. Every recipient of the Licensed Software automatically receives an offer from the Licensor to exercise the Licensed Rights under the terms and conditions of this license, unless the recipient is listed on Standard’s Blacklist;
 2. Every recipient of Adapted Software from You automatically receives an offer from the Licensor to exercise the Licensed Rights in the Adapted Software under the conditions of this license;
 3. You may not offer or impose any additional or different terms or conditions on, or apply any Effective Technological Measures to, the Licensed Software if doing so restricts exercise of the Licensed Rights by any recipient of the Licensed Software.
 
@@ -170,120 +170,13 @@ This section only applies to the extent allowed by the applicable laws of your j
 You agree to indemnify, pay the defense cost of, and hold harmless Standard from and against all liabilities, damages, judgments, awards, losses, costs, expenses, and fees (including reasonable attorney and expert witness fees) arising out of or in connection with any third-party claims, demands, or actions (i) that, if true, would involve a breach by you of this Agreement (including, without limitation, any distribution or sublicensing of the Licensed Technology in violation of this Agreement), or (ii) related to your Products or your exercise of the License (except to the extent the third party is alleging your authorized use of unmodified Licensed Technology originally provided to you by Standard under this Agreement infringes any patent, trademark, or copyright).
 
 # Governing Law and Jurisdiction
-Any dispute or claim by you arising out of or related to this Agreement will be governed by New York law, exclusive of its choice of law rules. You and Standard agree to submit to the exclusive jurisdiction of the Supreme Court of New York County, New York, or, if federal court jurisdiction exists, the United States District Court for the Southern District of New York. You and Standard agree to waive any jurisdictional, venue, or inconvenient forum objections to such courts (without affecting either party's rights to remove a case to federal court if permissible), as well as any right to a jury trial. The Convention on Contracts for the International Sale of Goods will not apply. Any law or regulation which provides that the language of a contract will be construed against the drafter will not apply to this Agreement. This paragraph will be interpreted as broadly as applicable law permits.
+Any dispute or claim by you arising out of or related to this Agreement will be governed by New York law, exclusive of its choice of law rules. You and Standard agree to submit to the exclusive jurisdiction of the Supreme Court of New York County, New York, or, if federal court jurisdiction exists, the United States District Court for the Southern District of New York. You and Standard agree to waive any jurisdictional, venue, or inconvenient forum objections to such courts (without affecting either party’s rights to remove a case to federal court if permissible), as well as any right to a jury trial. The Convention on Contracts for the International Sale of Goods will not apply. Any law or regulation which provides that the language of a contract will be construed against the drafter will not apply to this Agreement. This paragraph will be interpreted as broadly as applicable law permits.
 
 ---
 
 # Standard's Blacklist
 
-## Definitions
-
-1. **Current Spouse:** The individual to whom someone is legally married at the time of enforcement of this clause.
-2. **Ancestors:** All biological and legal predecessors of an individual, including parents, grandparents, great-grandparents, and so forth.
-3. **Ancestors-in-Law:** All biological and legal predecessors of an individual's current spouse, including parents-in-law, grandparents-in-law, great-grandparents-in-law, and so forth.
-4. **Cousins:** Children of an individual's aunts and uncles, including biological and in-law, and any individual that shares a common ancestor.
-5. **Siblings:** Brothers and sisters, including biological and in-law.
-6. **Aunts and Uncles:** Siblings of an individual's parents, including biological and in-law, and including nonbinary aunts/uncles.
-
-## Class A
-
-1. **Relating to Current and/or Former Employees of the ABC Unified School District:**
-   1. Rod Ziolkowski
-   2. Bryan Glonchak
-   3. Craig Spratt
-   4. RoseEllen Shea
-   5. Gary Smuts and any of his children and grandchildren (included but not limited to adopted, fostered, or biological)
-2. **Relating to Windsor, Colorado and the Surrounding Areas:**
-   1. **Manweiller Hardware in Windsor, Colorado:**
-      1. Any current or former shareholder
-      2. Any current or former employee
-      3. Any current or former manager
-   2. The **Manweiller** Family, related by blood or marriage and born before 1999.
-   3. **Specific Individuals:**
-      1. Jim Cosner from Windsor, Colorado and any of his children, adopted, fostered, or biological
-      2. Mark Fortune
-      3. Gary Doering
-      4. Frankie Stahl
-      5. Dain Johnson
-      6. Teresa Bacon
-   4. **Political Contributions:**
-      1. Any current or former resident of Windsor, Colorado who has ever donated to Donald Trump's political campaigns
-3. **Relating to Wetfish:**
-   1. Rachel Shelton
-   2. Emily Pillmore, who is:
-      1. Is a current or former board member of the Haskell Foundation
-      2. Is a current or former employee at Kadena
-   3. Nathanael Reuben Magby
-4. Krishan Patel (@Krishan_A_Patel on Twitter)
-5. Armand Domalewski (@ArmandDoma on Twitter)
-6. Terry Watkins (@TerryWatkinsJr1 on Twitter)
-7. Antiwokes
-   1. Cremieux (cremieux.xyz, @cremieuxrecueil on Twitter)
-   2. Curtis Yarvin
-   3. Noah Smith
-   4. Jayless Blame (@jaylessblame on Twitter)
-8. **Relating to Current or Former Residents of Denver, Colorado and Surrounding Areas:**
-   1. Autumn Trottier from Englewood, Colorado
-   2. Roger Bell
-   3. Aiyla Lauren
-   4. Paul Muldoon
-   5. John W from Hampden South
-   6. Eleni Sarris
-   7. Cary Claytor Ferguson
-   8. Treva Fulton
-   9. Scott Cavin Hickman
-   10. Greg Oehm
-   11. Patricia Ann Hollinshead
-   12. Joanne Davidson of Jefferson Park
-   13. Thea Quintanilla
-9. **Relating to the Licensor:**
-   1. Any parent, cousin, sibling, grandparent, aunt, or uncle of Standard, whether biological or in-law.
-
-## Class B
-
-1. **Pertaining to Class A Members:**
-   1. Any current spouse
-   2. Any ancestors
-   3. Any ancestors-in-law
-
-## Class C - Political Parties
-
-1. **United States:**
-   1. Republican Party
-2. **Canada:**
-   1. Conservative Party of Canada
-3. **United Kingdom:**
-   1. Conservative Party
-   2. Reform UK Party
-4. **Germany:**
-   1. Alternative for Germany (AfD)
-
-## Class D - Political Affiliations
-
-1. **Relating to Class C Parties:**
-   1. Any individual who has run for office under any Class C party label at any level
-   2. Any leadership, employee, or registered member of any Class C party
-2. **Organizations and Entities:**
-   1. The Republican National Committee (RNC) and any subsidiary organizations
-   2. Any company majority-owned by Peter Thiel
-   3. Palantir Technologies Inc. and any subsidiary companies
-   4. The Heritage Foundation and any affiliate organizations
-   5. Americans for Prosperity and any affiliate organizations
-   6. The Federalist Society and any affiliate organizations
-   7. Turning Point USA and any affiliate organizations
-   8. The Daily Wire and any affiliate organizations
-   9. PragerU and any affiliate organizations
-   10. The American Enterprise Institute and any affiliate organizations
-   11. The Cato Institute and any affiliate organizations
-   12. Fox Corporation and any subsidiary companies (including Fox News)
-   13. Newsmax Media and any affiliate organizations
-   14. One America News Network (OAN) and any affiliate organizations
-
-## Class E
-
-1. Any retirement home providing services to any member of Class A
-2. Any hospital providing services to any member of Class A
-3. Any person or entity providing legal services to any member of Class A
+Standard's Blacklist is maintained as a separate document. See [BLACKLIST.md](BLACKLIST.md) for the full list of restricted individuals and entities. The Blacklist is incorporated by reference into this license and has the same force and effect as if set forth herein.
 
 ---
 

@@ -44,7 +44,8 @@ type Request struct {
 	HTTPBody    string            `json:"http_body,omitempty"`
 
 	// Script-specific fields (only when Type == "script")
-	ScriptName string `json:"script_name,omitempty"`
+	ScriptName string   `json:"script_name,omitempty"`
+	ScriptArgs []string `json:"script_args,omitempty"`
 }
 
 type Result struct {
@@ -123,12 +124,13 @@ func (s *Store) AddHTTP(method, url string, headers map[string]string, body, rea
 	return r
 }
 
-func (s *Store) AddScript(name, reason string, timeout int) *Request {
+func (s *Store) AddScript(name string, args []string, reason string, timeout int) *Request {
 	id := generateID()
 	r := &Request{
 		ID:         id,
 		Type:       "script",
 		ScriptName: name,
+		ScriptArgs: args,
 		Reason:     reason,
 		Timeout:    timeout,
 		Status:     StatusPending,

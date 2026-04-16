@@ -273,6 +273,11 @@ var ToolDefinitions = []Tool{
 					Type:        "string",
 					Description: "Script name (e.g. 'queue-to-doing'). Must match a file at /scripts/{name}.sh on the relay.",
 				},
+				"args": {
+					Type:        "array",
+					Description: "Arguments to pass to the script. For shell/Python: positional args ($1, $2 / sys.argv). For JSON pipelines: available as ${1}, ${2}, etc.",
+					Items:       &Items{Type: "string"},
+				},
 				"reason": {
 					Type:        "string",
 					Description: "Why this script needs to run (shown to the human reviewer)",
@@ -781,19 +786,32 @@ func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
 		return errorResult(fmt.Sprintf("script not found: tried %s, %s, and %s", shPath, pyPath, jsonPath))
 	}
 
+	var scriptArgs []string
+	if rawArgs, ok := args["args"].([]interface{}); ok {
+		for _, a := range rawArgs {
+			if s, ok := a.(string); ok {
+				scriptArgs = append(scriptArgs, s)
+			}
+		}
+	}
+
 	timeout := 0
 	if t, ok := args["timeout"].(float64); ok {
 		timeout = int(t)
 	}
 
-	r := h.store.AddScript(name, reason, timeout)
+	r := h.store.AddScript(name, scriptArgs, reason, timeout)
 
 	displayCmd := fmt.Sprintf("run_script %s", name)
+	if len(scriptArgs) > 0 {
+		displayCmd += " " + strings.Join(scriptArgs, " ")
+	}
 	h.store.SetDisplayCommand(r.ID, displayCmd)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
 		"tool":    "run_script",
 		"script":  name,
+		"args":    scriptArgs,
 		"reason":  reason,
 		"timeout": timeout,
 	})
@@ -836,7 +854,7 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 	}
 	prefixedReason := fmt.Sprintf("[SCRIPT %s%s %dB] %s\n---\n%s", name, ext, len(content), reason, preview)
 
-	r := h.store.AddScript(name, prefixedReason, 0)
+	r := h.store.AddScript(name, nil, prefixedReason, 0)
 	r.Type = "script_create"
 	// Store script content for execution (writing to disk)
 	h.store.SetStdin(r.ID, []byte(content))

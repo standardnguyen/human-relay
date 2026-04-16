@@ -1546,6 +1546,72 @@ func TestRunScriptWithTimeout(t *testing.T) {
 	}
 }
 
+func TestRunScriptWithArgs(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	os.WriteFile(filepath.Join(dir, "deploy.sh"), []byte("#!/bin/bash\necho $@"), 0755)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "deploy",
+		"reason": "Deploy to staging",
+		"args":   []interface{}{"staging", "v1.2.3"},
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	if len(req.ScriptArgs) != 2 {
+		t.Fatalf("expected 2 script args, got %d", len(req.ScriptArgs))
+	}
+	if req.ScriptArgs[0] != "staging" || req.ScriptArgs[1] != "v1.2.3" {
+		t.Fatalf("expected args [staging v1.2.3], got %v", req.ScriptArgs)
+	}
+}
+
+func TestRunScriptArgsDisplayCommand(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	os.WriteFile(filepath.Join(dir, "deploy.sh"), []byte("#!/bin/bash\necho $@"), 0755)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "deploy",
+		"reason": "Deploy",
+		"args":   []interface{}{"staging", "v1.2.3"},
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if req.DisplayCommand != "run_script deploy staging v1.2.3" {
+		t.Fatalf("expected display command with args, got %q", req.DisplayCommand)
+	}
+}
+
+func TestRunScriptNoArgsSetsNil(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	os.WriteFile(filepath.Join(dir, "simple.json"), []byte(`{"steps":[]}`), 0644)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "simple",
+		"reason": "Test",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if len(req.ScriptArgs) != 0 {
+		t.Fatalf("expected no script args, got %v", req.ScriptArgs)
+	}
+}
+
 // --- create_script tests ---
 
 func TestCreateScriptBasic(t *testing.T) {

@@ -49,7 +49,13 @@ func (e *Executor) ExecuteScriptIn(r *store.Request, dir string) *store.Result {
 		}
 	}
 
-	return e.ExecutePipeline(&p, r.Timeout)
+	// Inject script args as numbered variables (${1}, ${2}, etc.) for the pipeline.
+	initVars := make(map[string]string)
+	for i, arg := range r.ScriptArgs {
+		initVars[fmt.Sprintf("%d", i+1)] = arg
+	}
+
+	return e.ExecutePipeline(&p, r.Timeout, initVars)
 }
 
 // executeShell runs a shell script with the relay's environment.
@@ -65,7 +71,8 @@ func (e *Executor) executeShell(r *store.Request, path string) *store.Result {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", path)
+	cmdArgs := append([]string{path}, r.ScriptArgs...)
+	cmd := exec.CommandContext(ctx, "bash", cmdArgs...)
 
 	stdout := &limitedWriter{max: maxOutputBytes}
 	stderr := &limitedWriter{max: maxOutputBytes}
@@ -112,7 +119,8 @@ func (e *Executor) executePython(r *store.Request, path string) *store.Result {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "python3", path)
+	cmdArgs := append([]string{path}, r.ScriptArgs...)
+	cmd := exec.CommandContext(ctx, "python3", cmdArgs...)
 
 	stdout := &limitedWriter{max: maxOutputBytes}
 	stderr := &limitedWriter{max: maxOutputBytes}

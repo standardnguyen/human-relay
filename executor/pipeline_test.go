@@ -138,7 +138,7 @@ func TestPipelineSingleStep(t *testing.T) {
 	}
 
 	e := newTestExecutor()
-	result := e.ExecutePipeline(p, 10)
+	result := e.ExecutePipeline(p, 10, nil)
 
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
@@ -185,7 +185,7 @@ func TestPipelineMultiStep(t *testing.T) {
 	}
 
 	e := newTestExecutor()
-	result := e.ExecutePipeline(p, 10)
+	result := e.ExecutePipeline(p, 10, nil)
 
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
@@ -216,7 +216,7 @@ func TestPipelineEmptyArrayGuard(t *testing.T) {
 	}
 
 	e := newTestExecutor()
-	result := e.ExecutePipeline(p, 10)
+	result := e.ExecutePipeline(p, 10, nil)
 
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0 for empty guard, got %d", result.ExitCode)
@@ -248,7 +248,7 @@ func TestPipelineEnvVarExpansion(t *testing.T) {
 	}
 
 	e := newTestExecutor()
-	result := e.ExecutePipeline(p, 10)
+	result := e.ExecutePipeline(p, 10, nil)
 
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
@@ -272,7 +272,7 @@ func TestPipelineHTTPError(t *testing.T) {
 	}
 
 	e := newTestExecutor()
-	result := e.ExecutePipeline(p, 10)
+	result := e.ExecutePipeline(p, 10, nil)
 
 	if result.ExitCode == 0 {
 		t.Fatal("expected non-zero exit code for HTTP error")
@@ -305,7 +305,7 @@ func TestPipelineWithHeaders(t *testing.T) {
 	defer os.Unsetenv("TEST_TOKEN")
 
 	e := newTestExecutor()
-	result := e.ExecutePipeline(p, 10)
+	result := e.ExecutePipeline(p, 10, nil)
 
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", result.ExitCode)
@@ -340,7 +340,7 @@ func TestPipelineWithBody(t *testing.T) {
 	// Pre-set a variable as if extracted from a prior step
 	// Actually, we can't do that with the current API. Let me use a two-step pipeline.
 	_ = receivedBody
-	result := e.ExecutePipeline(p, 10)
+	result := e.ExecutePipeline(p, 10, nil)
 
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", result.ExitCode)
@@ -381,7 +381,7 @@ func TestPipelineParsesFromJSON(t *testing.T) {
 func TestPipelineNoSteps(t *testing.T) {
 	p := &Pipeline{Steps: []Step{}}
 	e := newTestExecutor()
-	result := e.ExecutePipeline(p, 10)
+	result := e.ExecutePipeline(p, 10, nil)
 
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0 for empty pipeline, got %d", result.ExitCode)

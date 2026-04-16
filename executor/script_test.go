@@ -219,6 +219,105 @@ time.sleep(30)
 	}
 }
 
+func TestExecuteScriptShellWithArgs(t *testing.T) {
+	dir := t.TempDir()
+	writeSh(t, dir, "greet", `#!/bin/bash
+echo "hello $1 $2"
+echo "all: $@"
+`)
+
+	e := newTestExecutor()
+	req := &store.Request{
+		Type:       "script",
+		ScriptName: "greet",
+		ScriptArgs: []string{"world", "42"},
+		Timeout:    10,
+	}
+	result := e.ExecuteScriptIn(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "hello world 42") {
+		t.Fatalf("expected positional args in output, got: %s", result.Stdout)
+	}
+	if !strings.Contains(result.Stdout, "all: world 42") {
+		t.Fatalf("expected $@ expansion, got: %s", result.Stdout)
+	}
+}
+
+func TestExecuteScriptPythonWithArgs(t *testing.T) {
+	dir := t.TempDir()
+	writePy(t, dir, "echo-args", `import sys
+for arg in sys.argv[1:]:
+    print(arg)
+`)
+
+	e := newTestExecutor()
+	req := &store.Request{
+		Type:       "script",
+		ScriptName: "echo-args",
+		ScriptArgs: []string{"alpha", "beta"},
+		Timeout:    10,
+	}
+	result := e.ExecuteScriptIn(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "alpha") || !strings.Contains(result.Stdout, "beta") {
+		t.Fatalf("expected args in output, got: %s", result.Stdout)
+	}
+}
+
+func TestExecuteScriptShellNoArgs(t *testing.T) {
+	// Verify scripts still work fine with nil/empty args
+	dir := t.TempDir()
+	writeSh(t, dir, "simple", `#!/bin/bash
+echo "count: $#"
+`)
+
+	e := newTestExecutor()
+	req := &store.Request{Type: "script", ScriptName: "simple", Timeout: 10}
+	result := e.ExecuteScriptIn(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "count: 0") {
+		t.Fatalf("expected zero args, got: %s", result.Stdout)
+	}
+}
+
+func TestExecuteScriptPipelineWithArgs(t *testing.T) {
+	// Pipeline args should be available as ${1}, ${2}, etc.
+	dir := t.TempDir()
+	p := Pipeline{
+		Steps:  []Step{},
+		Output: "env=${1} ver=${2}",
+	}
+	writeJSON(t, dir, "deploy", &p)
+
+	e := newTestExecutor()
+	req := &store.Request{
+		Type:       "script",
+		ScriptName: "deploy",
+		ScriptArgs: []string{"staging", "v1.2.3"},
+		Timeout:    10,
+	}
+	result := e.ExecuteScriptIn(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "env=staging") {
+		t.Fatalf("expected ${1} expansion, got: %s", result.Stdout)
+	}
+	if !strings.Contains(result.Stdout, "ver=v1.2.3") {
+		t.Fatalf("expected ${2} expansion, got: %s", result.Stdout)
+	}
+}
+
 func TestExecuteScriptCreate(t *testing.T) {
 	dir := t.TempDir()
 	e := newTestExecutor()

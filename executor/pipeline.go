@@ -31,8 +31,8 @@ type Step struct {
 	EmptyArrayMessage string            `json:"empty_array_message,omitempty"`
 }
 
-// varRe matches ${VAR_NAME} patterns.
-var varRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+// varRe matches ${VAR_NAME} and ${N} (positional arg) patterns.
+var varRe = regexp.MustCompile(`\$\{([A-Za-z_0-9][A-Za-z0-9_]*)\}`)
 
 // expandVarsMap replaces ${VAR} with values from vars map, falling back to os.Getenv.
 func expandVarsMap(s string, vars map[string]string) string {
@@ -115,8 +115,9 @@ func jsonPath(data []byte, path string) (string, error) {
 	}
 }
 
-// ExecutePipeline runs a pipeline definition.
-func (e *Executor) ExecutePipeline(p *Pipeline, timeout int) *store.Result {
+// ExecutePipeline runs a pipeline definition. initVars seeds the variable map
+// with initial values (e.g., script arguments as "1", "2", etc.).
+func (e *Executor) ExecutePipeline(p *Pipeline, timeout int, initVars map[string]string) *store.Result {
 	if timeout <= 0 {
 		timeout = e.config.DefaultTimeout
 	}
@@ -128,6 +129,9 @@ func (e *Executor) ExecutePipeline(p *Pipeline, timeout int) *store.Result {
 	defer cancel()
 
 	vars := make(map[string]string)
+	for k, v := range initVars {
+		vars[k] = v
+	}
 	client := &http.Client{}
 
 	for i, step := range p.Steps {

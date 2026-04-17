@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"git.ekaterina.net/administrator/human-relay/store"
+	"github.com/standardnguyen/human-relay/store"
 )
 
 const maxOutputBytes = 1 << 20 // 1MB

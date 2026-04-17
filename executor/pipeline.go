@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"git.ekaterina.net/administrator/human-relay/store"
+	"github.com/standardnguyen/human-relay/store"
 )
 
 // Pipeline defines a sequence of HTTP steps with variable extraction between them.

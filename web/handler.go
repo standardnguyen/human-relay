@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"git.ekaterina.net/administrator/human-relay/audit"
-	"git.ekaterina.net/administrator/human-relay/executor"
-	"git.ekaterina.net/administrator/human-relay/store"
-	"git.ekaterina.net/administrator/human-relay/whitelist"
+	"github.com/standardnguyen/human-relay/audit"
+	"github.com/standardnguyen/human-relay/executor"
+	"github.com/standardnguyen/human-relay/store"
+	"github.com/standardnguyen/human-relay/whitelist"
 )
 
 //go:embed templates/*

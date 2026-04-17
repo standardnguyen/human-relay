@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"git.ekaterina.net/administrator/human-relay/store"
+	"github.com/standardnguyen/human-relay/store"
 )
 
 // envVarRe matches ${VAR_NAME} patterns for server-side env var expansion.

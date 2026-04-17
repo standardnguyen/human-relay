@@ -2,7 +2,7 @@
 
 **Human-in-the-loop command execution for AI agents.**
 
-Human Relay is an [MCP](https://modelcontextprotocol.io/) server that sits between your AI agent and your infrastructure. Agents request commands; you approve or deny them in a web dashboard; only then do they execute.
+Human Relay is an [MCP](https://modelcontextprotocol.io/) server that acts as a human approval gate between AI coding agents and the hosts they operate on. Agents submit commands over MCP; you approve or deny each from a web dashboard; the relay executes approved commands over SSH and returns the output. Every request and decision lands in an append-only audit log.
 
 ```
   Sandboxed                    Isolated                     Your infra
@@ -82,6 +82,8 @@ From wherever your agent runs (a different machine, container, or VM), add to yo
 
 Replace `RELAY_HOST` with the IP or hostname of the machine running the relay.
 
+Human Relay works with any MCP client that supports remote SSE transport via `mcp-remote` — Claude Code, Cursor, Windsurf, Continue, Cline, Zed, Goose. Primary development and testing is against Claude Code; client-specific quirks are tracked in GitHub issues.
+
 ### 3. Approve commands
 
 Open `http://RELAY_HOST:8090` in your browser. When the agent submits a command, it appears here for your approval.
@@ -108,7 +110,8 @@ This runs the relay and executes approved commands directly on your machine with
 | `register_container` | Register a remote host in the container registry | No |
 | `list_containers` | List registered containers | No |
 | `exec_container` | Execute a command on a registered remote host via SSH | Yes |
-| `write_file` | Deploy a file to a remote host (base64-encoded, binary-safe) | Yes |
+| `write_file` | Deploy a file to a remote host; accepts plaintext `content` or base64 `content_base64` (binary-safe) | Yes |
+| `withdraw_request` | Retract a pending request the agent no longer wants executed (with a reason; shown as WITHDRAWN in the dashboard) | No |
 
 ### Basic flow
 
@@ -184,6 +187,17 @@ Human Relay is designed for **private networks**. It is not suitable for public 
 - No per-user auth (single shared token)
 - Whitelist is exact-match only (no glob/regex patterns)
 - SSE metadata endpoint is unauthenticated (EventSource can't set headers)
+
+## Alternatives
+
+Other ways people keep AI agents from doing destructive things:
+
+- **Built-in approval modes in MCP clients** — Claude Code's permission prompts, Cursor's auto-run gating. Gate IDE actions well but don't cover arbitrary shell commands across remote hosts, and approvals don't persist outside the session.
+- **Filter/proxy MCP servers** that wrap a single upstream MCP server and add a confirm step. Narrower scope (one server at a time), no dashboard, no cross-host audit log.
+- **SSH bastions with command logging** catch things after the fact; no interactive approval step, no agent-side context.
+- **Copy-paste workflow** — the agent prints a shell command and you paste it into a terminal yourself. No MCP needed, no audit trail, tedious at scale.
+
+Human Relay's niche: a single approval surface for *every* shell command an agent wants to run, across any number of SSH-reachable hosts, with an append-only audit log, per-request reasoning from the agent, and a reusable command whitelist for routine operations.
 
 ## Development
 

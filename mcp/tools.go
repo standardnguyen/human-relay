@@ -345,6 +345,25 @@ var ToolDefinitions = []Tool{
 		},
 		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
 	},
+	{
+		Name:        "withdraw_request",
+		Description: "Retract a pending request before a human has decided on it. Use this when the agent realizes a submitted request was wrong (typo, stale plan, wrong target) and wants to prevent execution without waiting for the human to deny it. The request stays visible in the dashboard as WITHDRAWN with the supplied reason, but approve/deny/whitelist buttons are replaced with Mark Read. Only pending requests can be withdrawn; approved/running/complete/denied requests return an error.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"request_id": {
+					Type:        "string",
+					Description: "The request ID returned by a previous tool call (request_command, write_file, http_request, run_script, etc.)",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Why the request is being withdrawn. Shown to the human reviewer alongside the WITHDRAWN marker.",
+				},
+			},
+			Required: []string{"request_id", "reason"},
+		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(false)},
+	},
 }
 
 type ToolHandler struct {
@@ -412,6 +431,8 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 		return h.installRelaySSH(args)
 	case "install_ssh_key":
 		return h.installSSHKey(args)
+	case "withdraw_request":
+		return h.withdrawRequest(args)
 	default:
 		return errorResult(fmt.Sprintf("unknown tool: %s", name))
 	}
@@ -1327,6 +1348,35 @@ func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult
 		"container":  fmt.Sprintf("CTID %d (%s)", ctid, c.Hostname),
 		"route":      route,
 		"warning":    "This installs an arbitrary SSH key. Verify the key belongs to a trusted party before approving.",
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+func (h *ToolHandler) withdrawRequest(args map[string]interface{}) *CallToolResult {
+	requestID, _ := args["request_id"].(string)
+	reason, _ := args["reason"].(string)
+
+	if requestID == "" || reason == "" {
+		return errorResult("request_id and reason are required")
+	}
+
+	ok, currentStatus := h.store.Withdraw(requestID, reason)
+	if !ok {
+		if currentStatus == store.StatusPending {
+			return errorResult(fmt.Sprintf("request %s not found", requestID))
+		}
+		return errorResult(fmt.Sprintf("request %s is %s, only pending requests can be withdrawn", requestID, currentStatus))
+	}
+
+	h.audit.Log("request_withdrawn", requestID, map[string]interface{}{
+		"tool":            "withdraw_request",
+		"withdraw_reason": reason,
+	})
+
+	result := map[string]interface{}{
+		"request_id": requestID,
+		"status":     string(store.StatusWithdrawn),
 	}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))

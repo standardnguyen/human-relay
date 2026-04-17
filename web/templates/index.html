@@ -101,6 +101,7 @@
   .request-card.complete { border-left: 3px solid var(--green); }
   .request-card.denied { border-left: 3px solid var(--red); }
   .request-card.error { border-left: 3px solid var(--orange); }
+  .request-card.withdrawn { border-left: 3px solid var(--text-muted); opacity: 0.75; }
   .request-card.shell-warn {
     border-color: var(--red);
     background: rgba(248,81,73,0.05);
@@ -135,6 +136,18 @@
   .request-status.complete { background: rgba(63,185,80,0.2); color: var(--green); }
   .request-status.denied { background: rgba(248,81,73,0.2); color: var(--red); }
   .request-status.error { background: rgba(240,136,62,0.2); color: var(--orange); }
+  .request-status.withdrawn { background: rgba(139,148,158,0.2); color: var(--text-muted); }
+  .withdraw-reason { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.5rem; font-style: italic; }
+  .btn-mark-read {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 0.35rem 0.8rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .btn-mark-read:hover { border-color: var(--text); color: var(--text); }
   .command-block {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -454,6 +467,7 @@
   <button data-filter="running">Running</button>
   <button data-filter="complete">Complete</button>
   <button data-filter="denied">Denied</button>
+  <button data-filter="withdrawn">Withdrawn</button>
   <button data-filter="error">Error</button>
   <span class="filter-divider"></span>
   <button class="filter-whitelist" data-filter="whitelist">Whitelist <span id="wlCount"></span></button>
@@ -720,7 +734,7 @@ function render() {
   // Sort: status-filtered views for complete/denied/error show newest first.
   // "All" view: pending oldest-first at top, non-pending newest-first after.
   // Pending/running views: oldest first.
-  const newestFirstStatuses = ['complete', 'denied', 'error'];
+  const newestFirstStatuses = ['complete', 'denied', 'error', 'withdrawn'];
   filtered.sort((a, b) => {
     if (currentFilter === '' || currentFilter === 'pending' || currentFilter === 'running') {
       // All/pending/running: pending items first, oldest-to-newest
@@ -812,6 +826,10 @@ function render() {
         approveWlBtn +
         '<button class="btn-deny" onclick="deny(\'' + r.id + '\')">Deny</button>' +
         '</div>' + cooldownHtml;
+    } else if (r.status === 'withdrawn') {
+      actions = '<div class="actions">' +
+        '<button class="btn-mark-read" onclick="markRead(\'' + r.id + '\')">Mark Read</button>' +
+        '</div>';
     }
 
     let output = '';
@@ -854,6 +872,9 @@ function render() {
     }
     if (r.deny_reason) {
       output += '<div class="deny-reason">Denied: ' + sanitize(r.deny_reason) + '</div>';
+    }
+    if (r.withdraw_reason) {
+      output += '<div class="withdraw-reason">Withdrawn by agent: ' + sanitize(r.withdraw_reason) + '</div>';
     }
 
     return `<div class="${cardClass}">
@@ -1064,11 +1085,16 @@ async function toggleTurbo() {
 
 function clearHistory() {
   const terminal = requests.filter(r =>
-    r.status === 'complete' || r.status === 'denied' || r.status === 'error' || r.status === 'timeout'
+    r.status === 'complete' || r.status === 'denied' || r.status === 'error' || r.status === 'timeout' || r.status === 'withdrawn'
   );
   if (terminal.length === 0) return;
   terminal.forEach(r => hiddenIDs.add(r.id));
   showAll = false;
+  render();
+}
+
+function markRead(id) {
+  hiddenIDs.add(id);
   render();
 }
 

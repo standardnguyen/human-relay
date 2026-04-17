@@ -10,13 +10,14 @@ import (
 type Status string
 
 const (
-	StatusPending  Status = "pending"
-	StatusApproved Status = "approved"
-	StatusDenied   Status = "denied"
-	StatusRunning  Status = "running"
-	StatusComplete Status = "complete"
-	StatusTimeout  Status = "timeout"
-	StatusError    Status = "error"
+	StatusPending   Status = "pending"
+	StatusApproved  Status = "approved"
+	StatusDenied    Status = "denied"
+	StatusRunning   Status = "running"
+	StatusComplete  Status = "complete"
+	StatusTimeout   Status = "timeout"
+	StatusError     Status = "error"
+	StatusWithdrawn Status = "withdrawn"
 )
 
 type Request struct {
@@ -31,8 +32,9 @@ type Request struct {
 	Status     Status    `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
 	DecidedAt  *time.Time `json:"decided_at,omitempty"`
-	DenyReason string    `json:"deny_reason,omitempty"`
-	Result     *Result   `json:"result,omitempty"`
+	DenyReason     string    `json:"deny_reason,omitempty"`
+	WithdrawReason string    `json:"withdraw_reason,omitempty"`
+	Result         *Result   `json:"result,omitempty"`
 	Stdin          []byte     `json:"-"`
 	StdinLen       int        `json:"stdin_len,omitempty"`
 	DisplayCommand string     `json:"display_command,omitempty"`
@@ -60,13 +62,15 @@ type Store struct {
 	mu       sync.RWMutex
 	requests map[string]*Request
 	order    []string // insertion order
-	notify   chan string
+	notify   chan string // fires on new request
+	updates  chan string // fires on status change (approve/deny/withdraw/etc)
 }
 
 func New() *Store {
 	return &Store{
 		requests: make(map[string]*Request),
 		notify:   make(chan string, 100),
+		updates:  make(chan string, 100),
 	}
 }
 
@@ -222,6 +226,33 @@ func (s *Store) Deny(id string, reason string) bool {
 	return true
 }
 
+// Withdraw transitions a pending request to StatusWithdrawn. Returns
+// (ok, currentStatus). ok is false and currentStatus is StatusPending when
+// the request does not exist; ok is false and currentStatus reflects the
+// actual status when the request exists but is not pending.
+func (s *Store) Withdraw(id string, reason string) (bool, Status) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.requests[id]
+	if !ok {
+		return false, StatusPending
+	}
+	if r.Status != StatusPending {
+		return false, r.Status
+	}
+	r.Status = StatusWithdrawn
+	r.WithdrawReason = reason
+	now := time.Now()
+	r.DecidedAt = &now
+
+	select {
+	case s.updates <- id:
+	default:
+	}
+
+	return true, StatusWithdrawn
+}
+
 func (s *Store) SetResult(id string, result *Result, status Status) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -255,6 +286,14 @@ func (s *Store) List(filter Status) []*Request {
 // Subscribe returns a channel that receives request IDs when new requests are added.
 func (s *Store) Subscribe() <-chan string {
 	return s.notify
+}
+
+// SubscribeUpdates returns a channel that receives request IDs when an
+// existing request changes status (approve/deny/withdraw/etc). Only Withdraw
+// currently signals through this channel -- the web handler signals approve
+// and deny directly via broadcastEvent since those mutations originate there.
+func (s *Store) SubscribeUpdates() <-chan string {
+	return s.updates
 }
 
 func (s *Store) SetStdin(id string, data []byte) bool {

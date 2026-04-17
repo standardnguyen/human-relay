@@ -75,6 +75,8 @@ func NewHandler(s *store.Store, exec *executor.Executor, al *audit.Logger, opts 
 	}
 	// Watch for new requests and broadcast to SSE clients
 	go h.watchRequests()
+	// Watch for status updates (withdraw, etc) and broadcast
+	go h.watchUpdates()
 	return h
 }
 
@@ -356,6 +358,17 @@ func (h *Handler) broadcastEvent(eventType, requestID string) {
 		}
 	}
 	h.sseMu.Unlock()
+}
+
+// watchUpdates listens for status-change events from the store (currently:
+// Withdraw) and broadcasts them to SSE clients so the dashboard refreshes.
+// Approve/deny are broadcast directly from handleRequestAction since those
+// mutations originate in the web handler.
+func (h *Handler) watchUpdates() {
+	sub := h.store.SubscribeUpdates()
+	for id := range sub {
+		h.broadcastEvent("update", id)
+	}
 }
 
 func (h *Handler) watchRequests() {

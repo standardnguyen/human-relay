@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"git.ekaterina.net/administrator/human-relay/audit"
-	"git.ekaterina.net/administrator/human-relay/containers"
-	"git.ekaterina.net/administrator/human-relay/store"
+	"github.com/standardnguyen/human-relay/audit"
+	"github.com/standardnguyen/human-relay/containers"
+	"github.com/standardnguyen/human-relay/store"
 )
 
 func boolPtr(b bool) *bool { return &b }

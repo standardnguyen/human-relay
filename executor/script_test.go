@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.ekaterina.net/administrator/human-relay/store"
+	"github.com/standardnguyen/human-relay/store"
 )
 
 func TestExecuteScriptPipeline(t *testing.T) {

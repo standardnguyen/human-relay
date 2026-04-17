@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"git.ekaterina.net/administrator/human-relay/audit"
-	"git.ekaterina.net/administrator/human-relay/containers"
-	"git.ekaterina.net/administrator/human-relay/executor"
-	"git.ekaterina.net/administrator/human-relay/mcp"
-	"git.ekaterina.net/administrator/human-relay/store"
-	"git.ekaterina.net/administrator/human-relay/web"
-	"git.ekaterina.net/administrator/human-relay/whitelist"
+	"github.com/standardnguyen/human-relay/audit"
+	"github.com/standardnguyen/human-relay/containers"
+	"github.com/standardnguyen/human-relay/executor"
+	"github.com/standardnguyen/human-relay/mcp"
+	"github.com/standardnguyen/human-relay/store"
+	"github.com/standardnguyen/human-relay/web"
+	"github.com/standardnguyen/human-relay/whitelist"
 )
 
 func main() {

@@ -1,5 +1,9 @@
 # Human Relay
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/standardnguyen/human-relay)](https://goreportcard.com/report/github.com/standardnguyen/human-relay)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/standardnguyen/human-relay)](go.mod)
+
 **Human-in-the-loop command execution for AI agents.**
 
 Human Relay is an [MCP](https://modelcontextprotocol.io/) server that acts as a human approval gate between AI coding agents and the hosts they operate on. Agents submit commands over MCP; you approve or deny each from a web dashboard; the relay executes approved commands over SSH and returns the output. Every request and decision lands in an append-only audit log.

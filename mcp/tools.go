@@ -167,7 +167,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "write_file",
-		Description: "Write a file to a host or container. Content is sent as base64, decoded by the relay, and piped via stdin to avoid shell escaping issues. Requires human approval.",
+		Description: "Write a file to a host or container. Content is piped via stdin (never on the shell command line), so quotes, backticks, $, and newlines pass through unharmed. Pass plain text as `content`, or raw binary as `content_base64`. Exactly one is required. Requires human approval.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -175,9 +175,13 @@ var ToolDefinitions = []Tool{
 					Type:        "string",
 					Description: "Absolute path on the target (e.g. /opt/grafana/dashboards/backup-status.json)",
 				},
+				"content": {
+					Type:        "string",
+					Description: "File content as plain text (UTF-8). Preferred for config files, scripts, and other text. Use content_base64 for raw binary.",
+				},
 				"content_base64": {
 					Type:        "string",
-					Description: "File content, base64-encoded",
+					Description: "File content, base64-encoded. Use for raw binary files or content with non-UTF-8 bytes. For text, use `content` instead.",
 				},
 				"host": {
 					Type:        "string",
@@ -200,7 +204,7 @@ var ToolDefinitions = []Tool{
 					Description: "Command timeout in seconds (default: server default, max: server max)",
 				},
 			},
-			Required: []string{"path", "content_base64", "reason"},
+			Required: []string{"path", "reason"},
 		},
 		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
@@ -341,6 +345,25 @@ var ToolDefinitions = []Tool{
 		},
 		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
 	},
+	{
+		Name:        "withdraw_request",
+		Description: "Retract a pending request before a human has decided on it. Use this when the agent realizes a submitted request was wrong (typo, stale plan, wrong target) and wants to prevent execution without waiting for the human to deny it. The request stays visible in the dashboard as WITHDRAWN with the supplied reason, but approve/deny/whitelist buttons are replaced with Mark Read. Only pending requests can be withdrawn; approved/running/complete/denied requests return an error.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"request_id": {
+					Type:        "string",
+					Description: "The request ID returned by a previous tool call (request_command, write_file, http_request, run_script, etc.)",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Why the request is being withdrawn. Shown to the human reviewer alongside the WITHDRAWN marker.",
+				},
+			},
+			Required: []string{"request_id", "reason"},
+		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(false)},
+	},
 }
 
 type ToolHandler struct {
@@ -408,6 +431,8 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 		return h.installRelaySSH(args)
 	case "install_ssh_key":
 		return h.installSSHKey(args)
+	case "withdraw_request":
+		return h.withdrawRequest(args)
 	default:
 		return errorResult(fmt.Sprintf("unknown tool: %s", name))
 	}
@@ -1017,25 +1042,41 @@ doneMetachar:
 
 func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	path, _ := args["path"].(string)
-	contentB64, _ := args["content_base64"].(string)
 	reason, _ := args["reason"].(string)
 
-	if path == "" || contentB64 == "" || reason == "" {
-		return errorResult("path, content_base64, and reason are required")
+	if path == "" || reason == "" {
+		return errorResult("path and reason are required")
 	}
 
 	if !validPathRe.MatchString(path) {
 		return errorResult("path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
 	}
 
-	// Decode base64 (try standard, then raw/no-padding)
-	contentB64 = strings.Join(strings.Fields(contentB64), "")
-	content, err := base64.StdEncoding.DecodeString(contentB64)
-	if err != nil {
-		content, err = base64.RawStdEncoding.DecodeString(contentB64)
+	// Content can arrive as plain text (`content`) or base64 (`content_base64`).
+	// Exactly one is required: the plaintext path avoids a round-trip for text
+	// files while content_base64 remains available for raw binary / non-UTF-8.
+	plaintext, hasPlain := args["content"].(string)
+	contentB64, hasB64 := args["content_base64"].(string)
+	if hasPlain && plaintext != "" && hasB64 && contentB64 != "" {
+		return errorResult("provide either content or content_base64, not both")
+	}
+	var content []byte
+	switch {
+	case hasPlain && plaintext != "":
+		content = []byte(plaintext)
+	case hasB64 && contentB64 != "":
+		// Decode base64 (try standard, then raw/no-padding)
+		contentB64 = strings.Join(strings.Fields(contentB64), "")
+		decoded, err := base64.StdEncoding.DecodeString(contentB64)
 		if err != nil {
-			return errorResult(fmt.Sprintf("invalid base64: %v", err))
+			decoded, err = base64.RawStdEncoding.DecodeString(contentB64)
+			if err != nil {
+				return errorResult(fmt.Sprintf("invalid base64: %v", err))
+			}
 		}
+		content = decoded
+	default:
+		return errorResult("content or content_base64 is required")
 	}
 
 	mode := "0644"
@@ -1307,6 +1348,35 @@ func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult
 		"container":  fmt.Sprintf("CTID %d (%s)", ctid, c.Hostname),
 		"route":      route,
 		"warning":    "This installs an arbitrary SSH key. Verify the key belongs to a trusted party before approving.",
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+func (h *ToolHandler) withdrawRequest(args map[string]interface{}) *CallToolResult {
+	requestID, _ := args["request_id"].(string)
+	reason, _ := args["reason"].(string)
+
+	if requestID == "" || reason == "" {
+		return errorResult("request_id and reason are required")
+	}
+
+	ok, currentStatus := h.store.Withdraw(requestID, reason)
+	if !ok {
+		if currentStatus == store.StatusPending {
+			return errorResult(fmt.Sprintf("request %s not found", requestID))
+		}
+		return errorResult(fmt.Sprintf("request %s is %s, only pending requests can be withdrawn", requestID, currentStatus))
+	}
+
+	h.audit.Log("request_withdrawn", requestID, map[string]interface{}{
+		"tool":            "withdraw_request",
+		"withdraw_reason": reason,
+	})
+
+	result := map[string]interface{}{
+		"request_id": requestID,
+		"status":     string(store.StatusWithdrawn),
 	}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))

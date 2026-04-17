@@ -1045,6 +1045,7 @@ type RequestResult struct {
 	Status         string      `json:"status"`
 	CreatedAt      time.Time   `json:"created_at"`
 	DenyReason     string      `json:"deny_reason"`
+	WithdrawReason string      `json:"withdraw_reason"`
 	Result         *ExecResult `json:"result"`
 	StdinLen       int         `json:"stdin_len"`
 	DisplayCommand string      `json:"display_command"`

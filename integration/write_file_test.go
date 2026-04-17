@@ -84,7 +84,7 @@ func TestWriteFileMissingFields(t *testing.T) {
 			"content_base64": base64.StdEncoding.EncodeToString([]byte("hello")),
 			"reason":         "test",
 		}},
-		{"missing content_base64", map[string]interface{}{
+		{"missing both content fields", map[string]interface{}{
 			"path":   "/tmp/test.txt",
 			"reason": "test",
 		}},
@@ -544,6 +544,124 @@ func TestWriteFileEndToEnd(t *testing.T) {
 	} else {
 		// SSH to 127.0.0.1 might not be configured — that's OK, we still tested the tool logic
 		t.Logf("write_file e2e: status=%s (SSH to localhost may not be available)", result.Status)
+	}
+}
+
+func TestWriteFilePlaintextContent(t *testing.T) {
+	s, c := initClient(t)
+
+	// Content with the kinds of characters that would break shell interpolation:
+	// newlines, double/single quotes, $, backticks, backslashes.
+	content := "global:\n  scrape_interval: 15s\n  quotes: \"hello\" 'world'\n  shell: $PATH `whoami`\n  escape: \\n literal\n"
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "write_file",
+		"arguments": map[string]interface{}{
+			"path":    "/opt/grafana/prometheus.yml",
+			"content": content,
+			"reason":  "Deploy prometheus config (plaintext)",
+			"mode":    "0644",
+		},
+	})
+
+	if isErrorResponse(resp) {
+		t.Fatal("unexpected error from plaintext write_file")
+	}
+
+	wfr := extractWriteFileResponse(t, resp)
+	if wfr.Size != len(content) {
+		t.Errorf("expected size %d, got %d", len(content), wfr.Size)
+	}
+
+	found := findRequestByID(t, c, 3, wfr.RequestID)
+	if found.StdinLen != len(content) {
+		t.Errorf("expected stdin_len %d, got %d", len(content), found.StdinLen)
+	}
+	// Preview lives in the prefixed reason; verify a few characters made the round trip.
+	if !strings.Contains(found.Reason, "scrape_interval") {
+		t.Errorf("expected reason to contain content preview with 'scrape_interval', got %q", found.Reason)
+	}
+	if !strings.Contains(found.Reason, "$PATH") {
+		t.Errorf("expected '$PATH' preserved verbatim in preview, got %q", found.Reason)
+	}
+
+	WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), wfr.RequestID),
+		s.token, map[string]string{"reason": "test only"})
+}
+
+// TestWriteFilePlaintextByteExact verifies the relay stores the exact input
+// bytes as stdin when content is passed as plaintext — no silent
+// normalization, no base64 round-tripping.
+func TestWriteFilePlaintextByteExact(t *testing.T) {
+	s, c := initClient(t)
+
+	content := "line1\nline2\r\nline3\ttab\n"
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "write_file",
+		"arguments": map[string]interface{}{
+			"path":    "/tmp/exact-bytes.txt",
+			"content": content,
+			"reason":  "byte-exact check",
+		},
+	})
+
+	if isErrorResponse(resp) {
+		t.Fatal("unexpected error")
+	}
+
+	wfr := extractWriteFileResponse(t, resp)
+	if wfr.Size != len(content) {
+		t.Errorf("expected size %d, got %d", len(content), wfr.Size)
+	}
+	found := findRequestByID(t, c, 3, wfr.RequestID)
+	if found.StdinLen != len(content) {
+		t.Errorf("expected stdin_len %d, got %d", len(content), found.StdinLen)
+	}
+
+	WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), wfr.RequestID),
+		s.token, map[string]string{"reason": "test only"})
+}
+
+// TestWriteFileBothContentAndBase64 rejects calls that set both content and
+// content_base64 — the ambiguity is worse than forcing the caller to pick one.
+func TestWriteFileBothContentAndBase64(t *testing.T) {
+	_, c := initClient(t)
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "write_file",
+		"arguments": map[string]interface{}{
+			"path":           "/tmp/test.txt",
+			"content":        "plaintext",
+			"content_base64": base64.StdEncoding.EncodeToString([]byte("encoded")),
+			"reason":         "conflict",
+		},
+	})
+
+	if !isErrorResponse(resp) {
+		t.Fatal("expected error when both content and content_base64 are provided")
+	}
+}
+
+// TestWriteFileEmptyContentFields rejects the call when content is an empty
+// string AND content_base64 is absent — empty files should be created by
+// passing content_base64 of an empty string, to keep the code path explicit.
+func TestWriteFileEmptyContentFields(t *testing.T) {
+	_, c := initClient(t)
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "write_file",
+		"arguments": map[string]interface{}{
+			"path":    "/tmp/test.txt",
+			"content": "",
+			"reason":  "empty",
+		},
+	})
+
+	if !isErrorResponse(resp) {
+		t.Fatal("expected error when content is empty string and content_base64 absent")
 	}
 }
 

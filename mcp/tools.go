@@ -167,7 +167,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "write_file",
-		Description: "Write a file to a host or container. Content is sent as base64, decoded by the relay, and piped via stdin to avoid shell escaping issues. Requires human approval.",
+		Description: "Write a file to a host or container. Content is piped via stdin (never on the shell command line), so quotes, backticks, $, and newlines pass through unharmed. Pass plain text as `content`, or raw binary as `content_base64`. Exactly one is required. Requires human approval.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -175,9 +175,13 @@ var ToolDefinitions = []Tool{
 					Type:        "string",
 					Description: "Absolute path on the target (e.g. /opt/grafana/dashboards/backup-status.json)",
 				},
+				"content": {
+					Type:        "string",
+					Description: "File content as plain text (UTF-8). Preferred for config files, scripts, and other text. Use content_base64 for raw binary.",
+				},
 				"content_base64": {
 					Type:        "string",
-					Description: "File content, base64-encoded",
+					Description: "File content, base64-encoded. Use for raw binary files or content with non-UTF-8 bytes. For text, use `content` instead.",
 				},
 				"host": {
 					Type:        "string",
@@ -200,7 +204,7 @@ var ToolDefinitions = []Tool{
 					Description: "Command timeout in seconds (default: server default, max: server max)",
 				},
 			},
-			Required: []string{"path", "content_base64", "reason"},
+			Required: []string{"path", "reason"},
 		},
 		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
@@ -1017,25 +1021,41 @@ doneMetachar:
 
 func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	path, _ := args["path"].(string)
-	contentB64, _ := args["content_base64"].(string)
 	reason, _ := args["reason"].(string)
 
-	if path == "" || contentB64 == "" || reason == "" {
-		return errorResult("path, content_base64, and reason are required")
+	if path == "" || reason == "" {
+		return errorResult("path and reason are required")
 	}
 
 	if !validPathRe.MatchString(path) {
 		return errorResult("path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
 	}
 
-	// Decode base64 (try standard, then raw/no-padding)
-	contentB64 = strings.Join(strings.Fields(contentB64), "")
-	content, err := base64.StdEncoding.DecodeString(contentB64)
-	if err != nil {
-		content, err = base64.RawStdEncoding.DecodeString(contentB64)
+	// Content can arrive as plain text (`content`) or base64 (`content_base64`).
+	// Exactly one is required: the plaintext path avoids a round-trip for text
+	// files while content_base64 remains available for raw binary / non-UTF-8.
+	plaintext, hasPlain := args["content"].(string)
+	contentB64, hasB64 := args["content_base64"].(string)
+	if hasPlain && plaintext != "" && hasB64 && contentB64 != "" {
+		return errorResult("provide either content or content_base64, not both")
+	}
+	var content []byte
+	switch {
+	case hasPlain && plaintext != "":
+		content = []byte(plaintext)
+	case hasB64 && contentB64 != "":
+		// Decode base64 (try standard, then raw/no-padding)
+		contentB64 = strings.Join(strings.Fields(contentB64), "")
+		decoded, err := base64.StdEncoding.DecodeString(contentB64)
 		if err != nil {
-			return errorResult(fmt.Sprintf("invalid base64: %v", err))
+			decoded, err = base64.RawStdEncoding.DecodeString(contentB64)
+			if err != nil {
+				return errorResult(fmt.Sprintf("invalid base64: %v", err))
+			}
 		}
+		content = decoded
+	default:
+		return errorResult("content or content_base64 is required")
 	}
 
 	mode := "0644"

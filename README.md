@@ -1,7 +1,7 @@
 # Human Relay
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/standardnguyen/human-relay)](https://goreportcard.com/report/github.com/standardnguyen/human-relay)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: Petty SL 2.1.2](https://img.shields.io/badge/license-Petty%20SL%202.1.2-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/standardnguyen/human-relay)](go.mod)
 
 **Human-in-the-loop command execution for AI agents.**
@@ -172,25 +172,7 @@ Features:
 
 ## Security
 
-Human Relay is designed for **private networks**. It is not suitable for public internet exposure without a TLS reverse proxy.
-
-### What's protected
-
-- **No shell by default** — commands run via `os/exec`, not `sh -c`, so shell injection doesn't apply
-- **Shell mode is opt-in** — `sh -c` commands get a red warning banner in the dashboard
-- **Token auth** — all mutations require a bearer token (constant-time comparison)
-- **CSRF protection** — Origin header validation on all POST endpoints
-- **Path traversal blocked** — working directories validated against an allowlist
-- **Output capped** — stdout/stderr limited to 1MB per command
-- **Approval cooldown** — server-enforced rate limit between approvals
-- **Audit log** — append-only JSONL file records every request, approval, denial, and execution result
-
-### What's not (yet)
-
-- No TLS (use a reverse proxy)
-- No per-user auth (single shared token)
-- Whitelist is exact-match only (no glob/regex patterns)
-- SSE metadata endpoint is unauthenticated (EventSource can't set headers)
+Human Relay is designed for **private networks** — not public internet exposure without a TLS reverse proxy. See [`SECURITY.md`](SECURITY.md) for the full threat model, what the design does and does not protect against, and how to report vulnerabilities.
 
 ## Alternatives
 

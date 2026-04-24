@@ -4,14 +4,17 @@ Notable changes to Human Relay. Format loosely follows [Keep a Changelog](https:
 
 ## Unreleased
 
+### Added
+- `create_then_run` MCP tool combines `create_script` + `run_script` into a single approval. Default target is `/opt/human-relay/scripts/oneshot/<name>.{sh,py,json}` (extension auto-detected from content, same rules as `create_script`). A slash in `<name>` is respected as-is for deliberate non-oneshot subdirs. Refuses on collision (cross-extension, so `create_then_run("foo", <shell>)` won't shadow an existing `foo.py`). Script persists on disk after the run — re-runnable via `run_script(name="oneshot/<name>")`.
+- `run_script` accepts subpath names (e.g. `oneshot/foo`). New `validScriptPathRe` regex allows alphanumeric segments joined by single slashes; rejects traversal, leading/trailing/double slashes, and `.`/`..` segments.
+- `.github/` scaffolding — issue templates (bug / feature), PR template, CODEOWNERS.
+- `CHANGELOG.md` (this file).
+
 ### Changed
 - Module path is now `github.com/standardnguyen/human-relay` (was an internal path). Unblocks `go install`, Go Report Card, and pkg.go.dev.
 - README rewritten for discoverability: approval-gate framing, explicit MCP client list (Claude Code, Cursor, Windsurf, Continue, Cline, Zed, Goose), Alternatives section, badge row.
 - Security section moved to `SECURITY.md`; README now links to it.
-
-### Added
-- `.github/` scaffolding — issue templates (bug / feature), PR template, CODEOWNERS.
-- `CHANGELOG.md` (this file).
+- `run_script` validator no longer rejects slashes outright — they now denote subpaths under the scripts directory.
 
 ## 2026-04-17
 

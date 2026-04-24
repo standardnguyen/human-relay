@@ -435,6 +435,94 @@ func TestExecuteScriptCreateOverwrite(t *testing.T) {
 	}
 }
 
+func TestExecuteScriptCreateThenRunShell(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestExecutor()
+
+	// ScriptName uses the subpath form oneshot/<name> — the MCP handler
+	// applies the prefix; the executor just honors it and creates the dir.
+	content := "#!/bin/bash\necho created-and-ran\n"
+	req := &store.Request{
+		Type:       "script_create_then_run",
+		ScriptName: "oneshot/first",
+		Stdin:      []byte(content),
+		Timeout:    10,
+	}
+
+	result := e.ExecuteScriptCreateThenRun(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "created-and-ran") {
+		t.Fatalf("expected script output, got: %q", result.Stdout)
+	}
+
+	// File should persist at the expected path.
+	written, err := os.ReadFile(filepath.Join(dir, "oneshot", "first.sh"))
+	if err != nil {
+		t.Fatalf("script file not persisted: %v", err)
+	}
+	if string(written) != content {
+		t.Fatalf("content mismatch: got %q", string(written))
+	}
+
+	// Subdir created with correct perms.
+	info, _ := os.Stat(filepath.Join(dir, "oneshot"))
+	if info == nil || !info.IsDir() {
+		t.Fatal("expected oneshot/ directory to be created")
+	}
+}
+
+func TestExecuteScriptCreateThenRunPython(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestExecutor()
+
+	content := "print('py-oneshot-ran')\n"
+	req := &store.Request{
+		Type:       "script_create_then_run",
+		ScriptName: "oneshot/second",
+		Stdin:      []byte(content),
+		Timeout:    10,
+	}
+
+	result := e.ExecuteScriptCreateThenRun(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "py-oneshot-ran") {
+		t.Fatalf("expected script output, got: %q", result.Stdout)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "oneshot", "second.py")); err != nil {
+		t.Fatalf("script file not persisted: %v", err)
+	}
+}
+
+func TestExecuteScriptCreateThenRunWithArgs(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestExecutor()
+
+	content := "#!/bin/bash\necho \"args: $1 $2\"\n"
+	req := &store.Request{
+		Type:       "script_create_then_run",
+		ScriptName: "oneshot/with-args",
+		Stdin:      []byte(content),
+		ScriptArgs: []string{"alpha", "bravo"},
+		Timeout:    10,
+	}
+
+	result := e.ExecuteScriptCreateThenRun(req, dir)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "args: alpha bravo") {
+		t.Fatalf("expected args in output, got: %q", result.Stdout)
+	}
+}
+
 func TestDetectScriptType(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -319,6 +319,38 @@ var ToolDefinitions = []Tool{
 		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
 	{
+		Name:        "create_then_run",
+		Description: "Create a oneshot script and run it in a single approval. The default target is /opt/human-relay/scripts/oneshot/<name>.{sh,py,json} (extension auto-detected from content, same rules as create_script). If <name> contains a slash it is used as-is (no oneshot/ prefix). Refuses if a file already exists at any extension of the target path. After the run, the script persists on disk and can be re-run via run_script(name=\"oneshot/<name>\"). Use this for fire-once automation where a separate create_script + run_script round-trip would waste an approval.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"name": {
+					Type:        "string",
+					Description: "Script name. Alphanumeric segments (hyphens/underscores allowed) joined by single slashes. No leading/trailing/double slashes, no '.' or '..' segments. Plain names default to oneshot/<name>.",
+				},
+				"content": {
+					Type:        "string",
+					Description: "The full script content. JSON objects saved as .json pipelines, scripts starting with #!/bin/bash or #!/bin/sh as .sh, everything else as .py.",
+				},
+				"args": {
+					Type:        "array",
+					Description: "Arguments passed to the script when it runs. Same shape as run_script args.",
+					Items:       &Items{Type: "string"},
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Why this script is being created and run (shown to the human reviewer alongside the script content)",
+				},
+				"timeout": {
+					Type:        "integer",
+					Description: "Script timeout in seconds (default: server default, max: server max)",
+				},
+			},
+			Required: []string{"name", "content", "reason"},
+		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
+	},
+	{
 		Name:        "install_ssh_key",
 		Description: "Install an arbitrary SSH public key on a container. Routes via direct SSH if the relay has access, otherwise via pct exec through the Proxmox host. WARNING: This tool can grant SSH access to any key — use with caution. Requires human approval.",
 		InputSchema: InputSchema{
@@ -427,6 +459,8 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 		return h.runScript(args)
 	case "create_script":
 		return h.createScript(args)
+	case "create_then_run":
+		return h.createThenRun(args)
 	case "install_relay_ssh":
 		return h.installRelaySSH(args)
 	case "install_ssh_key":
@@ -785,8 +819,16 @@ func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
 	return textResult(string(data))
 }
 
-// validScriptNameRe matches safe script names: alphanumeric, hyphens, underscores.
+// validScriptNameRe matches a single safe script name segment:
+// alphanumeric, hyphens, underscores, must start with alphanumeric.
+// Used by create_script (flat names only).
 var validScriptNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// validScriptPathRe matches subpath script names: one or more segments
+// (each matching validScriptNameRe) joined by single slashes.
+// Rejects: leading/trailing/double slashes, `.` and `..` segments, absolute
+// paths, anything with spaces or dots. Used by run_script and create_then_run.
+var validScriptPathRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*(/[a-zA-Z0-9][a-zA-Z0-9_-]*)*$`)
 
 func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
 	name, _ := args["name"].(string)
@@ -796,8 +838,8 @@ func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
 		return errorResult("name and reason are required")
 	}
 
-	if !validScriptNameRe.MatchString(name) {
-		return errorResult("script name must be alphanumeric with hyphens/underscores only (no paths, no extensions)")
+	if !validScriptPathRe.MatchString(name) {
+		return errorResult("script name must be alphanumeric segments (hyphens/underscores allowed) joined by single slashes; no path traversal, no leading/trailing slashes, no extensions")
 	}
 
 	// Check that the script file exists (.sh, .py, or .json)
@@ -892,6 +934,110 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 		"script": name,
 		"size":   len(content),
 		"reason": reason,
+	})
+
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// detectScriptExt returns ".json" for JSON objects, ".sh" for scripts with a
+// supported bash/sh shebang, and ".py" for everything else. Mirrors the logic
+// in executor/script.go#detectScriptType but returns the extension directly.
+func detectScriptExt(content string) string {
+	var obj map[string]interface{}
+	if json.Unmarshal([]byte(content), &obj) == nil {
+		return ".json"
+	}
+	if strings.HasPrefix(content, "#!/bin/bash") ||
+		strings.HasPrefix(content, "#!/bin/sh") ||
+		strings.HasPrefix(content, "#!/usr/bin/env bash") ||
+		strings.HasPrefix(content, "#!/usr/bin/env sh") {
+		return ".sh"
+	}
+	return ".py"
+}
+
+func (h *ToolHandler) createThenRun(args map[string]interface{}) *CallToolResult {
+	name, _ := args["name"].(string)
+	content, _ := args["content"].(string)
+	reason, _ := args["reason"].(string)
+
+	if name == "" || content == "" || reason == "" {
+		return errorResult("name, content, and reason are required")
+	}
+
+	if !validScriptPathRe.MatchString(name) {
+		return errorResult("script name must be alphanumeric segments (hyphens/underscores allowed) joined by single slashes; no path traversal, no leading/trailing slashes, no extensions")
+	}
+
+	// Plain names default to oneshot/<name>. A caller-supplied subpath is
+	// used as-is (for experiments/ or other deliberate subdirs).
+	targetName := name
+	if !strings.Contains(name, "/") {
+		targetName = "oneshot/" + name
+	}
+
+	ext := detectScriptExt(content)
+
+	// Refuse if any extension of the target already exists. The cross-extension
+	// check avoids the case where create_then_run(foo, <shell>) silently shadows
+	// an existing oneshot/foo.py (since run_script picks .sh over .py).
+	for _, e := range []string{".sh", ".py", ".json"} {
+		p := fmt.Sprintf("%s/%s%s", h.scriptsDir, targetName, e)
+		if _, err := os.Stat(p); err == nil {
+			return errorResult(fmt.Sprintf("file already exists at %s; pick a different name", p))
+		}
+	}
+
+	var scriptArgs []string
+	if rawArgs, ok := args["args"].([]interface{}); ok {
+		for _, a := range rawArgs {
+			if s, ok := a.(string); ok {
+				scriptArgs = append(scriptArgs, s)
+			}
+		}
+	}
+
+	timeout := 0
+	if t, ok := args["timeout"].(float64); ok {
+		timeout = int(t)
+	}
+
+	// Build the approval reason. Shows target path, size, requested args, and
+	// the full script content so the reviewer sees create + run in one view.
+	preview := content
+	if len(preview) > 4096 {
+		preview = preview[:4096] + "\n... (truncated)"
+	}
+	argsStr := ""
+	if len(scriptArgs) > 0 {
+		argsStr = " args=[" + strings.Join(scriptArgs, " ") + "]"
+	}
+	prefixedReason := fmt.Sprintf("[CREATE+RUN %s%s %dB]%s %s\n---\n%s",
+		targetName, ext, len(content), argsStr, reason, preview)
+
+	r := h.store.AddScript(targetName, scriptArgs, prefixedReason, timeout)
+	r.Type = "script_create_then_run"
+	h.store.SetStdin(r.ID, []byte(content))
+
+	displayCmd := fmt.Sprintf("create_then_run %s%s (%dB)", targetName, ext, len(content))
+	if len(scriptArgs) > 0 {
+		displayCmd += " " + strings.Join(scriptArgs, " ")
+	}
+	h.store.SetDisplayCommand(r.ID, displayCmd)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":    "create_then_run",
+		"script":  targetName,
+		"ext":     ext,
+		"size":    len(content),
+		"args":    scriptArgs,
+		"reason":  reason,
+		"timeout": timeout,
 	})
 
 	result := map[string]interface{}{

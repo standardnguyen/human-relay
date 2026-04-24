@@ -206,6 +206,12 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 				"type":   "script_create",
 				"script": req.ScriptName,
 			})
+		case "script_create_then_run":
+			log.Printf("request %s approved, create+run script: %s", id, req.ScriptName)
+			h.audit.Log("request_approved", id, map[string]interface{}{
+				"type":   "script_create_then_run",
+				"script": req.ScriptName,
+			})
 		default:
 			log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
 			h.audit.Log("request_approved", id, map[string]interface{}{
@@ -387,6 +393,9 @@ func (h *Handler) watchRequests() {
 			} else if req.Type == "script_create" {
 				wlCommand = "create_script"
 				wlArgs = []string{req.ScriptName}
+			} else if req.Type == "script_create_then_run" {
+				wlCommand = "create_then_run"
+				wlArgs = []string{req.ScriptName}
 			}
 			if req != nil && req.Status == store.StatusPending && h.whitelist.Match(wlCommand, wlArgs) {
 				h.autoApprove(req)
@@ -421,6 +430,8 @@ func (h *Handler) executeRequest(req *store.Request) {
 		result = h.executor.ExecuteScript(req)
 	case "script_create":
 		result = h.executor.ExecuteScriptCreate(req, h.scriptsDir)
+	case "script_create_then_run":
+		result = h.executor.ExecuteScriptCreateThenRun(req, h.scriptsDir)
 	default:
 		result = h.executor.Execute(req)
 	}

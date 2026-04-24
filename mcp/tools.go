@@ -1,11 +1,14 @@
 package mcp
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -398,6 +401,13 @@ var ToolDefinitions = []Tool{
 	},
 }
 
+// WriteFileChecker probes a target file for the write_file pre-approval
+// overwrite warning. Returns (exists, size, mtime, err). On any error
+// (SSH failure, permission denied, timeout) callers MUST fail-open: proceed
+// with the write and omit the warning from the approval reason. A clean
+// "file does not exist" result is (false, 0, zero-time, nil) — no error.
+type WriteFileChecker func(ctid int, host, path string, timeout time.Duration) (exists bool, size int64, mtime time.Time, err error)
+
 type ToolHandler struct {
 	store          *store.Store
 	containers     *containers.Store
@@ -406,10 +416,19 @@ type ToolHandler struct {
 	sshConfigFile  string
 	relayPubkeyFile string
 	scriptsDir     string
+	writeFileChecker WriteFileChecker
 }
 
 func NewToolHandler(s *store.Store, cs *containers.Store, hostIP string, al *audit.Logger) *ToolHandler {
-	return &ToolHandler{store: s, containers: cs, hostIP: hostIP, audit: al, scriptsDir: "/scripts"}
+	h := &ToolHandler{store: s, containers: cs, hostIP: hostIP, audit: al, scriptsDir: "/scripts"}
+	h.writeFileChecker = h.defaultWriteFileCheck
+	return h
+}
+
+// SetWriteFileChecker overrides the write_file overwrite probe. Tests use this
+// to stub without SSH; production uses the default SSH-based implementation.
+func (h *ToolHandler) SetWriteFileChecker(c WriteFileChecker) {
+	h.writeFileChecker = c
 }
 
 // SetScriptsDir overrides the directory where run_script looks for scripts.
@@ -1058,6 +1077,88 @@ func headerKeys(headers map[string]string) []string {
 	return keys
 }
 
+// defaultWriteFileCheck runs `stat -c '%s %Y' <path>` on the target via SSH,
+// mirroring the write's routing (direct SSH or pct exec). Returns
+// (exists, size, mtime, err). Non-existent files return (false, 0, zero, nil);
+// SSH errors / permission denied / timeout return err != nil so the caller
+// can fail-open.
+//
+// The probe is best-effort by design: any stderr or non-zero exit means "we
+// don't know," and callers omit the warning rather than guess. Only a clean
+// exit with a parseable `<size> <unix-ts>` stdout produces a warning.
+func (h *ToolHandler) defaultWriteFileCheck(ctid int, host, path string, timeout time.Duration) (bool, int64, time.Time, error) {
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	pfx := h.sshPrefix()
+	var sshArgs []string
+
+	if ctid > 0 {
+		c, err := h.containers.Get(ctid)
+		if err != nil || c == nil {
+			return false, 0, time.Time{}, fmt.Errorf("probe: container %d not found: %v", ctid, err)
+		}
+		if c.HasRelaySSH {
+			user := "root"
+			if c.SSHUser != "" {
+				user = c.SSHUser
+			}
+			// stat returns non-zero when the path doesn't exist. We want a
+			// clean "doesn't exist" to come back as (false, 0, zero, nil),
+			// so swallow stat's stderr and check stdout emptiness instead.
+			sshArgs = append(pfx, fmt.Sprintf("%s@%s", user, c.IP), "--",
+				fmt.Sprintf("stat -c '%%s %%Y' %s 2>/dev/null", shellQuote(path)))
+		} else {
+			sshArgs = append(pfx, fmt.Sprintf("root@%s", h.hostIP), "--",
+				"pct", "exec", fmt.Sprintf("%d", c.CTID), "--",
+				"sh", "-c", fmt.Sprintf("stat -c '%%s %%Y' %s 2>/dev/null", shellQuote(path)))
+		}
+	} else {
+		target := host
+		if target == "" {
+			target = h.hostIP
+		}
+		sshArgs = append(pfx, fmt.Sprintf("root@%s", target), "--",
+			fmt.Sprintf("stat -c '%%s %%Y' %s 2>/dev/null", shellQuote(path)))
+	}
+
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return false, 0, time.Time{}, fmt.Errorf("probe timed out after %s", timeout)
+	}
+	if err != nil {
+		// SSH exited non-zero. This covers connection refused, auth failures,
+		// and pct-exec dispatch errors. We intentionally do NOT treat this
+		// as "file doesn't exist" — we don't know, so fail-open.
+		return false, 0, time.Time{}, fmt.Errorf("probe ssh: %w", err)
+	}
+
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		// Clean exit with empty stdout = file doesn't exist (stat wrote to
+		// stderr which we swallowed).
+		return false, 0, time.Time{}, nil
+	}
+
+	parts := strings.Fields(line)
+	if len(parts) != 2 {
+		return false, 0, time.Time{}, fmt.Errorf("probe: unexpected stat output %q", line)
+	}
+	size, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return false, 0, time.Time{}, fmt.Errorf("probe: bad size %q: %w", parts[0], err)
+	}
+	ts, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return false, 0, time.Time{}, fmt.Errorf("probe: bad mtime %q: %w", parts[1], err)
+	}
+	return true, size, time.Unix(ts, 0), nil
+}
+
 // intArg extracts an integer from args, handling both float64 (JSON default) and direct int.
 func intArg(args map[string]interface{}, key string) int {
 	if f, ok := args[key].(float64); ok {
@@ -1281,12 +1382,33 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 		sshArgs = append(pfx, fmt.Sprintf("root@%s", host), "--", shellCmd)
 	}
 
+	// Pre-approval overwrite probe. If the target file already exists, prepend
+	// an [OVERWRITE: <size>B, modified <mtime>] marker to the approval reason so
+	// the reviewer sees it before deciding. Fail-open: a probe error (SSH
+	// failure, permission denied, timeout) must NOT block the write; log to
+	// audit and proceed without the warning.
+	overwriteLine := ""
+	if h.writeFileChecker != nil {
+		exists, oldSize, oldMtime, probeErr := h.writeFileChecker(ctid, host, path, 3*time.Second)
+		if probeErr != nil {
+			h.audit.Log("write_file_probe_failed", "", map[string]interface{}{
+				"target": target,
+				"path":   path,
+				"error":  probeErr.Error(),
+			})
+		} else if exists {
+			overwriteLine = fmt.Sprintf("[OVERWRITE: %dB, modified %s]\n",
+				oldSize, oldMtime.Format("2006-01-02 15:04"))
+		}
+	}
+
 	// Build content preview for the human reviewer
 	preview := string(content)
 	if len(preview) > 2048 {
 		preview = preview[:2048] + "\n... (truncated)"
 	}
-	prefixedReason := fmt.Sprintf("[FILE %dB -> %s:%s] %s\n---\n%s", len(content), target, path, reason, preview)
+	prefixedReason := fmt.Sprintf("[FILE %dB -> %s:%s] %s\n%s---\n%s",
+		len(content), target, path, reason, overwriteLine, preview)
 
 	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, content)
 

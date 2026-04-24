@@ -7,6 +7,7 @@ Notable changes to Human Relay. Format loosely follows [Keep a Changelog](https:
 ### Added
 - `create_then_run` MCP tool combines `create_script` + `run_script` into a single approval. Default target is `/opt/human-relay/scripts/oneshot/<name>.{sh,py,json}` (extension auto-detected from content, same rules as `create_script`). A slash in `<name>` is respected as-is for deliberate non-oneshot subdirs. Refuses on collision (cross-extension, so `create_then_run("foo", <shell>)` won't shadow an existing `foo.py`). Script persists on disk after the run — re-runnable via `run_script(name="oneshot/<name>")`.
 - `run_script` accepts subpath names (e.g. `oneshot/foo`). New `validScriptPathRe` regex allows alphanumeric segments joined by single slashes; rejects traversal, leading/trailing/double slashes, and `.`/`..` segments.
+- `write_file` pre-approval overwrite warning. Before queuing the approval, the relay probes the target via SSH with `stat -c '%s %Y' <path>` (same routing as the write — direct SSH or pct exec). If the file exists, the approval reason gains an `[OVERWRITE: <size>B, modified <YYYY-MM-DD HH:MM>]` line so the reviewer sees it before deciding. Fail-open: any probe error (SSH failure, permission denied, timeout) proceeds with the write and logs a `write_file_probe_failed` audit event. 3-second probe timeout.
 - `.github/` scaffolding — issue templates (bug / feature), PR template, CODEOWNERS.
 - `CHANGELOG.md` (this file).
 

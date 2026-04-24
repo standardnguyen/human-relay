@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/standardnguyen/human-relay/audit"
 	"github.com/standardnguyen/human-relay/containers"
@@ -2099,3 +2101,172 @@ func TestCreateThenRunMissingFields(t *testing.T) {
 		})
 	}
 }
+
+// --- write_file overwrite warning tests ---
+//
+// The warning is prepended to the approval reason so the human reviewer sees
+// `[OVERWRITE: <size>B, modified <YYYY-MM-DD HH:MM>]` before deciding. On any
+// check error (SSH failure, timeout, permission denied) the write proceeds
+// without a warning — fail-open so a broken probe never blocks legitimate
+// writes. Tests stub the checker via SetWriteFileChecker to avoid real SSH.
+
+func TestWriteFileNoOverwriteWarningWhenFileMissing(t *testing.T) {
+	h := setup(t)
+	h.SetWriteFileChecker(func(ctid int, host, path string, timeout time.Duration) (bool, int64, time.Time, error) {
+		return false, 0, time.Time{}, nil
+	})
+
+	result := h.Handle("write_file", map[string]interface{}{
+		"path":    "/opt/newfile.conf",
+		"content": "fresh content",
+		"host":    "192.168.10.99",
+		"reason":  "Deploy new config",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	if strings.Contains(req.Reason, "[OVERWRITE:") {
+		t.Fatalf("expected no OVERWRITE warning for missing file, got: %s", req.Reason)
+	}
+}
+
+func TestWriteFileOverwriteWarning(t *testing.T) {
+	h := setup(t)
+	fixedMtime := time.Date(2026, 4, 23, 17, 33, 0, 0, time.UTC)
+	h.SetWriteFileChecker(func(ctid int, host, path string, timeout time.Duration) (bool, int64, time.Time, error) {
+		if path == "/opt/existing.conf" {
+			return true, 512, fixedMtime, nil
+		}
+		return false, 0, time.Time{}, nil
+	})
+
+	result := h.Handle("write_file", map[string]interface{}{
+		"path":    "/opt/existing.conf",
+		"content": "replacement content",
+		"host":    "192.168.10.99",
+		"reason":  "Update config",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	// Size marker
+	if !strings.Contains(req.Reason, "[OVERWRITE: 512B") {
+		t.Fatalf("expected [OVERWRITE: 512B in reason, got: %s", req.Reason)
+	}
+	// Mtime marker — format YYYY-MM-DD HH:MM
+	if !strings.Contains(req.Reason, "2026-04-23 17:33") {
+		t.Fatalf("expected mtime 2026-04-23 17:33 in reason, got: %s", req.Reason)
+	}
+	// Warning sits between the [FILE ...] reason line and the --- separator.
+	fileIdx := strings.Index(req.Reason, "[FILE ")
+	overwriteIdx := strings.Index(req.Reason, "[OVERWRITE:")
+	sepIdx := strings.Index(req.Reason, "\n---\n")
+	if !(fileIdx < overwriteIdx && overwriteIdx < sepIdx) {
+		t.Fatalf("expected ordering FILE < OVERWRITE < ---, got indices %d, %d, %d in: %s",
+			fileIdx, overwriteIdx, sepIdx, req.Reason)
+	}
+}
+
+func TestWriteFileFailsOpenOnCheckError(t *testing.T) {
+	h := setup(t)
+	h.SetWriteFileChecker(func(ctid int, host, path string, timeout time.Duration) (bool, int64, time.Time, error) {
+		return false, 0, time.Time{}, errors.New("ssh: connection refused")
+	})
+
+	result := h.Handle("write_file", map[string]interface{}{
+		"path":    "/opt/maybe-exists.conf",
+		"content": "whatever",
+		"host":    "192.168.10.99",
+		"reason":  "Deploy config despite probe failure",
+	})
+	if result.IsError {
+		t.Fatalf("write should proceed despite check error, got: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	// Fail-open: no warning in reason, request still created.
+	if strings.Contains(req.Reason, "[OVERWRITE:") {
+		t.Fatalf("expected no OVERWRITE warning when checker errors, got: %s", req.Reason)
+	}
+	if req == nil || req.ID == "" {
+		t.Fatal("expected write request to be created despite check error")
+	}
+}
+
+func TestWriteFileOverwriteCheckTimeoutFailsOpen(t *testing.T) {
+	h := setup(t)
+	// A timeout presents as a deadline-exceeded error to the caller;
+	// semantically identical to any other probe error from the warning's POV.
+	h.SetWriteFileChecker(func(ctid int, host, path string, timeout time.Duration) (bool, int64, time.Time, error) {
+		return false, 0, time.Time{}, errors.New("context deadline exceeded")
+	})
+
+	result := h.Handle("write_file", map[string]interface{}{
+		"path":    "/opt/slow.conf",
+		"content": "deploy",
+		"host":    "192.168.10.99",
+		"reason":  "Probe times out; write should still proceed",
+	})
+	if result.IsError {
+		t.Fatalf("write should proceed on probe timeout, got: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	if strings.Contains(req.Reason, "[OVERWRITE:") {
+		t.Fatalf("expected no OVERWRITE warning on probe timeout, got: %s", req.Reason)
+	}
+}
+
+func TestWriteFileCheckerReceivesCorrectArgs(t *testing.T) {
+	// Sanity: the checker should be called with the same target info the write
+	// will use. For host-based writes, host is passed; for ctid-based, ctid.
+	h := setup(t)
+	_ = h.containers // silence unused if refactored later
+
+	var capturedHost string
+	var capturedPath string
+	var capturedCtid int
+	h.SetWriteFileChecker(func(ctid int, host, path string, timeout time.Duration) (bool, int64, time.Time, error) {
+		capturedHost = host
+		capturedPath = path
+		capturedCtid = ctid
+		return false, 0, time.Time{}, nil
+	})
+
+	result := h.Handle("write_file", map[string]interface{}{
+		"path":    "/opt/target.conf",
+		"content": "data",
+		"host":    "192.168.10.42",
+		"reason":  "Sanity-check routing",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	if capturedPath != "/opt/target.conf" {
+		t.Fatalf("expected checker path /opt/target.conf, got %q", capturedPath)
+	}
+	if capturedHost != "192.168.10.42" {
+		t.Fatalf("expected checker host 192.168.10.42, got %q", capturedHost)
+	}
+	if capturedCtid != 0 {
+		t.Fatalf("expected checker ctid 0 (host-routed write), got %d", capturedCtid)
+	}
+}
+

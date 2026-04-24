@@ -798,8 +798,15 @@ function render() {
     // For whitelist matching, map to the same keys the backend uses
     const isScript = r.type === 'script';
     const isScriptCreate = r.type === 'script_create';
-    const wlCmdKey = isHTTP ? r.http_method : isScript ? 'run_script' : isScriptCreate ? 'create_script' : r.command;
-    const wlArgsKey = isHTTP ? [r.http_url] : (isScript || isScriptCreate) ? [r.script_name] : (r.args || []);
+    const isScriptCreateThenRun = r.type === 'script_create_then_run';
+    const wlCmdKey = isHTTP ? r.http_method
+      : isScript ? 'run_script'
+      : isScriptCreate ? 'create_script'
+      : isScriptCreateThenRun ? 'create_then_run'
+      : r.command;
+    const wlArgsKey = isHTTP ? [r.http_url]
+      : (isScript || isScriptCreate || isScriptCreateThenRun) ? [r.script_name]
+      : (r.args || []);
     const wlMatch = isWhitelisted(wlCmdKey, wlArgsKey);
     const wlBtnHtml = (r.status !== 'pending')
       ? (wlMatch

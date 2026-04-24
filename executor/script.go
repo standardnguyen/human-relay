@@ -165,7 +165,7 @@ func (e *Executor) ExecuteScriptCreate(r *store.Request, dir string) *store.Resu
 		mode = 0755
 	}
 
-	if err := os.WriteFile(scriptPath, r.Stdin, mode); err != nil {
+	if err := writeScriptFile(scriptPath, r.Stdin, mode); err != nil {
 		return &store.Result{
 			ExitCode: -1,
 			Stderr:   fmt.Sprintf("failed to write script: %v", err),
@@ -176,6 +176,48 @@ func (e *Executor) ExecuteScriptCreate(r *store.Request, dir string) *store.Resu
 		ExitCode: 0,
 		Stdout:   fmt.Sprintf("Created %s (%d bytes)", scriptPath, len(r.Stdin)),
 	}
+}
+
+// ExecuteScriptCreateThenRun writes the script to disk (creating any missing
+// parent directories) and then immediately runs it via ExecuteScriptIn. Both
+// phases share a single approval. If the write fails, the run is skipped.
+func (e *Executor) ExecuteScriptCreateThenRun(r *store.Request, dir string) *store.Result {
+	ext := detectScriptType(r.Stdin)
+	scriptPath := fmt.Sprintf("%s/%s%s", dir, r.ScriptName, ext)
+
+	mode := os.FileMode(0644)
+	if ext == ".py" || ext == ".sh" {
+		mode = 0755
+	}
+
+	if err := writeScriptFile(scriptPath, r.Stdin, mode); err != nil {
+		return &store.Result{
+			ExitCode: -1,
+			Stderr:   fmt.Sprintf("failed to write script: %v", err),
+		}
+	}
+
+	return e.ExecuteScriptIn(r, dir)
+}
+
+// writeScriptFile writes content to scriptPath, MkdirAll-ing the parent dir
+// first so subpath scripts (e.g. oneshot/foo.py) land even when oneshot/ is
+// new. Mode is applied after the write.
+func writeScriptFile(scriptPath string, content []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(parentDir(scriptPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(scriptPath, content, mode)
+}
+
+// parentDir returns the directory portion of p (everything before the last /).
+// Returns "." if p has no slash.
+func parentDir(p string) string {
+	i := strings.LastIndex(p, "/")
+	if i < 0 {
+		return "."
+	}
+	return p[:i]
 }
 
 // detectScriptType returns ".json" for JSON objects, ".sh" for shell scripts

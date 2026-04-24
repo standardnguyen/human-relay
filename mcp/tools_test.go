@@ -1464,7 +1464,6 @@ func TestRunScriptInvalidName(t *testing.T) {
 		{"absolute path", "/tmp/evil"},
 		{"dots", "foo.bar"},
 		{"spaces", "foo bar"},
-		{"slash", "foo/bar"},
 	}
 
 	for _, tt := range tests {
@@ -1736,6 +1735,364 @@ func TestCreateScriptMissingFields(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := h.Handle("create_script", tt.args)
+			if !result.IsError {
+				t.Fatal("expected error for missing field")
+			}
+		})
+	}
+}
+
+// --- run_script subpath tests (new behavior for create_then_run support) ---
+//
+// These tests assert that run_script accepts subpath names like "oneshot/foo"
+// and resolves them under scriptsDir. Traversal and absolute paths stay rejected.
+//
+// TestRunScriptInvalidName (existing, above) still asserts that "foo/bar" is
+// rejected — that expectation gets updated during implementation.
+
+func TestRunScriptSubpathResolves(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	if err := os.MkdirAll(filepath.Join(dir, "oneshot"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "oneshot", "foo.py"), []byte("print('hi')"), 0755)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "oneshot/foo",
+		"reason": "Re-run a previously-created oneshot",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if req.ScriptName != "oneshot/foo" {
+		t.Fatalf("expected script name 'oneshot/foo', got %q", req.ScriptName)
+	}
+}
+
+func TestRunScriptSubpathDisplayCommand(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	if err := os.MkdirAll(filepath.Join(dir, "oneshot"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "oneshot", "foo.sh"), []byte("#!/bin/bash\necho hi\n"), 0755)
+
+	result := h.Handle("run_script", map[string]interface{}{
+		"name":   "oneshot/foo",
+		"reason": "Test",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if req.DisplayCommand != "run_script oneshot/foo" {
+		t.Fatalf("expected display command 'run_script oneshot/foo', got %q", req.DisplayCommand)
+	}
+}
+
+func TestRunScriptSubpathTraversalRejected(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	tests := []struct {
+		name string
+		val  string
+	}{
+		{"parent traversal", "oneshot/../../../etc/passwd"},
+		{"mid-path traversal", "oneshot/../sneaky"},
+		{"leading slash", "/oneshot/foo"},
+		{"double slash", "oneshot//foo"},
+		{"dot segment", "oneshot/./foo"},
+		{"trailing slash", "oneshot/foo/"},
+		{"bare dotdot", ".."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("run_script", map[string]interface{}{
+				"name":   tt.val,
+				"reason": "Test",
+			})
+			if !result.IsError {
+				t.Fatalf("expected error for invalid name %q", tt.val)
+			}
+		})
+	}
+}
+
+// --- create_then_run tests ---
+
+func TestCreateThenRunBasic(t *testing.T) {
+	h, dir := setupWithScripts(t)
+
+	content := "#!/bin/bash\necho hello\n"
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "my-oneshot",
+		"content": content,
+		"reason":  "Fire a oneshot",
+	})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+
+	if resp["request_id"] == "" {
+		t.Fatal("expected request_id")
+	}
+	if resp["status"] != "pending" {
+		t.Fatalf("expected pending, got %s", resp["status"])
+	}
+
+	req := h.store.Get(resp["request_id"].(string))
+	// The default target path is <scriptsDir>/oneshot/<name>.<ext>.
+	// Assertion is on ScriptName being the subpath form "oneshot/my-oneshot"
+	// so run_script can re-invoke it later via the same path.
+	if req.ScriptName != "oneshot/my-oneshot" {
+		t.Fatalf("expected script name 'oneshot/my-oneshot', got %q", req.ScriptName)
+	}
+	// Content must be preserved for the execute step.
+	if req.StdinLen != len(content) {
+		t.Fatalf("expected stdin length %d, got %d", len(content), req.StdinLen)
+	}
+
+	// The oneshot directory should exist (or be created at approval time).
+	// The test harness doesn't execute, so we don't assert the file was written yet —
+	// only that the request was accepted and carries the right metadata.
+	_ = filepath.Join(dir, "oneshot")
+}
+
+func TestCreateThenRunCollisionRefused(t *testing.T) {
+	h, dir := setupWithScripts(t)
+	if err := os.MkdirAll(filepath.Join(dir, "oneshot"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Pre-create a colliding file (any extension).
+	os.WriteFile(filepath.Join(dir, "oneshot", "taken.py"), []byte("print('old')"), 0755)
+
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "taken",
+		"content": "print('new')",
+		"reason":  "Try to overwrite",
+	})
+
+	if !result.IsError {
+		t.Fatal("expected error for name collision in oneshot/")
+	}
+	if !strings.Contains(result.Content[0].Text, "already exists") {
+		t.Fatalf("expected 'already exists' error, got: %s", result.Content[0].Text)
+	}
+}
+
+func TestCreateThenRunCollisionCrossExtension(t *testing.T) {
+	// Collision check must cover all three possible extensions — if foo.py
+	// exists, create_then_run("foo", <shell content>) must still refuse,
+	// since run_script("oneshot/foo") would pick foo.sh over foo.py and
+	// silently shadow the existing script.
+	h, dir := setupWithScripts(t)
+	if err := os.MkdirAll(filepath.Join(dir, "oneshot"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "oneshot", "foo.py"), []byte("print('old')"), 0755)
+
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "foo",
+		"content": "#!/bin/bash\necho new\n",
+		"reason":  "Try to shadow with .sh",
+	})
+
+	if !result.IsError {
+		t.Fatal("expected error for cross-extension collision")
+	}
+}
+
+func TestCreateThenRunCustomSubpath(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "experiments/foo",
+		"content": "print('experimental')",
+		"reason":  "Caller override for non-oneshot subdir",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	// Explicit subpath in name means no oneshot/ prefix is added.
+	if req.ScriptName != "experiments/foo" {
+		t.Fatalf("expected script name 'experiments/foo' (no oneshot/ prefix), got %q", req.ScriptName)
+	}
+}
+
+func TestCreateThenRunInvalidName(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	tests := []struct {
+		name string
+		val  string
+	}{
+		{"path traversal", "../etc/evil"},
+		{"traversal in subpath", "oneshot/../../../etc/passwd"},
+		{"absolute path", "/tmp/evil"},
+		{"leading slash", "/foo"},
+		{"trailing slash", "foo/"},
+		{"double slash", "foo//bar"},
+		{"dot segment", "foo/./bar"},
+		{"spaces", "foo bar"},
+		{"bare dotdot", ".."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("create_then_run", map[string]interface{}{
+				"name":    tt.val,
+				"content": "print('x')",
+				"reason":  "Test",
+			})
+			if !result.IsError {
+				t.Fatalf("expected error for invalid name %q", tt.val)
+			}
+		})
+	}
+}
+
+func TestCreateThenRunJSONPipelineDetected(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	content := `{"steps":[{"method":"GET","url":"https://example.com"}],"output":"done"}`
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "json-oneshot",
+		"content": content,
+		"reason":  "Test JSON auto-detection",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	// Extension is visible in the display command: "create_then_run oneshot/json-oneshot.json (NB)"
+	if !strings.Contains(req.DisplayCommand, ".json") {
+		t.Fatalf("expected .json extension in display command, got %q", req.DisplayCommand)
+	}
+}
+
+func TestCreateThenRunShellScriptDetected(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	content := "#!/bin/bash\nset -euo pipefail\necho running\n"
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "sh-oneshot",
+		"content": content,
+		"reason":  "Test shell auto-detection",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if !strings.Contains(req.DisplayCommand, ".sh") {
+		t.Fatalf("expected .sh extension in display command, got %q", req.DisplayCommand)
+	}
+}
+
+func TestCreateThenRunPythonDefault(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	// Plain Python (no shebang, not JSON) should default to .py.
+	content := "import sys\nprint(sys.argv)\n"
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "py-oneshot",
+		"content": content,
+		"reason":  "Test Python default",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if !strings.Contains(req.DisplayCommand, ".py") {
+		t.Fatalf("expected .py extension in display command, got %q", req.DisplayCommand)
+	}
+}
+
+func TestCreateThenRunReasonContainsContent(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	// The reviewer sees one approval dialog covering both create and run;
+	// the reason must include the script content for review.
+	content := "#!/bin/bash\necho 'visible to reviewer'\n"
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "review-me",
+		"content": content,
+		"reason":  "Test visibility",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	if !strings.Contains(req.Reason, "visible to reviewer") {
+		t.Fatalf("expected script content in reason for human review, got: %s", req.Reason)
+	}
+	if !strings.Contains(req.Reason, "oneshot/review-me") {
+		t.Fatalf("expected target path in reason, got: %s", req.Reason)
+	}
+}
+
+func TestCreateThenRunWithArgs(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	result := h.Handle("create_then_run", map[string]interface{}{
+		"name":    "takes-args",
+		"content": "import sys\nprint(sys.argv[1:])\n",
+		"args":    []interface{}{"alpha", "bravo"},
+		"reason":  "Pass args to the run",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if len(req.ScriptArgs) != 2 || req.ScriptArgs[0] != "alpha" || req.ScriptArgs[1] != "bravo" {
+		t.Fatalf("expected script args [alpha bravo], got %v", req.ScriptArgs)
+	}
+}
+
+func TestCreateThenRunMissingFields(t *testing.T) {
+	h, _ := setupWithScripts(t)
+
+	tests := []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{"missing name", map[string]interface{}{"content": "#!/bin/bash\n", "reason": "Test"}},
+		{"missing content", map[string]interface{}{"name": "test", "reason": "Test"}},
+		{"missing reason", map[string]interface{}{"name": "test", "content": "#!/bin/bash\n"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.Handle("create_then_run", tt.args)
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}

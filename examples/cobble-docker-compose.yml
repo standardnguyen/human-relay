@@ -1,0 +1,38 @@
+# Reference compose for CTID 2009 (cobble-relay), VLAN 40.
+#
+# Differs from the repo-root docker-compose.yml because cobble-relay deploys
+# into /opt/human-relay/hr-deploy/ as a sibling of /opt/human-relay/scripts/
+# rather than the same dir. Hence ../scripts and ../ssh_config rather than
+# ./scripts and ./ssh_config.
+#
+# IMPORTANT: the ../scripts:/scripts mount must be RW (no :ro). The relay
+# writes into /scripts/oneshot/ for create_script and create_then_run; a
+# read-only bind makes those tools fail with EROFS, surfacing on the
+# cobble-claude side as "Script failed — relay's /scripts/oneshot is
+# read-only". CTID 2009 shipped with :ro from initial deploy through
+# 2026-05-07; fix is removing :ro and recreating the container.
+#
+# CI deploy-cobble (.forgejo/workflows/ci.yml) only does docker save | load
+# + `compose up -d --force-recreate --no-build`. It does NOT regenerate this
+# file. The copy on the host is source of truth.
+
+services:
+  human-relay:
+    image: human-relay-human-relay:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "8090:8090"
+    env_file:
+      - ../.env
+    volumes:
+      - /root/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      - /root/.ssh/id_ed25519.pub:/root/.ssh/id_ed25519.pub:ro
+      - relay-ssh:/root/.ssh-data
+      - relay-data:/opt/human-relay/data
+      - ../ssh_config:/opt/human-relay/ssh_config:ro
+      - ../scripts:/scripts
+
+volumes:
+  relay-ssh:
+  relay-data:

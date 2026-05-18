@@ -526,9 +526,16 @@ function sanitize(s) {
   return escapeHtml(stripBidi(s));
 }
 
+// Allowlist of common typographic punctuation that LLMs naturally emit in prose.
+// None are homoglyphs for ASCII letters (the real threat — Cyrillic a/e/o, etc.).
+// Adding these prevents alert fatigue from em-dashes that trains reviewers to
+// click through homoglyph warnings reflexively.
+//   U+2013 en-dash   U+2014 em-dash   U+2018 left single quote
+//   U+2019 right single quote / apostrophe
+//   U+201C left double quote   U+201D right double quote   U+2026 ellipsis
 function hasNonAscii(s) {
   if (!s) return false;
-  return /[^\x20-\x7E\n\r\t]/.test(s);
+  return /[^\x20-\x7E\n\r\t–—‘’“”…]/.test(s);
 }
 
 function requestHasNonAscii(r) {

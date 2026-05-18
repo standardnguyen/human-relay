@@ -147,7 +147,7 @@ The web UI shows pending requests with full command details, approve/deny button
 
 Features:
 - Shell mode commands highlighted with a red warning banner
-- Non-ASCII characters flagged to catch homoglyph attacks
+- Non-ASCII characters flagged to catch homoglyph attacks (common typographic punctuation — em-dash, en-dash, ellipsis, curly quotes — is allowlisted to avoid alert fatigue)
 - 30-second cooldown between approvals (prevents reflexive clicking)
 - Turbocharge mode to temporarily reduce cooldown during batch operations
 - Browser notifications for new requests

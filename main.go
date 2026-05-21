@@ -14,6 +14,7 @@ import (
 	"github.com/standardnguyen/human-relay/containers"
 	"github.com/standardnguyen/human-relay/executor"
 	"github.com/standardnguyen/human-relay/mcp"
+	"github.com/standardnguyen/human-relay/permissions"
 	"github.com/standardnguyen/human-relay/store"
 	"github.com/standardnguyen/human-relay/web"
 	"github.com/standardnguyen/human-relay/whitelist"
@@ -98,8 +99,17 @@ func main() {
 	scriptsDir := envString("MHR_SCRIPTS_DIR", "/scripts")
 	toolHandler.SetScriptsDir(scriptsDir)
 
+	// Permissions ruleset (tool-call gating for pi-relay-gate and friends)
+	permPath := envString("MHR_PERMISSIONS_FILE", filepath.Join(dataDir, "permissions.json"))
+	perms, err := permissions.Load(permPath)
+	if err != nil {
+		log.Fatalf("load permissions: %v", err)
+	}
+	rules := perms.Rules()
+	log.Printf("Permissions: %d allow, %d deny, %d ask from %s", len(rules.Allow), len(rules.Deny), len(rules.Ask), permPath)
+
 	cd := envInt("MHR_APPROVAL_COOLDOWN", 30)
-	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir))
+	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms))
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/standardnguyen/human-relay/audit"
 	"github.com/standardnguyen/human-relay/executor"
+	"github.com/standardnguyen/human-relay/permissions"
 	"github.com/standardnguyen/human-relay/store"
 	"github.com/standardnguyen/human-relay/whitelist"
 )
@@ -36,6 +37,7 @@ type Handler struct {
 	turboCooldown    time.Duration
 	turboExpiry      time.Time
 	whitelist        *whitelist.Whitelist
+	permissions      *permissions.Permissions
 	scriptsDir       string
 }
 
@@ -56,6 +58,12 @@ func WithWhitelist(wl *whitelist.Whitelist) HandlerOption {
 func WithScriptsDir(dir string) HandlerOption {
 	return func(h *Handler) {
 		h.scriptsDir = dir
+	}
+}
+
+func WithPermissions(p *permissions.Permissions) HandlerOption {
+	return func(h *Handler) {
+		h.permissions = p
 	}
 }
 
@@ -94,6 +102,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/turbocharge", h.handleTurbocharge)
 	mux.HandleFunc("/api/whitelist", h.handleWhitelist)
 	mux.HandleFunc("/api/whitelist/remove", h.handleWhitelistRemove)
+	mux.HandleFunc("/api/permission/check", h.handlePermissionCheck)
+	mux.HandleFunc("/api/permission/check/", h.handlePermissionStatus)
 	mux.HandleFunc("/events", h.handleSSE)
 }
 
@@ -418,6 +428,18 @@ func (h *Handler) autoApprove(req *store.Request) {
 
 // executeRequest dispatches to the appropriate executor based on request type.
 func (h *Handler) executeRequest(req *store.Request) {
+	// Permission-check requests carry no work — approval IS the verdict.
+	// Mark complete with a zero-exit result so polling clients see done.
+	if req.Type == "permission" {
+		result := &store.Result{ExitCode: 0, Stdout: "approved"}
+		h.store.SetResult(req.ID, result, store.StatusComplete)
+		h.audit.Log("permission_approved", req.ID, map[string]interface{}{
+			"display": req.DisplayCommand,
+		})
+		h.broadcastEvent("update", req.ID)
+		return
+	}
+
 	h.store.SetStatus(req.ID, store.StatusRunning)
 	h.audit.Log("execution_started", req.ID, nil)
 	h.broadcastEvent("update", req.ID)
@@ -548,4 +570,130 @@ func sortRequests(requests []*store.Request, filter store.Status) {
 		}
 		return a.CreatedAt.Before(b.CreatedAt)
 	})
+}
+
+// handlePermissionCheck is POST /api/permission/check.
+// Body: {"tool":"Bash","input":{"command":"ls -la"},"reason":"list cwd"}
+// Response (allow/deny): {"verdict":"allow|deny","rule_id":"...","reason":"..."}
+// Response (ask):       {"verdict":"ask","request_id":"abc","rule_id":"..."}
+// On 'ask' the caller polls GET /api/permission/check/{request_id} until the
+// human approves or denies in the dashboard.
+func (h *Handler) handlePermissionCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.permissions == nil {
+		http.Error(w, "permissions not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var body struct {
+		Tool   string         `json:"tool"`
+		Input  map[string]any `json:"input"`
+		Reason string         `json:"reason"`
+		Client string         `json:"client"` // cosmetic: "pi", "rolandcode", etc. surfaced in audit + queue UI
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if body.Tool == "" {
+		http.Error(w, "tool required", http.StatusBadRequest)
+		return
+	}
+	if body.Input == nil {
+		body.Input = map[string]any{}
+	}
+
+	d := h.permissions.Check(body.Tool, body.Input)
+
+	resp := map[string]any{
+		"verdict": string(d.Verdict),
+		"rule_id": d.RuleID,
+	}
+	if d.Reason != "" {
+		resp["reason"] = d.Reason
+	}
+
+	h.audit.Log("permission_check", "", map[string]interface{}{
+		"tool":    body.Tool,
+		"input":   body.Input,
+		"reason":  body.Reason,
+		"client":  body.Client,
+		"verdict": string(d.Verdict),
+		"rule_id": d.RuleID,
+	})
+
+	if d.Verdict == permissions.VerdictAsk {
+		display := formatPermissionDisplay(body.Tool, body.Input)
+		if body.Client != "" {
+			display = "[" + body.Client + "] " + display
+		}
+		req := h.store.AddPermission(display, body.Reason, 300)
+		resp["request_id"] = req.ID
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handlePermissionStatus is GET /api/permission/check/{id}.
+// Returns the current status of an ask-routed permission request.
+// Response: {"status":"pending|approved|denied|...", "verdict":"ask|allow|deny", "reason":"..."}
+func (h *Handler) handlePermissionStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/permission/check/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	req := h.store.Get(id)
+	if req == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if req.Type != "permission" {
+		http.Error(w, "not a permission request", http.StatusBadRequest)
+		return
+	}
+
+	resp := map[string]any{
+		"status": string(req.Status),
+	}
+	switch req.Status {
+	case store.StatusPending, store.StatusRunning:
+		resp["verdict"] = "ask"
+	case store.StatusApproved, store.StatusComplete:
+		resp["verdict"] = "allow"
+	case store.StatusDenied:
+		resp["verdict"] = "deny"
+		resp["reason"] = req.DenyReason
+	case store.StatusWithdrawn, store.StatusTimeout, store.StatusError:
+		resp["verdict"] = "deny"
+		resp["reason"] = string(req.Status)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func formatPermissionDisplay(tool string, input map[string]any) string {
+	switch strings.ToLower(tool) {
+	case "bash":
+		if cmd, ok := input["command"].(string); ok {
+			return fmt.Sprintf("Bash: %s", cmd)
+		}
+	case "read", "write", "edit":
+		for _, k := range []string{"file_path", "path"} {
+			if p, ok := input[k].(string); ok {
+				return fmt.Sprintf("%s: %s", tool, p)
+			}
+		}
+	}
+	b, _ := json.Marshal(input)
+	return fmt.Sprintf("%s: %s", tool, string(b))
 }

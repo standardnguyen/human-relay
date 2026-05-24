@@ -459,6 +459,7 @@
   <button class="btn-turbo" id="turboBtn" onclick="toggleTurbo()">Turbo</button>
   <span class="turbo-info" id="turboInfo"></span>
   <button class="btn-clear" onclick="clearHistory()">Clear History</button>
+  <button class="btn-clear" onclick="purgeToken()" title="Clear saved auth token and re-prompt">Purge Token</button>
 </div>
 
 <div class="filters">
@@ -1095,6 +1096,11 @@ async function toggleTurbo() {
     });
   }
   fetchRequests();
+}
+
+function purgeToken() {
+  localStorage.removeItem('mhr_token');
+  location.reload();
 }
 
 function clearHistory() {

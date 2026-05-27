@@ -170,13 +170,28 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request not found", http.StatusNotFound)
 		return
 	}
+
+	if action == "release" {
+		if !req.OutputGated {
+			http.Error(w, "output is not gated", http.StatusConflict)
+			return
+		}
+		h.store.ReleaseOutput(id)
+		log.Printf("request %s output released", id)
+		h.audit.Log("output_released", id, nil)
+		h.broadcastEvent("update", id)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "released"})
+		return
+	}
+
 	if req.Status != store.StatusPending {
 		http.Error(w, fmt.Sprintf("request is already %s", req.Status), http.StatusConflict)
 		return
 	}
 
 	switch action {
-	case "approve":
+	case "approve", "approve-gated":
 		h.cooldownMu.Lock()
 		cd := h.activeCooldown()
 		elapsed := time.Since(h.lastApproval)
@@ -195,7 +210,12 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		h.lastApproval = time.Now()
 		h.cooldownMu.Unlock()
 
-		h.store.SetStatus(id, store.StatusApproved)
+		if action == "approve-gated" {
+			h.store.SetStatus(id, store.StatusApproved)
+			h.store.SetOutputGated(id)
+		} else {
+			h.store.SetStatus(id, store.StatusApproved)
+		}
 		switch req.Type {
 		case "http":
 			log.Printf("request %s approved, executing: %s %s", id, req.HTTPMethod, req.HTTPURL)

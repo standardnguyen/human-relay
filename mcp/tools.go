@@ -598,6 +598,19 @@ func (h *ToolHandler) listRequests(args map[string]interface{}) *CallToolResult 
 }
 
 func requestResult(r *store.Request) *CallToolResult {
+	if r.OutputGated && r.Result != nil {
+		gated := *r
+		gr := *r.Result
+		stdoutLen := len(gr.Stdout)
+		stderrLen := len(gr.Stderr)
+		gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
+		if stderrLen > 0 {
+			gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
+		}
+		gated.Result = &gr
+		data, _ := json.Marshal(gated)
+		return textResult(string(data))
+	}
 	data, _ := json.Marshal(r)
 	return textResult(string(data))
 }

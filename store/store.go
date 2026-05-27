@@ -38,6 +38,7 @@ type Request struct {
 	Stdin          []byte     `json:"-"`
 	StdinLen       int        `json:"stdin_len,omitempty"`
 	DisplayCommand string     `json:"display_command,omitempty"`
+	OutputGated    bool       `json:"output_gated,omitempty"`
 
 	// HTTP-specific fields (only when Type == "http")
 	HTTPMethod  string            `json:"http_method,omitempty"`
@@ -344,6 +345,34 @@ func (s *Store) SetDisplayCommand(id string, cmd string) bool {
 		return false
 	}
 	r.DisplayCommand = cmd
+	return true
+}
+
+func (s *Store) SetOutputGated(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.requests[id]
+	if !ok {
+		return false
+	}
+	r.OutputGated = true
+	return true
+}
+
+func (s *Store) ReleaseOutput(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.requests[id]
+	if !ok {
+		return false
+	}
+	r.OutputGated = false
+
+	select {
+	case s.updates <- id:
+	default:
+	}
+
 	return true
 }
 

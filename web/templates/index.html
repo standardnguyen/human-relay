@@ -290,6 +290,14 @@
     margin-bottom: 0.2rem;
   }
   .b64-label:hover { text-decoration: underline; }
+  .psenc-label {
+    font-size: 0.75rem;
+    color: var(--green);
+    font-weight: 600;
+    display: block;
+    margin-bottom: 0.2rem;
+  }
+  .psenc-label.psenc-error { color: var(--yellow); }
   .b64-decoded {
     background: var(--bg);
     border: 1px solid rgba(88,166,255,0.3);
@@ -712,6 +720,55 @@ function toggleB64(id) {
   }
 }
 
+function tryDecodeUtf16le(b64) {
+  try {
+    const binStr = atob(b64);
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+    const decoded = new TextDecoder('utf-16le', { fatal: false }).decode(bytes);
+    // Must be mostly printable text (allow common whitespace + unicode)
+    const printable = decoded.replace(/[^\x20-\x7e\x09\x0a\x0d\u00A0-\uFFFF]/g, '').length;
+    if (decoded.length > 0 && printable / decoded.length > 0.9) return decoded;
+  } catch(e) {}
+  return null;
+}
+
+// PowerShell -EncodedCommand carries base64-of-UTF-16LE script text. PowerShell
+// prefix-matches parameter names, so -EncodedCommand / -enc / -e all select it. The
+// generic base64 decoder above is UTF-8-only and silently fails on these blobs, so a
+// reviewer would only see opaque base64. Detect the powershell + encoded-flag + blob
+// shape (in arg arrays, shell strings, or ssh-wrapped forms) and render the real script.
+function buildPowershellEncoded(r) {
+  const cmdText = r.command + (r.args && r.args.length ? ' ' + r.args.join(' ') : '');
+  if (!/(?:powershell|pwsh)(?:\.exe)?\b/i.test(cmdText)) return '';
+  // flag is - or / then a prefix of "encodedcommand"; then a base64 token
+  const re = /[\s]([-\/])(e[a-z]*)\s+([A-Za-z0-9+\/]{16,}={0,2})/gi;
+  let html = '';
+  let idx = 0;
+  let m;
+  while ((m = re.exec(cmdText)) !== null) {
+    if (!'encodedcommand'.startsWith(m[2].toLowerCase())) continue;
+    const b64 = m[3];
+    const decoded = tryDecodeUtf16le(b64);
+    const id = 'psenc-' + r.id + '-' + idx;
+    idx++;
+    if (decoded !== null) {
+      html += '<div class="b64-section">' +
+        '<span class="psenc-label">Decoded command (PowerShell -EncodedCommand):</span>' +
+        '<div class="b64-decoded">' + sanitize(decoded) + '</div>' +
+        '<span class="b64-label" id="' + id + '-label" onclick="toggleB64(\'' + id + '\')">\u25B6 raw base64</span>' +
+        '<div class="b64-decoded" id="' + id + '" style="display:none">' + escapeHtml(b64) + '</div>' +
+        '</div>';
+    } else {
+      html += '<div class="b64-section">' +
+        '<span class="psenc-label psenc-error">PowerShell -EncodedCommand [could not decode]:</span>' +
+        '<div class="b64-decoded">' + escapeHtml(b64) + '</div>' +
+        '</div>';
+    }
+  }
+  return html;
+}
+
 let truncateCounter = 0;
 
 function truncateWithToggle(text, maxLen, prefix) {
@@ -790,6 +847,7 @@ function render() {
   let html = limited.map(r => {
     const isHTTP = r.type === 'http';
     const cmdDisplay = buildCommandDisplay(r);
+    const psDisplay = isHTTP ? '' : buildPowershellEncoded(r);
     const b64Display = isHTTP ? '' : buildBase64Display(r);
     const shellBadge = (!isHTTP && r.shell) ? '<span class="shell-badge">SHELL</span>' : '';
     const fileBadge = (!isHTTP && r.stdin_len > 0) ? '<span class="file-badge">FILE ' + formatSize(r.stdin_len) + '</span>' : '';
@@ -922,6 +980,7 @@ function render() {
       ${shellWarning}
       ${nonAsciiWarning}
       <div class="command-block">${cmdDisplay}${shellBadge}${fileBadge}${nonAsciiBadge}${linesBadge}</div>
+      ${psDisplay}
       ${b64Display}
       <div class="reason">${truncateWithToggle(r.reason, 200, 'reason-' + r.id)}</div>
       ${wdInfo}

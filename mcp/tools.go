@@ -170,7 +170,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "write_file",
-		Description: "Write a file to a host or container. Content is piped via stdin (never on the shell command line), so quotes, backticks, $, and newlines pass through unharmed. Pass plain text as `content`, or raw binary as `content_base64`. Exactly one is required. Requires human approval.",
+		Description: "Write a file to a host or container. Content is piped via stdin (never on the shell command line), so quotes, backticks, $, and newlines pass through unharmed. Pass plain text as `content`, raw binary as `content_base64`, or stream from a remote host with `source_path` (+ `source_host`/`source_ctid`) so the bytes never transit the agent context. Exactly one content method is required. Requires human approval.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -185,6 +185,18 @@ var ToolDefinitions = []Tool{
 				"content_base64": {
 					Type:        "string",
 					Description: "File content, base64-encoded. Use for raw binary files or content with non-UTF-8 bytes. For text, use `content` instead.",
+				},
+				"source_path": {
+					Type:        "string",
+					Description: "Stream the file from this absolute path on source_host/source_ctid (default: Proxmox host) instead of passing content inline. The bytes flow source -> relay -> destination over SSH and never transit the agent context. Mutually exclusive with content/content_base64.",
+				},
+				"source_host": {
+					Type:        "string",
+					Description: "Source IP to stream from (requires source_path). Mutually exclusive with source_ctid.",
+				},
+				"source_ctid": {
+					Type:        "integer",
+					Description: "Source container to stream from (requires source_path; registry routing: direct SSH, or pct exec via the Proxmox host). Mutually exclusive with source_host.",
 				},
 				"host": {
 					Type:        "string",
@@ -255,7 +267,15 @@ var ToolDefinitions = []Tool{
 				},
 				"body": {
 					Type:        "string",
-					Description: "Request body (typically JSON). Omit for GET/DELETE/HEAD requests.",
+					Description: "Request body (typically JSON). Omit for GET/DELETE/HEAD requests. Mutually exclusive with form_file.",
+				},
+				"form_file": {
+					Type:        "object",
+					Description: "Send a multipart/form-data body with a file part streamed from a remote host at execution time — the bytes never transit the agent context. Keys: source_path (required, absolute path), source_host OR source_ctid (default: Proxmox host), field (form field name, default \"file\"), filename (default: source basename). POST/PUT/PATCH only; mutually exclusive with body.",
+				},
+				"form_fields": {
+					Type:        "object",
+					Description: "Extra string fields for the multipart body (requires form_file), e.g. {\"name\": \"report.xlsx\"}.",
 				},
 				"reason": {
 					Type:        "string",
@@ -822,18 +842,53 @@ func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
 
 	body, _ := args["body"].(string)
 
+	// Multipart form support: form_file streams the file bytes from a remote
+	// host at execution time (fetch_cmd runs on the relay), form_fields adds
+	// plain string parts. Bytes never transit the agent context.
+	var formFile *store.FormFile
+	if rawFF, ok := args["form_file"].(map[string]interface{}); ok {
+		if body != "" {
+			return errorResult("form_file and body are mutually exclusive")
+		}
+		switch method {
+		case "POST", "PUT", "PATCH":
+		default:
+			return errorResult("form_file requires POST, PUT, or PATCH")
+		}
+		var errRes *CallToolResult
+		formFile, errRes = h.buildFormFile(rawFF)
+		if errRes != nil {
+			return errRes
+		}
+	}
+	var formFields map[string]string
+	if rawFields, ok := args["form_fields"].(map[string]interface{}); ok {
+		if formFile == nil {
+			return errorResult("form_fields requires form_file")
+		}
+		formFields = make(map[string]string)
+		for k, v := range rawFields {
+			if s, ok := v.(string); ok {
+				formFields[k] = s
+			}
+		}
+	}
+
 	timeout := 0
 	if t, ok := args["timeout"].(float64); ok {
 		timeout = int(t)
 	}
 
-	r := h.store.AddHTTP(method, url, headers, body, reason, timeout)
+	r := h.store.AddHTTPForm(method, url, headers, body, formFile, formFields, reason, timeout)
 
 	// Build a friendly display command
 	displayCmd := fmt.Sprintf("%s %s", method, url)
+	if formFile != nil {
+		displayCmd = fmt.Sprintf("%s %s  [multipart file from %s]", method, url, formFile.Source)
+	}
 	h.store.SetDisplayCommand(r.ID, displayCmd)
 
-	h.audit.Log("request_created", r.ID, map[string]interface{}{
+	auditEntry := map[string]interface{}{
 		"tool":    "http_request",
 		"method":  method,
 		"url":     url,
@@ -841,7 +896,11 @@ func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
 		"has_body": body != "",
 		"reason":  reason,
 		"timeout": timeout,
-	})
+	}
+	if formFile != nil {
+		auditEntry["form_file_source"] = formFile.Source
+	}
+	h.audit.Log("request_created", r.ID, auditEntry)
 
 	result := map[string]interface{}{
 		"request_id": r.ID,
@@ -1186,11 +1245,260 @@ func intArg(args map[string]interface{}, key string) int {
 var validPathRe = regexp.MustCompile(`^/[a-zA-Z0-9._/\-]+$`)
 var validModeRe = regexp.MustCompile(`^0[0-7]{3}$`)
 
+// validHostRe constrains hosts that get interpolated into shell pipelines
+// (write_file source streaming). IPs or hostnames only — no shell metachars.
+var validHostRe = regexp.MustCompile(`^[a-zA-Z0-9._\-]+$`)
+
 // bashCShellRe matches "bash -c word word" or "sh -c word word" patterns in a
 // concatenated shell command string. The first word after -c is an unquoted
 // single-word command, followed by another word — indicating arg-splitting.
 // Does NOT match when the command after -c starts with a quote (properly quoted).
 var bashCShellRe = regexp.MustCompile(`\b(?:bash|sh)\s+-c\s+([^\s'"` + "`" + `]+)\s+\S+`)
+
+// writeFileFromSource handles write_file with source_path: the relay pulls the
+// file over SSH from the source and pipes it into the destination write as a
+// single shell pipeline. No bytes transit the agent context or the request
+// store. Both paths are validated by validPathRe and hosts by validHostRe, so
+// shell interpolation is safe.
+func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, reason, sourcePath, sourceHost string, sourceCtid int) *CallToolResult {
+	mode := "0644"
+	if m, ok := args["mode"].(string); ok && m != "" {
+		mode = m
+	}
+	if !validModeRe.MatchString(mode) {
+		return errorResult("mode must be an octal permission string like 0644 or 0755")
+	}
+
+	ctid := intArg(args, "ctid")
+	host, _ := args["host"].(string)
+	if host == "" {
+		host = h.hostIP
+	}
+	if !validHostRe.MatchString(host) {
+		return errorResult("host must be an IP or hostname")
+	}
+
+	timeout := 0
+	if t, ok := args["timeout"].(float64); ok {
+		timeout = int(t)
+	}
+
+	sshBin := "ssh"
+	if pfx := h.sshPrefix(); len(pfx) > 0 {
+		sshBin = "ssh " + strings.Join(pfx, " ")
+	}
+
+	// Source side: direct SSH to a host/container, or pct exec via the
+	// Proxmox host for containers without relay SSH.
+	var srcCmd, srcTarget string
+	probeHost := ""
+	if sourceCtid > 0 {
+		c, err := h.containers.Get(sourceCtid)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to look up source container: %v", err))
+		}
+		if c == nil {
+			return errorResult(fmt.Sprintf("source container %d not found in registry. Use register_container first.", sourceCtid))
+		}
+		srcTarget = fmt.Sprintf("CTID %d (%s)", c.CTID, c.Hostname)
+		if c.HasRelaySSH {
+			u := "root"
+			if c.SSHUser != "" {
+				u = c.SSHUser
+			}
+			srcCmd = fmt.Sprintf("%s %s@%s -- cat %s", sshBin, u, c.IP, shellQuote(sourcePath))
+		} else {
+			srcCmd = fmt.Sprintf("%s root@%s -- pct exec %d -- cat %s", sshBin, h.hostIP, c.CTID, shellQuote(sourcePath))
+		}
+	} else {
+		if sourceHost == "" {
+			sourceHost = h.hostIP
+		}
+		if !validHostRe.MatchString(sourceHost) {
+			return errorResult("source_host must be an IP or hostname")
+		}
+		srcTarget = sourceHost
+		probeHost = sourceHost
+		srcCmd = fmt.Sprintf("%s root@%s -- cat %s", sshBin, sourceHost, shellQuote(sourcePath))
+	}
+
+	// Destination side mirrors the inline-content routing, minus stdin. The
+	// remote command is double-quoted so the relay-side shell hands it to ssh
+	// as one argument; inner single quotes come from shellQuote.
+	var dstCmd, dstTarget, route string
+	if ctid > 0 {
+		c, err := h.containers.Get(ctid)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to look up container: %v", err))
+		}
+		if c == nil {
+			return errorResult(fmt.Sprintf("container %d not found in registry. Use register_container first.", ctid))
+		}
+		dstTarget = fmt.Sprintf("CTID %d (%s)", c.CTID, c.Hostname)
+		if c.HasRelaySSH {
+			route = "direct_ssh"
+			u := "root"
+			if c.SSHUser != "" {
+				u = c.SSHUser
+			}
+			dstCmd = fmt.Sprintf(`%s %s@%s -- "cat > %s && chmod %s %s"`,
+				sshBin, u, c.IP, shellQuote(path), mode, shellQuote(path))
+		} else {
+			route = "pct_push"
+			tmpFile := fmt.Sprintf("/tmp/mhr-%d", time.Now().UnixNano())
+			dstCmd = fmt.Sprintf(`%s root@%s -- "cat > %s && pct push %d %s %s && pct exec %d -- chmod %s %s && rm %s"`,
+				sshBin, h.hostIP, tmpFile, c.CTID, tmpFile, shellQuote(path), c.CTID, mode, shellQuote(path), tmpFile)
+		}
+	} else {
+		route = "direct_ssh"
+		dstTarget = host
+		dstCmd = fmt.Sprintf(`%s root@%s -- "cat > %s && chmod %s %s"`,
+			sshBin, host, shellQuote(path), mode, shellQuote(path))
+	}
+
+	// Pre-approval source probe: size + mtime for the reviewer, and a hard
+	// error if the source file definitively does not exist. Fail-open on
+	// probe errors (SSH failure, timeout) — same policy as the overwrite probe.
+	sourceLine := ""
+	sourceSize := 0
+	if h.writeFileChecker != nil {
+		exists, size, mtime, probeErr := h.writeFileChecker(sourceCtid, probeHost, sourcePath, 3*time.Second)
+		if probeErr != nil {
+			h.audit.Log("write_file_source_probe_failed", "", map[string]interface{}{
+				"source": srcTarget,
+				"path":   sourcePath,
+				"error":  probeErr.Error(),
+			})
+		} else if !exists {
+			return errorResult(fmt.Sprintf("source file not found: %s on %s", sourcePath, srcTarget))
+		} else {
+			sourceLine = fmt.Sprintf("[SOURCE: %dB, modified %s]\n",
+				size, mtime.Format("2006-01-02 15:04"))
+			sourceSize = int(size)
+		}
+	}
+
+	// Overwrite probe on the destination, same as the inline path.
+	overwriteLine := ""
+	if h.writeFileChecker != nil {
+		exists, oldSize, oldMtime, probeErr := h.writeFileChecker(ctid, host, path, 3*time.Second)
+		if probeErr != nil {
+			h.audit.Log("write_file_probe_failed", "", map[string]interface{}{
+				"target": dstTarget,
+				"path":   path,
+				"error":  probeErr.Error(),
+			})
+		} else if exists {
+			overwriteLine = fmt.Sprintf("[OVERWRITE: %dB, modified %s]\n",
+				oldSize, oldMtime.Format("2006-01-02 15:04"))
+		}
+	}
+
+	full := srcCmd + " | " + dstCmd
+	prefixedReason := fmt.Sprintf("[FILE from %s:%s -> %s:%s] %s\n%s%s",
+		srcTarget, sourcePath, dstTarget, path, reason, sourceLine, overwriteLine)
+
+	r := h.store.Add(full, nil, prefixedReason, "", true, timeout)
+
+	displayCmd := fmt.Sprintf("stream %s:%s -> %s:%s  [mode %s]",
+		srcTarget, sourcePath, dstTarget, path, mode)
+	h.store.SetDisplayCommand(r.ID, displayCmd)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":        "write_file",
+		"target":      dstTarget,
+		"path":        path,
+		"source":      srcTarget,
+		"source_path": sourcePath,
+		"size":        sourceSize,
+		"mode":        mode,
+		"route":       route,
+		"reason":      reason,
+	})
+
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+		"target":     dstTarget,
+		"path":       path,
+		"source":     fmt.Sprintf("%s:%s", srcTarget, sourcePath),
+		"size":       sourceSize,
+		"route":      route,
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// buildFormFile validates http_request's form_file argument and constructs
+// the store.FormFile with its fetch command. The fetch command is an argv
+// array (no shell), so source_path needs no quoting beyond validPathRe.
+func (h *ToolHandler) buildFormFile(raw map[string]interface{}) (*store.FormFile, *CallToolResult) {
+	srcPath, _ := raw["source_path"].(string)
+	if srcPath == "" {
+		return nil, errorResult("form_file.source_path is required")
+	}
+	if !validPathRe.MatchString(srcPath) {
+		return nil, errorResult("form_file.source_path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
+	}
+	srcHost, _ := raw["source_host"].(string)
+	srcCtid := intArg(raw, "source_ctid")
+	if srcHost != "" && srcCtid > 0 {
+		return nil, errorResult("form_file: provide either source_host or source_ctid, not both")
+	}
+
+	pfx := h.sshPrefix()
+	var fetchCmd []string
+	var source string
+	if srcCtid > 0 {
+		c, err := h.containers.Get(srcCtid)
+		if err != nil {
+			return nil, errorResult(fmt.Sprintf("failed to look up source container: %v", err))
+		}
+		if c == nil {
+			return nil, errorResult(fmt.Sprintf("source container %d not found in registry. Use register_container first.", srcCtid))
+		}
+		source = fmt.Sprintf("CTID %d (%s):%s", c.CTID, c.Hostname, srcPath)
+		if c.HasRelaySSH {
+			u := "root"
+			if c.SSHUser != "" {
+				u = c.SSHUser
+			}
+			fetchCmd = append(append([]string{"ssh"}, pfx...),
+				fmt.Sprintf("%s@%s", u, c.IP), "--", "cat", srcPath)
+		} else {
+			fetchCmd = append(append([]string{"ssh"}, pfx...),
+				fmt.Sprintf("root@%s", h.hostIP), "--",
+				"pct", "exec", strconv.Itoa(c.CTID), "--", "cat", srcPath)
+		}
+	} else {
+		if srcHost == "" {
+			srcHost = h.hostIP
+		}
+		if !validHostRe.MatchString(srcHost) {
+			return nil, errorResult("form_file.source_host must be an IP or hostname")
+		}
+		source = fmt.Sprintf("%s:%s", srcHost, srcPath)
+		fetchCmd = append(append([]string{"ssh"}, pfx...),
+			fmt.Sprintf("root@%s", srcHost), "--", "cat", srcPath)
+	}
+
+	field, _ := raw["field"].(string)
+	if field == "" {
+		field = "file"
+	}
+	filename, _ := raw["filename"].(string)
+	if filename == "" {
+		parts := strings.Split(srcPath, "/")
+		filename = parts[len(parts)-1]
+	}
+
+	return &store.FormFile{
+		Field:    field,
+		Filename: filename,
+		FetchCmd: fetchCmd,
+		Source:   source,
+	}, nil
+}
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
@@ -1312,11 +1620,31 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 		return errorResult("path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
 	}
 
-	// Content can arrive as plain text (`content`) or base64 (`content_base64`).
-	// Exactly one is required: the plaintext path avoids a round-trip for text
-	// files while content_base64 remains available for raw binary / non-UTF-8.
+	// Content can arrive as plain text (`content`), base64 (`content_base64`),
+	// or be streamed from a remote host (`source_path` + `source_host`/`source_ctid`).
+	// Exactly one content method is required.
 	plaintext, hasPlain := args["content"].(string)
 	contentB64, hasB64 := args["content_base64"].(string)
+	sourcePath, _ := args["source_path"].(string)
+	sourceHost, _ := args["source_host"].(string)
+	sourceCtid := intArg(args, "source_ctid")
+
+	if sourcePath != "" && ((hasPlain && plaintext != "") || (hasB64 && contentB64 != "")) {
+		return errorResult("provide exactly one of content, content_base64, or source_path")
+	}
+	if sourcePath == "" && (sourceHost != "" || sourceCtid > 0) {
+		return errorResult("source_host/source_ctid require source_path")
+	}
+	if sourcePath != "" {
+		if sourceHost != "" && sourceCtid > 0 {
+			return errorResult("provide either source_host or source_ctid, not both")
+		}
+		if !validPathRe.MatchString(sourcePath) {
+			return errorResult("source_path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
+		}
+		return h.writeFileFromSource(args, path, reason, sourcePath, sourceHost, sourceCtid)
+	}
+
 	if hasPlain && plaintext != "" && hasB64 && contentB64 != "" {
 		return errorResult("provide either content or content_base64, not both")
 	}

@@ -1,11 +1,14 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -43,7 +46,39 @@ func (e *Executor) ExecuteHTTP(r *store.Request) *store.Result {
 	expandedBody := expandEnvVars(r.HTTPBody)
 
 	var bodyReader io.Reader
-	if expandedBody != "" {
+	multipartContentType := ""
+	if r.HTTPFormFile != nil {
+		// Fetch the file bytes by running the fetch command (built and shown
+		// to the reviewer at request time), then build a multipart body.
+		ff := r.HTTPFormFile
+		fileBytes, err := exec.CommandContext(ctx, ff.FetchCmd[0], ff.FetchCmd[1:]...).Output()
+		if err != nil {
+			stderr := ""
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				stderr = strings.TrimSpace(string(exitErr.Stderr))
+			}
+			return &store.Result{
+				ExitCode: -1,
+				Stderr:   fmt.Sprintf("form_file fetch failed (%s): %v %s", ff.Source, err, stderr),
+			}
+		}
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		for k, v := range r.HTTPFormFields {
+			w.WriteField(k, expandEnvVars(v))
+		}
+		fw, err := w.CreateFormFile(ff.Field, ff.Filename)
+		if err != nil {
+			return &store.Result{
+				ExitCode: -1,
+				Stderr:   fmt.Sprintf("failed to build multipart body: %v", err),
+			}
+		}
+		fw.Write(fileBytes)
+		w.Close()
+		bodyReader = &buf
+		multipartContentType = w.FormDataContentType()
+	} else if expandedBody != "" {
 		bodyReader = strings.NewReader(expandedBody)
 	}
 
@@ -57,6 +92,11 @@ func (e *Executor) ExecuteHTTP(r *store.Request) *store.Result {
 
 	for k, v := range r.HTTPHeaders {
 		req.Header.Set(k, expandEnvVars(v))
+	}
+	if multipartContentType != "" {
+		// The boundary is generated at execution time; override any
+		// caller-supplied Content-Type.
+		req.Header.Set("Content-Type", multipartContentType)
 	}
 
 	client := &http.Client{}

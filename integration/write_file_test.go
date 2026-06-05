@@ -18,6 +18,7 @@ type WriteFileResponse struct {
 	Path      string `json:"path"`
 	Size      int    `json:"size"`
 	Route     string `json:"route"`
+	Source    string `json:"source,omitempty"`
 }
 
 func extractWriteFileResponse(t *testing.T, resp *JSONRPCResponse) WriteFileResponse {

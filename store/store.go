@@ -45,10 +45,26 @@ type Request struct {
 	HTTPURL     string            `json:"http_url,omitempty"`
 	HTTPHeaders map[string]string `json:"http_headers,omitempty"`
 	HTTPBody    string            `json:"http_body,omitempty"`
+	// Multipart upload: the executor runs FetchCmd to pull the file bytes at
+	// execution time and builds a multipart/form-data body. Bytes never
+	// transit the agent context.
+	HTTPFormFile   *FormFile         `json:"http_form_file,omitempty"`
+	HTTPFormFields map[string]string `json:"http_form_fields,omitempty"`
 
 	// Script-specific fields (only when Type == "script")
 	ScriptName string   `json:"script_name,omitempty"`
 	ScriptArgs []string `json:"script_args,omitempty"`
+}
+
+// FormFile describes the file part of a multipart http_request. FetchCmd is
+// built at request time (so the approval pane shows exactly what will run)
+// and executed by the relay at execution time; its stdout becomes the file
+// bytes. Source is a human-readable descriptor like "CTID 115:/shared/x.xlsx".
+type FormFile struct {
+	Field    string   `json:"field"`
+	Filename string   `json:"filename"`
+	FetchCmd []string `json:"fetch_cmd"`
+	Source   string   `json:"source"`
 }
 
 type Result struct {
@@ -103,18 +119,24 @@ func (s *Store) Add(cmd string, args []string, reason, workingDir string, shell 
 }
 
 func (s *Store) AddHTTP(method, url string, headers map[string]string, body, reason string, timeout int) *Request {
+	return s.AddHTTPForm(method, url, headers, body, nil, nil, reason, timeout)
+}
+
+func (s *Store) AddHTTPForm(method, url string, headers map[string]string, body string, formFile *FormFile, formFields map[string]string, reason string, timeout int) *Request {
 	id := generateID()
 	r := &Request{
-		ID:          id,
-		Type:        "http",
-		HTTPMethod:  method,
-		HTTPURL:     url,
-		HTTPHeaders: headers,
-		HTTPBody:    body,
-		Reason:      reason,
-		Timeout:     timeout,
-		Status:      StatusPending,
-		CreatedAt:   time.Now(),
+		ID:             id,
+		Type:           "http",
+		HTTPMethod:     method,
+		HTTPURL:        url,
+		HTTPHeaders:    headers,
+		HTTPBody:       body,
+		HTTPFormFile:   formFile,
+		HTTPFormFields: formFields,
+		Reason:         reason,
+		Timeout:        timeout,
+		Status:         StatusPending,
+		CreatedAt:      time.Now(),
 	}
 	s.mu.Lock()
 	s.requests[id] = r

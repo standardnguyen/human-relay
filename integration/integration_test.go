@@ -1049,6 +1049,17 @@ type RequestResult struct {
 	Result         *ExecResult `json:"result"`
 	StdinLen       int         `json:"stdin_len"`
 	DisplayCommand string      `json:"display_command"`
+	Shell          bool        `json:"shell"`
+	HTTPFormFile   *FormFile   `json:"http_form_file"`
+	HTTPFormFields map[string]string `json:"http_form_fields"`
+}
+
+// FormFile matches store.FormFile for http_request multipart requests.
+type FormFile struct {
+	Field    string   `json:"field"`
+	Filename string   `json:"filename"`
+	FetchCmd []string `json:"fetch_cmd"`
+	Source   string   `json:"source"`
 }
 
 type ExecResult struct {

@@ -846,7 +846,11 @@ func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
 	// host at execution time (fetch_cmd runs on the relay), form_fields adds
 	// plain string parts. Bytes never transit the agent context.
 	var formFile *store.FormFile
-	if rawFF, ok := args["form_file"].(map[string]interface{}); ok {
+	if raw, present := args["form_file"]; present && raw != nil {
+		rawFF, ok := raw.(map[string]interface{})
+		if !ok {
+			return errorResult(fmt.Sprintf("form_file must be a JSON object, got %T — if the relay was just redeployed, reconnect the MCP session to refresh tool schemas", raw))
+		}
 		if body != "" {
 			return errorResult("form_file and body are mutually exclusive")
 		}
@@ -862,7 +866,11 @@ func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
 		}
 	}
 	var formFields map[string]string
-	if rawFields, ok := args["form_fields"].(map[string]interface{}); ok {
+	if raw, present := args["form_fields"]; present && raw != nil {
+		rawFields, ok := raw.(map[string]interface{})
+		if !ok {
+			return errorResult(fmt.Sprintf("form_fields must be a JSON object, got %T — if the relay was just redeployed, reconnect the MCP session to refresh tool schemas", raw))
+		}
 		if formFile == nil {
 			return errorResult("form_fields requires form_file")
 		}
@@ -1242,6 +1250,26 @@ func intArg(args map[string]interface{}, key string) int {
 	return 0
 }
 
+// intArgStrict is intArg with a hard error when the key is present but not a
+// number. Catches the stale-MCP-schema failure mode where a client sends
+// params its cached schema doesn't know as strings — silently treating those
+// as absent produces confusing downstream behavior (observed 2026-06-05:
+// source_ctid as a string made write_file default the source to the Proxmox
+// host). Returns (0, nil) when absent.
+func intArgStrict(args map[string]interface{}, key string) (int, *CallToolResult) {
+	raw, present := args[key]
+	if !present || raw == nil {
+		return 0, nil
+	}
+	switch v := raw.(type) {
+	case float64:
+		return int(v), nil
+	case int:
+		return v, nil
+	}
+	return 0, errorResult(fmt.Sprintf("%s must be a number, got %T — if the relay was just redeployed, reconnect the MCP session to refresh tool schemas", key, raw))
+}
+
 var validPathRe = regexp.MustCompile(`^/[a-zA-Z0-9._/\-]+$`)
 var validModeRe = regexp.MustCompile(`^0[0-7]{3}$`)
 
@@ -1269,7 +1297,10 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 		return errorResult("mode must be an octal permission string like 0644 or 0755")
 	}
 
-	ctid := intArg(args, "ctid")
+	ctid, typeErr := intArgStrict(args, "ctid")
+	if typeErr != nil {
+		return typeErr
+	}
 	host, _ := args["host"].(string)
 	if host == "" {
 		host = h.hostIP
@@ -1441,7 +1472,10 @@ func (h *ToolHandler) buildFormFile(raw map[string]interface{}) (*store.FormFile
 		return nil, errorResult("form_file.source_path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
 	}
 	srcHost, _ := raw["source_host"].(string)
-	srcCtid := intArg(raw, "source_ctid")
+	srcCtid, typeErr := intArgStrict(raw, "source_ctid")
+	if typeErr != nil {
+		return nil, typeErr
+	}
 	if srcHost != "" && srcCtid > 0 {
 		return nil, errorResult("form_file: provide either source_host or source_ctid, not both")
 	}
@@ -1627,7 +1661,10 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	contentB64, hasB64 := args["content_base64"].(string)
 	sourcePath, _ := args["source_path"].(string)
 	sourceHost, _ := args["source_host"].(string)
-	sourceCtid := intArg(args, "source_ctid")
+	sourceCtid, typeErr := intArgStrict(args, "source_ctid")
+	if typeErr != nil {
+		return typeErr
+	}
 
 	if sourcePath != "" && ((hasPlain && plaintext != "") || (hasB64 && contentB64 != "")) {
 		return errorResult("provide exactly one of content, content_base64, or source_path")
@@ -1675,7 +1712,10 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 		return errorResult("mode must be an octal permission string like 0644 or 0755")
 	}
 
-	ctid := intArg(args, "ctid")
+	ctid, typeErr := intArgStrict(args, "ctid")
+	if typeErr != nil {
+		return typeErr
+	}
 	host, _ := args["host"].(string)
 	if host == "" {
 		host = h.hostIP

@@ -199,3 +199,27 @@ func TestInstallSSHKeyRequiresTarget(t *testing.T) {
 		t.Fatalf("expected ctid-or-machine error, got %+v", res)
 	}
 }
+
+func TestDeleteContainer(t *testing.T) {
+	h := setup(t)
+	h.Handle("register_container", map[string]interface{}{
+		"ctid": float64(9104), "ip": "100.106.181.59", "hostname": "gpu-worker", "has_relay_ssh": true,
+	})
+
+	del := h.Handle("delete_container", map[string]interface{}{"ctid": float64(9104)})
+	if del.IsError || !strings.Contains(del.Content[0].Text, "\"deleted\":true") {
+		t.Fatalf("delete failed: %+v", del)
+	}
+
+	list := h.Handle("list_containers", map[string]interface{}{})
+	if strings.Contains(list.Content[0].Text, "9104") {
+		t.Fatalf("container still listed after delete: %s", list.Content[0].Text)
+	}
+
+	if again := h.Handle("delete_container", map[string]interface{}{"ctid": float64(9104)}); !again.IsError {
+		t.Fatal("expected error deleting nonexistent container")
+	}
+	if mc := h.Handle("delete_container", map[string]interface{}{}); !mc.IsError {
+		t.Fatal("expected error for missing ctid")
+	}
+}

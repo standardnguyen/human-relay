@@ -13,6 +13,7 @@ import (
 	"github.com/standardnguyen/human-relay/audit"
 	"github.com/standardnguyen/human-relay/containers"
 	"github.com/standardnguyen/human-relay/executor"
+	"github.com/standardnguyen/human-relay/machines"
 	"github.com/standardnguyen/human-relay/mcp"
 	"github.com/standardnguyen/human-relay/permissions"
 	"github.com/standardnguyen/human-relay/store"
@@ -74,6 +75,15 @@ func main() {
 	defer containerStore.Close()
 	log.Printf("Container registry: %s", registryPath)
 
+	// Machine registry (non-LXC SSH targets — Windows, bare metal, VMs, WSL)
+	machinesPath := filepath.Join(dataDir, "machines.json")
+	machineStore, err := machines.NewStore(machinesPath)
+	if err != nil {
+		log.Fatalf("init machine store: %v", err)
+	}
+	defer machineStore.Close()
+	log.Printf("Machine registry: %s", machinesPath)
+
 	// Whitelist (auto-approve matching commands)
 	wlPath := envString("MHR_WHITELIST_FILE", filepath.Join(dataDir, "whitelist.json"))
 	wl, err := whitelist.Load(wlPath)
@@ -85,7 +95,7 @@ func main() {
 	}
 
 	// MCP server (SSE transport)
-	toolHandler := mcp.NewToolHandler(s, containerStore, hostIP, auditLog)
+	toolHandler := mcp.NewToolHandler(s, containerStore, machineStore, hostIP, auditLog)
 	if sshCfg := os.Getenv("MHR_SSH_CONFIG"); sshCfg != "" {
 		toolHandler.SetSSHConfig(sshCfg)
 		log.Printf("  SSH config: %s", sshCfg)

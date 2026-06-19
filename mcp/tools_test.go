@@ -11,6 +11,7 @@ import (
 
 	"github.com/standardnguyen/human-relay/audit"
 	"github.com/standardnguyen/human-relay/containers"
+	"github.com/standardnguyen/human-relay/machines"
 	"github.com/standardnguyen/human-relay/store"
 )
 
@@ -22,12 +23,17 @@ func setup(t *testing.T) *ToolHandler {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { cs.Close() })
+	ms, err := machines.NewStore(filepath.Join(t.TempDir(), "machines.db"))
+	if err != nil {
+		t.Fatalf("machines.NewStore: %v", err)
+	}
+	t.Cleanup(func() { ms.Close() })
 	al, err := audit.NewLogger(filepath.Join(t.TempDir(), "audit.log"))
 	if err != nil {
 		t.Fatalf("NewLogger: %v", err)
 	}
 	t.Cleanup(func() { al.Close() })
-	return NewToolHandler(s, cs, "192.168.10.50", al)
+	return NewToolHandler(s, cs, ms, "192.168.10.50", al)
 }
 
 func TestRegisterContainer(t *testing.T) {

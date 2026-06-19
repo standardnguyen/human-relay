@@ -14,6 +14,7 @@ import (
 
 	"github.com/standardnguyen/human-relay/audit"
 	"github.com/standardnguyen/human-relay/containers"
+	"github.com/standardnguyen/human-relay/machines"
 	"github.com/standardnguyen/human-relay/store"
 )
 
@@ -169,6 +170,99 @@ var ToolDefinitions = []Tool{
 		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
 	},
 	{
+		Name:        "register_machine",
+		Description: "Register or update a non-LXC SSH target (Windows workstation, bare-metal host, VM, WSL instance) in the relay's machine registry, keyed by a string name. This is the first-class home for SSH targets that aren't Proxmox containers — use it instead of registering a fake 'pseudo-CTID' in the container registry. Instant — no human approval needed.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"name": {
+					Type:        "string",
+					Description: "Machine name — the lookup key (e.g. 'corsair-win'). Alphanumeric with hyphens/underscores.",
+				},
+				"host": {
+					Type:        "string",
+					Description: "IP or hostname the relay SSHes to (e.g. 100.106.181.59 or corsair.tailnet.ts.net)",
+				},
+				"ssh_user": {
+					Type:        "string",
+					Description: "SSH login user on the machine (required — unlike containers there is no root default)",
+				},
+				"shell": {
+					Type:        "string",
+					Description: "Remote shell for command construction: 'posix' (default — sh/bash, Linux/macOS/WSL) or 'powershell' (Windows). Drives how exec/write_file/key-install build the remote command.",
+					Enum:        []string{"posix", "powershell"},
+					Default:     "posix",
+				},
+				"identity_file": {
+					Type:        "string",
+					Description: "Optional path to a specific SSH private key on the relay (e.g. /root/.ssh-data/id_rsa). Omit to use the relay's default key.",
+				},
+			},
+			Required: []string{"name", "host", "ssh_user"},
+		},
+		Annotations: &ToolAnnotations{IdempotentHint: boolPtr(true)},
+	},
+	{
+		Name:        "list_machines",
+		Description: "List all machines in the relay's machine registry. Instant — no human approval needed.",
+		InputSchema: InputSchema{
+			Type:       "object",
+			Properties: map[string]Property{},
+		},
+		Annotations: &ToolAnnotations{ReadOnlyHint: boolPtr(true)},
+	},
+	{
+		Name:        "delete_machine",
+		Description: "Remove a machine from the relay's machine registry. Instant — no human approval needed.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"name": {
+					Type:        "string",
+					Description: "Machine name to remove",
+				},
+			},
+			Required: []string{"name"},
+		},
+		Annotations: &ToolAnnotations{IdempotentHint: boolPtr(true)},
+	},
+	{
+		Name:        "exec_machine",
+		Description: "Execute a command on a registered machine (non-LXC SSH target). Looks up the machine in the registry and routes via direct SSH, building the remote command for the machine's shell (posix or powershell). For powershell machines, shell=true runs the command through PowerShell via -EncodedCommand (the dashboard decodes it for the reviewer). Requires human approval.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"machine": {
+					Type:        "string",
+					Description: "Machine name to execute on (e.g. 'corsair-win')",
+				},
+				"command": {
+					Type:        "string",
+					Description: "The command/binary to execute on the machine",
+				},
+				"args": {
+					Type:        "array",
+					Description: "Arguments to pass to the command",
+					Items:       &Items{Type: "string"},
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Why you need to run this command — shown to the human reviewer",
+				},
+				"shell": {
+					Type:        "boolean",
+					Description: "If true, run the command through the machine's shell (sh -c for posix; PowerShell -EncodedCommand for powershell). Default false (direct binary invocation).",
+				},
+				"timeout": {
+					Type:        "integer",
+					Description: "Command timeout in seconds (default: server default, max: server max)",
+				},
+			},
+			Required: []string{"machine", "command", "reason"},
+		},
+		Annotations: &ToolAnnotations{OpenWorldHint: boolPtr(true)},
+	},
+	{
 		Name:        "write_file",
 		Description: "Write a file to a host or container. Content is piped via stdin (never on the shell command line), so quotes, backticks, $, and newlines pass through unharmed. Pass plain text as `content`, raw binary as `content_base64`, or stream from a remote host with `source_path` (+ `source_host`/`source_ctid`) so the bytes never transit the agent context. Exactly one content method is required. Requires human approval.",
 		InputSchema: InputSchema{
@@ -205,6 +299,10 @@ var ToolDefinitions = []Tool{
 				"ctid": {
 					Type:        "integer",
 					Description: "If set, write to this container (looks up registry for routing)",
+				},
+				"machine": {
+					Type:        "string",
+					Description: "If set, write to this registered machine (non-LXC SSH target; takes precedence over host). For powershell machines the content is base64-streamed over stdin and decoded on the far side (binary-safe); mode is ignored (Windows uses ACLs).",
 				},
 				"mode": {
 					Type:        "string",
@@ -381,7 +479,11 @@ var ToolDefinitions = []Tool{
 			Properties: map[string]Property{
 				"ctid": {
 					Type:        "integer",
-					Description: "Target container ID (e.g. 125)",
+					Description: "Target container ID (e.g. 125). Provide this OR machine.",
+				},
+				"machine": {
+					Type:        "string",
+					Description: "Target machine name (non-LXC SSH target). Provide this OR ctid. Appends to the login user's authorized_keys (~/.ssh on posix, %USERPROFILE%\\.ssh on powershell).",
 				},
 				"public_key": {
 					Type:        "string",
@@ -396,7 +498,7 @@ var ToolDefinitions = []Tool{
 					Description: "Command timeout in seconds (default: server default, max: server max)",
 				},
 			},
-			Required: []string{"ctid", "public_key", "reason"},
+			Required: []string{"public_key", "reason"},
 		},
 		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
 	},
@@ -431,6 +533,7 @@ type WriteFileChecker func(ctid int, host, path string, timeout time.Duration) (
 type ToolHandler struct {
 	store          *store.Store
 	containers     *containers.Store
+	machines       *machines.Store
 	hostIP         string
 	audit          *audit.Logger
 	sshConfigFile  string
@@ -439,8 +542,8 @@ type ToolHandler struct {
 	writeFileChecker WriteFileChecker
 }
 
-func NewToolHandler(s *store.Store, cs *containers.Store, hostIP string, al *audit.Logger) *ToolHandler {
-	h := &ToolHandler{store: s, containers: cs, hostIP: hostIP, audit: al, scriptsDir: "/scripts"}
+func NewToolHandler(s *store.Store, cs *containers.Store, ms *machines.Store, hostIP string, al *audit.Logger) *ToolHandler {
+	h := &ToolHandler{store: s, containers: cs, machines: ms, hostIP: hostIP, audit: al, scriptsDir: "/scripts"}
 	h.writeFileChecker = h.defaultWriteFileCheck
 	return h
 }
@@ -490,6 +593,14 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 		return h.listContainers(args)
 	case "exec_container":
 		return h.execContainer(args)
+	case "register_machine":
+		return h.registerMachine(args)
+	case "list_machines":
+		return h.listMachines(args)
+	case "delete_machine":
+		return h.deleteMachine(args)
+	case "exec_machine":
+		return h.execMachine(args)
 	case "write_file":
 		return h.writeFile(args)
 	case "http_request":
@@ -803,6 +914,169 @@ func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult
 		"status":     "pending",
 		"container":  fmt.Sprintf("CTID %d (%s)", c.CTID, c.Hostname),
 		"route":      route,
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// validMachineNameRe matches a machine registry key: alphanumeric start,
+// then alphanumeric/hyphen/underscore. Same shape as a flat script name.
+var validMachineNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+func (h *ToolHandler) registerMachine(args map[string]interface{}) *CallToolResult {
+	if h.machines == nil {
+		return errorResult("machine registry not configured")
+	}
+	name, _ := args["name"].(string)
+	if name == "" {
+		return errorResult("name is required")
+	}
+	if !validMachineNameRe.MatchString(name) {
+		return errorResult("machine name must be alphanumeric with hyphens/underscores only (no paths, no spaces)")
+	}
+	host, _ := args["host"].(string)
+	if host == "" {
+		return errorResult("host is required")
+	}
+	if !validHostRe.MatchString(host) {
+		return errorResult("host must be an IP or hostname")
+	}
+	sshUser, _ := args["ssh_user"].(string)
+	if sshUser == "" {
+		return errorResult("ssh_user is required")
+	}
+	shell, _ := args["shell"].(string)
+	switch shell {
+	case "", machines.ShellPosix, machines.ShellPowerShell:
+	default:
+		return errorResult(fmt.Sprintf("shell must be %q or %q", machines.ShellPosix, machines.ShellPowerShell))
+	}
+	identityFile, _ := args["identity_file"].(string)
+	if identityFile != "" && !validPathRe.MatchString(identityFile) {
+		return errorResult("identity_file must be an absolute path")
+	}
+
+	m, err := h.machines.Register(name, host, sshUser, shell, identityFile)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to register machine: %v", err))
+	}
+	data, _ := json.Marshal(m)
+	return textResult(string(data))
+}
+
+func (h *ToolHandler) listMachines(args map[string]interface{}) *CallToolResult {
+	if h.machines == nil {
+		return errorResult("machine registry not configured")
+	}
+	list, err := h.machines.List()
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to list machines: %v", err))
+	}
+	if list == nil {
+		list = []*machines.Machine{}
+	}
+	data, _ := json.Marshal(list)
+	return textResult(string(data))
+}
+
+func (h *ToolHandler) deleteMachine(args map[string]interface{}) *CallToolResult {
+	if h.machines == nil {
+		return errorResult("machine registry not configured")
+	}
+	name, _ := args["name"].(string)
+	if name == "" {
+		return errorResult("name is required")
+	}
+	if err := h.machines.Delete(name); err != nil {
+		return errorResult(fmt.Sprintf("failed to delete machine: %v", err))
+	}
+	result := map[string]interface{}{"name": name, "deleted": true}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// machineSSHBase returns the ssh arg prefix for a machine up to and including
+// "user@host --". It applies the relay's -F config, an optional per-machine
+// -i identity file, and the machine's login user (overriding the config's
+// default User for Host *).
+func (h *ToolHandler) machineSSHBase(m *machines.Machine) []string {
+	args := append([]string{}, h.sshPrefix()...)
+	if m.IdentityFile != "" {
+		args = append(args, "-i", m.IdentityFile)
+	}
+	args = append(args, fmt.Sprintf("%s@%s", m.SSHUser, m.Host), "--")
+	return args
+}
+
+func (h *ToolHandler) execMachine(args map[string]interface{}) *CallToolResult {
+	if h.machines == nil {
+		return errorResult("machine registry not configured")
+	}
+	name, _ := args["machine"].(string)
+	if name == "" {
+		return errorResult("machine is required")
+	}
+	command, _ := args["command"].(string)
+	if command == "" {
+		return errorResult("command is required")
+	}
+	reason, _ := args["reason"].(string)
+	if reason == "" {
+		return errorResult("reason is required")
+	}
+	shell, _ := args["shell"].(bool)
+
+	timeout := 0
+	if t, ok := args["timeout"].(float64); ok {
+		timeout = int(t)
+	}
+
+	var cmdArgs []string
+	if rawArgs, ok := args["args"].([]interface{}); ok {
+		for _, a := range rawArgs {
+			if s, ok := a.(string); ok {
+				cmdArgs = append(cmdArgs, s)
+			}
+		}
+	}
+
+	// bash/sh -c arg-splitting guard applies to posix machines in non-shell mode
+	// (same rule as exec_container). PowerShell has no such failure mode.
+	if !shell {
+		if errMsg := checkBashCArgSplitting(command, cmdArgs); errMsg != "" {
+			return errorResult(errMsg)
+		}
+	}
+
+	m, err := h.machines.Get(name)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to look up machine: %v", err))
+	}
+	if m == nil {
+		return errorResult(fmt.Sprintf("machine %q not found in registry. Use register_machine first.", name))
+	}
+
+	sshArgs := append(h.machineSSHBase(m), machineExecRemote(m, command, cmdArgs, shell)...)
+	prefixedReason := fmt.Sprintf("[MACHINE %s (%s)] %s", m.Name, m.Shell, reason)
+
+	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, timeout)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":    "exec_machine",
+		"machine": m.Name,
+		"host":    m.Host,
+		"shell":   m.Shell,
+		"command": command,
+		"args":    cmdArgs,
+		"reason":  reason,
+		"timeout": timeout,
+	})
+
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+		"machine":    m.Name,
+		"shell":      m.Shell,
 	}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))
@@ -1271,6 +1545,14 @@ func intArgStrict(args map[string]interface{}, key string) (int, *CallToolResult
 }
 
 var validPathRe = regexp.MustCompile(`^/[a-zA-Z0-9._/\-]+$`)
+
+// validMachinePathRe allows posix AND Windows-style absolute paths (drive
+// letters, backslashes, colons, spaces) for machine write targets. Paths are
+// quote-escaped before use (shellQuote for posix, pwshQuote inside an
+// -EncodedCommand for powershell), so this is a sanity bound on the charset, not
+// the injection defense. Shell metacharacters ($ ` " ' ; | & etc.) stay blocked.
+var validMachinePathRe = regexp.MustCompile(`^[A-Za-z0-9 ._/\\:\-]+$`)
+
 var validModeRe = regexp.MustCompile(`^0[0-7]{3}$`)
 
 // validHostRe constrains hosts that get interpolated into shell pipelines
@@ -1650,7 +1932,13 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 		return errorResult("path and reason are required")
 	}
 
-	if !validPathRe.MatchString(path) {
+	// Machine targets allow Windows-style paths; container/host targets keep the
+	// stricter posix-absolute rule.
+	if _, isMachine := args["machine"].(string); isMachine && args["machine"].(string) != "" {
+		if !validMachinePathRe.MatchString(path) {
+			return errorResult("path contains disallowed characters (allowed: letters, digits, space, . _ - / \\ :)")
+		}
+	} else if !validPathRe.MatchString(path) {
 		return errorResult("path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
 	}
 
@@ -1716,6 +2004,7 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	if typeErr != nil {
 		return typeErr
 	}
+	machineName, _ := args["machine"].(string)
 	host, _ := args["host"].(string)
 	if host == "" {
 		host = h.hostIP
@@ -1730,8 +2019,28 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	var sshArgs []string
 	var target string
 	var route string
+	// stdinBytes is what gets piped to the remote command. posix targets receive
+	// the raw content; a powershell machine receives base64 that its remote script
+	// decodes (set in the machine branch below).
+	stdinBytes := content
 
-	if ctid > 0 {
+	if machineName != "" {
+		if h.machines == nil {
+			return errorResult("machine registry not configured")
+		}
+		m, err := h.machines.Get(machineName)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to look up machine: %v", err))
+		}
+		if m == nil {
+			return errorResult(fmt.Sprintf("machine %q not found in registry. Use register_machine first.", machineName))
+		}
+		target = fmt.Sprintf("machine %s (%s)", m.Name, m.Shell)
+		route = "machine_" + m.Shell
+		var remote []string
+		remote, stdinBytes = machineWriteRemote(m, path, mode, content)
+		sshArgs = append(h.machineSSHBase(m), remote...)
+	} else if ctid > 0 {
 		c, err := h.containers.Get(ctid)
 		if err != nil {
 			return errorResult(fmt.Sprintf("failed to look up container: %v", err))
@@ -1768,8 +2077,11 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	// the reviewer sees it before deciding. Fail-open: a probe error (SSH
 	// failure, permission denied, timeout) must NOT block the write; log to
 	// audit and proceed without the warning.
+	// The overwrite probe SSHes as root@host or via pct exec — neither matches a
+	// machine's login user/shell, so skip it for machine writes (fail-open: the
+	// probe is reviewer-helpful signal, not a correctness gate).
 	overwriteLine := ""
-	if h.writeFileChecker != nil {
+	if h.writeFileChecker != nil && machineName == "" {
 		exists, oldSize, oldMtime, probeErr := h.writeFileChecker(ctid, host, path, 3*time.Second)
 		if probeErr != nil {
 			h.audit.Log("write_file_probe_failed", "", map[string]interface{}{
@@ -1791,7 +2103,7 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	prefixedReason := fmt.Sprintf("[FILE %dB -> %s:%s] %s\n%s---\n%s",
 		len(content), target, path, reason, overwriteLine, preview)
 
-	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, content)
+	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, stdinBytes)
 
 	displayCmd := fmt.Sprintf("write -> %s:%s  [%dB, mode %s]", target, path, len(content), mode)
 	h.store.SetDisplayCommand(r.ID, displayCmd)
@@ -1917,9 +2229,7 @@ func (h *ToolHandler) installRelaySSH(args map[string]interface{}) *CallToolResu
 
 func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult {
 	ctid := intArg(args, "ctid")
-	if ctid == 0 {
-		return errorResult("ctid is required and must be > 0")
-	}
+	machineName, _ := args["machine"].(string)
 	publicKey, _ := args["public_key"].(string)
 	if publicKey == "" {
 		return errorResult("public_key is required")
@@ -1937,6 +2247,13 @@ func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult
 	pubkey := strings.TrimSpace(publicKey)
 	if !validSSHKeyRe.MatchString(pubkey) {
 		return errorResult("public_key does not look like a valid SSH public key (expected format: ssh-ed25519 AAAA... comment)")
+	}
+
+	if machineName != "" {
+		return h.installSSHKeyMachine(machineName, pubkey, reason, timeout)
+	}
+	if ctid == 0 {
+		return errorResult("ctid or machine is required")
 	}
 
 	// Look up container
@@ -1996,6 +2313,50 @@ func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult
 		"status":     "pending",
 		"container":  fmt.Sprintf("CTID %d (%s)", ctid, c.Hostname),
 		"route":      route,
+		"warning":    "This installs an arbitrary SSH key. Verify the key belongs to a trusted party before approving.",
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// installSSHKeyMachine appends an arbitrary public key to a machine's
+// authorized_keys over direct SSH (the relay must already have access). The key
+// flows via stdin; the remote target path is the login user's profile.
+func (h *ToolHandler) installSSHKeyMachine(name, pubkey, reason string, timeout int) *CallToolResult {
+	if h.machines == nil {
+		return errorResult("machine registry not configured")
+	}
+	m, err := h.machines.Get(name)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to look up machine: %v", err))
+	}
+	if m == nil {
+		return errorResult(fmt.Sprintf("machine %q not found in registry. Use register_machine first.", name))
+	}
+
+	remote, stdin := machineKeyAppendRemote(m, pubkey)
+	sshArgs := append(h.machineSSHBase(m), remote...)
+
+	prefixedReason := fmt.Sprintf("[SSH KEY -> machine %s (%s)] %s\n---\nKey: %s", m.Name, m.Shell, reason, pubkey)
+	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, stdin)
+
+	displayCmd := fmt.Sprintf("install SSH key -> machine %s", m.Name)
+	h.store.SetDisplayCommand(r.ID, displayCmd)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":    "install_ssh_key",
+		"machine": m.Name,
+		"shell":   m.Shell,
+		"key":     pubkey,
+		"reason":  reason,
+		"route":   "machine_" + m.Shell,
+	})
+
+	result := map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+		"machine":    m.Name,
+		"route":      "machine_" + m.Shell,
 		"warning":    "This installs an arbitrary SSH key. Verify the key belongs to a trusted party before approving.",
 	}
 	data, _ := json.Marshal(result)

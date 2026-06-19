@@ -134,6 +134,21 @@ var ToolDefinitions = []Tool{
 		Annotations: &ToolAnnotations{ReadOnlyHint: boolPtr(true)},
 	},
 	{
+		Name:        "delete_container",
+		Description: "Remove a container from the relay's container registry. Use this to retire stale or recycled CTID registrations (e.g. a deprecated pseudo-CTID now migrated to the machine registry). Does NOT touch the actual container — only the registry entry. Instant — no human approval needed.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"ctid": {
+					Type:        "integer",
+					Description: "Container ID to remove from the registry",
+				},
+			},
+			Required: []string{"ctid"},
+		},
+		Annotations: &ToolAnnotations{IdempotentHint: boolPtr(true)},
+	},
+	{
 		Name:        "exec_container",
 		Description: "Execute a command inside a container. Looks up the container in the registry and routes via direct SSH (if relay has access) or via pct exec on the Proxmox host. Requires human approval.",
 		InputSchema: InputSchema{
@@ -591,6 +606,8 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 		return h.registerContainer(args)
 	case "list_containers":
 		return h.listContainers(args)
+	case "delete_container":
+		return h.deleteContainer(args)
 	case "exec_container":
 		return h.execContainer(args)
 	case "register_machine":
@@ -796,6 +813,19 @@ func (h *ToolHandler) listContainers(args map[string]interface{}) *CallToolResul
 		list = []*containers.Container{}
 	}
 	data, _ := json.Marshal(list)
+	return textResult(string(data))
+}
+
+func (h *ToolHandler) deleteContainer(args map[string]interface{}) *CallToolResult {
+	ctid := intArg(args, "ctid")
+	if ctid == 0 {
+		return errorResult("ctid is required and must be > 0")
+	}
+	if err := h.containers.Delete(ctid); err != nil {
+		return errorResult(fmt.Sprintf("failed to delete container: %v", err))
+	}
+	result := map[string]interface{}{"ctid": ctid, "deleted": true}
+	data, _ := json.Marshal(result)
 	return textResult(string(data))
 }
 

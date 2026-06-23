@@ -87,10 +87,22 @@ func machineExecRemote(m *machines.Machine, command string, cmdArgs []string, sh
 // stdin and writes the decoded bytes to path (creating parent dirs). Binary-safe
 // and quote-safe: the path is embedded as a single-quoted literal inside the
 // encoded script, so it never transits the ssh command line unquoted.
+//
+// IMPORTANT: stdin is read via [Console]::OpenStandardInput() + a 8 KiB
+// Stream.Read loop into a MemoryStream. We do NOT use [Console]::In.ReadToEnd()
+// — that path blocks indefinitely on Windows PowerShell when the stdin stream
+// is a pipe (the SSH transport) and the content is >10 KiB, because the
+// underlying TextReader waits for an EOF that never arrives while the pipe is
+// still being written to. The 8 KiB read loop returns 0 on EOF and the loop
+// exits cleanly. Bug #1 — fixed.
 func psWriteFileScript(path string) string {
 	return strings.Join([]string{
 		"$ErrorActionPreference='Stop'",
-		"$b=[Console]::In.ReadToEnd()",
+		"$ms=New-Object IO.MemoryStream",
+		"$s=[Console]::OpenStandardInput()",
+		"$buf=New-Object byte[] 8192",
+		"while(($n=$s.Read($buf,0,8192)) -gt 0){$ms.Write($buf,0,$n)}",
+		"$b=[Text.Encoding]::ASCII.GetString($ms.ToArray())",
 		"$bytes=[Convert]::FromBase64String($b)",
 		"$path=" + pwshQuote(path),
 		"$dir=Split-Path -Parent $path",
@@ -107,14 +119,25 @@ func psWriteFileScript(path string) string {
 // or newlines, so we must NOT trim (cf. psKeyAppendScript, where the key is a
 // known text format and Trim is appropriate). Parent-dir creation matches
 // psWriteFileScript for consistency.
+//
+// IMPORTANT: stdin is read via the same [Console]::OpenStandardInput() +
+// 8 KiB Stream.Read loop as psWriteFileScript. The bytes are written via
+// [IO.File]::WriteAllBytes($path, $ms.ToArray()) — $ms.ToArray() is byte[],
+// which is what WriteAllBytes expects. Bug #1 — fixed (the previous version
+// captured [Console]::In.ReadToEnd() (String) and passed it to WriteAllBytes
+// (wants byte[]) — type error that would have either errored or corrupted
+// binary content).
 func psWriteFileRawScript(path string) string {
 	return strings.Join([]string{
 		"$ErrorActionPreference='Stop'",
-		"$bytes=[Console]::In.ReadToEnd()",
+		"$ms=New-Object IO.MemoryStream",
+		"$s=[Console]::OpenStandardInput()",
+		"$buf=New-Object byte[] 8192",
+		"while(($n=$s.Read($buf,0,8192)) -gt 0){$ms.Write($buf,0,$n)}",
 		"$path=" + pwshQuote(path),
 		"$dir=Split-Path -Parent $path",
 		"if($dir){[void](New-Item -ItemType Directory -Force -Path $dir)}",
-		"[IO.File]::WriteAllBytes($path,$bytes)",
+		"[IO.File]::WriteAllBytes($path,$ms.ToArray())",
 	}, "; ")
 }
 
@@ -136,10 +159,20 @@ func machineWriteRemote(m *machines.Machine, path, mode string, content []byte) 
 // the recommended Windows OpenSSH setup. Admin-group users need
 // %ProgramData%\ssh\administrators_authorized_keys with restricted ACLs instead;
 // that case is documented rather than auto-handled.
+//
+// IMPORTANT: stdin is read via the same [Console]::OpenStandardInput() +
+// 8 KiB Stream.Read loop as psWriteFileScript. The Trim is applied to the
+// decoded string (the key is known text and a trailing newline is a transport
+// artifact), NOT to the raw bytes — Trim on the byte stream would corrupt a
+// key whose final segment happened to end in whitespace.
 func psKeyAppendScript() string {
 	return strings.Join([]string{
 		"$ErrorActionPreference='Stop'",
-		"$k=[Console]::In.ReadToEnd().Trim()",
+		"$ms=New-Object IO.MemoryStream",
+		"$s=[Console]::OpenStandardInput()",
+		"$buf=New-Object byte[] 8192",
+		"while(($n=$s.Read($buf,0,8192)) -gt 0){$ms.Write($buf,0,$n)}",
+		"$k=[Text.Encoding]::ASCII.GetString($ms.ToArray()).Trim()",
 		"$d=Join-Path $env:USERPROFILE '.ssh'",
 		"[void](New-Item -ItemType Directory -Force -Path $d)",
 		"Add-Content -Path (Join-Path $d 'authorized_keys') -Value $k",

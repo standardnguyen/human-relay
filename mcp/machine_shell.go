@@ -99,6 +99,25 @@ func psWriteFileScript(path string) string {
 	}, "; ")
 }
 
+// psWriteFileRawScript is the source-stream counterpart to psWriteFileScript.
+// When write_file uses source_path, the relay pipes raw bytes from a remote
+// `cat` over SSH directly into the destination — no base64 round-trip on the
+// relay side. The remote script must therefore write stdin verbatim, NOT
+// FromBase64String-decode it. File bytes can legitimately end in whitespace
+// or newlines, so we must NOT trim (cf. psKeyAppendScript, where the key is a
+// known text format and Trim is appropriate). Parent-dir creation matches
+// psWriteFileScript for consistency.
+func psWriteFileRawScript(path string) string {
+	return strings.Join([]string{
+		"$ErrorActionPreference='Stop'",
+		"$bytes=[Console]::In.ReadToEnd()",
+		"$path=" + pwshQuote(path),
+		"$dir=Split-Path -Parent $path",
+		"if($dir){[void](New-Item -ItemType Directory -Force -Path $dir)}",
+		"[IO.File]::WriteAllBytes($path,$bytes)",
+	}, "; ")
+}
+
 // machineWriteRemote returns (remoteArgs, stdin) for writing content to path on
 // a machine. posix pipes raw content through `cat`; powershell base64-encodes the
 // content into stdin and decodes it on the far side. `mode` is honored for posix

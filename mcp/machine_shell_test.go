@@ -114,6 +114,68 @@ func TestMachineWriteRemotePowerShell(t *testing.T) {
 	}
 }
 
+// TestPSWriteFileScriptKeepsBase64 guards the inline path: the script that
+// receives base64 on stdin must still call FromBase64String, so the bytes
+// land on disk verbatim. This is the counterweight to the new raw-bytes
+// script (psWriteFileRawScript) — the two scripts have different shapes by
+// design, never alias one to the other.
+func TestPSWriteFileScriptKeepsBase64(t *testing.T) {
+	script := psWriteFileScript(`C:\Users\esthie\note.txt`)
+	if !strings.Contains(script, "FromBase64String") {
+		t.Fatalf("psWriteFileScript should decode stdin as base64 (inline path sends b64): %s", script)
+	}
+	if !strings.Contains(script, "WriteAllBytes") {
+		t.Fatalf("psWriteFileScript should write bytes: %s", script)
+	}
+	if !strings.Contains(script, `ReadToEnd()`) {
+		t.Fatalf("psWriteFileScript should read stdin: %s", script)
+	}
+	if !strings.Contains(script, `'C:\Users\esthie\note.txt'`) {
+		t.Fatalf("psWriteFileScript should embed the path as a single-quoted literal: %s", script)
+	}
+}
+
+// TestPSWriteFileRawScript is the source-stream counterpart: when raw bytes
+// arrive on stdin (piped from a remote `cat` over SSH), the script must NOT
+// try to base64-decode them — it must write the bytes verbatim. Sharing one
+// script between the inline (b64 stdin) and source-stream (raw stdin) paths
+// would corrupt every source-stream file by trying to base64-decode binary
+// content. The Trim semantics from psKeyAppendScript don't carry over: file
+// bytes can legitimately end in whitespace or newlines, so we must NOT trim.
+func TestPSWriteFileRawScript(t *testing.T) {
+	script := psWriteFileRawScript(`C:\Users\esthie\data.bin`)
+	if strings.Contains(script, "FromBase64String") {
+		t.Fatalf("psWriteFileRawScript must NOT decode base64 (source-stream pipes raw bytes from `cat`): %s", script)
+	}
+	if !strings.Contains(script, "WriteAllBytes") {
+		t.Fatalf("psWriteFileRawScript should write bytes: %s", script)
+	}
+	if !strings.Contains(script, `ReadToEnd()`) {
+		t.Fatalf("psWriteFileRawScript should read stdin: %s", script)
+	}
+	if !strings.Contains(script, `'C:\Users\esthie\data.bin'`) {
+		t.Fatalf("psWriteFileRawScript should embed the path as a single-quoted literal: %s", script)
+	}
+	if strings.Contains(script, ".Trim()") {
+		t.Fatalf("psWriteFileRawScript must NOT trim — raw file bytes may legitimately end in whitespace/newline, trimming would corrupt them: %s", script)
+	}
+	if !strings.Contains(script, "New-Item -ItemType Directory") {
+		t.Fatalf("psWriteFileRawScript should create parent dirs, matching psWriteFileScript: %s", script)
+	}
+}
+
+// TestPSWriteFileScriptsAreDistinct ensures the two scripts don't accidentally
+// alias one to the other — a refactor that pointed both call sites at the same
+// function would silently break either the inline or the source-stream path.
+func TestPSWriteFileScriptsAreDistinct(t *testing.T) {
+	path := `C:\x\y.dat`
+	base := psWriteFileScript(path)
+	raw := psWriteFileRawScript(path)
+	if base == raw {
+		t.Fatalf("psWriteFileScript and psWriteFileRawScript must be distinct (one decodes base64, the other writes raw): %s", base)
+	}
+}
+
 func TestMachineKeyAppendRemote(t *testing.T) {
 	key := "ssh-ed25519 AAAAC3 test@host"
 

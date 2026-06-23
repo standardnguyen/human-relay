@@ -1613,6 +1613,11 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 	if typeErr != nil {
 		return typeErr
 	}
+	// machineName selects the machine destination path. If the caller set
+	// machine= but didn't register it, we return a clear error below rather
+	// than silently misrouting to the Proxmox host (the previous behavior,
+	// which corrupted writes into the wrong host entirely).
+	machineName, _ := args["machine"].(string)
 	host, _ := args["host"].(string)
 	if host == "" {
 		host = h.hostIP
@@ -1669,7 +1674,45 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 	// remote command is double-quoted so the relay-side shell hands it to ssh
 	// as one argument; inner single quotes come from shellQuote.
 	var dstCmd, dstTarget, route string
-	if ctid > 0 {
+	if machineName != "" {
+		// Machine destination: ssh to the machine's user@host (with optional
+		// -i for a per-machine identity file). For posix, the dest receives
+		// raw bytes from the source `cat` and writes them with `cat >` +
+		// chmod. For powershell, the dest script must NOT base64-decode
+		// stdin (the pipeline carries raw bytes) — see psWriteFileRawScript
+		// in machine_shell.go. The previous behavior was to silently fall
+		// through to the host path, which wrote the source-stream bytes to
+		// the Proxmox host instead of the machine.
+		if h.machines == nil {
+			return errorResult("machine registry not configured")
+		}
+		m, err := h.machines.Get(machineName)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to look up machine: %v", err))
+		}
+		if m == nil {
+			return errorResult(fmt.Sprintf("machine %q not found in registry. Use register_machine first.", machineName))
+		}
+		dstTarget = fmt.Sprintf("machine %s (%s)", m.Name, m.Shell)
+		// Build the user@host portion, inserting -i for a per-machine
+		// identity file if set (mirrors machineSSHBase for the inline path).
+		userHost := fmt.Sprintf("%s@%s", m.SSHUser, m.Host)
+		if m.IdentityFile != "" {
+			userHost = fmt.Sprintf("-i %s %s", shellQuote(m.IdentityFile), userHost)
+		}
+		if m.Shell == machines.ShellPowerShell {
+			route = "machine_powershell_raw"
+			// Build the powershell invoke as a single string. base64-UTF16LE
+			// is shell-safe (charset [A-Za-z0-9+/=]) inside double quotes.
+			encoded := psEncodedCommand(psWriteFileRawScript(path))
+			dstCmd = fmt.Sprintf(`%s %s -- powershell -NoProfile -EncodedCommand %s`,
+				sshBin, userHost, encoded)
+		} else {
+			route = "machine_posix"
+			dstCmd = fmt.Sprintf(`%s %s -- "cat > %s && chmod %s %s"`,
+				sshBin, userHost, shellQuote(path), mode, shellQuote(path))
+		}
+	} else if ctid > 0 {
 		c, err := h.containers.Get(ctid)
 		if err != nil {
 			return errorResult(fmt.Sprintf("failed to look up container: %v", err))
@@ -1721,9 +1764,13 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 		}
 	}
 
-	// Overwrite probe on the destination, same as the inline path.
+	// Overwrite probe on the destination, same as the inline path. Machine
+	// destinations skip the probe: the probe SSHes as root@host, which
+	// doesn't match the machine's login user/shell (matching the inline
+	// path's `machineName == ""` guard on the dest probe). Fail-open if
+	// the probe is set but errors — see the inline path.
 	overwriteLine := ""
-	if h.writeFileChecker != nil {
+	if h.writeFileChecker != nil && machineName == "" {
 		exists, oldSize, oldMtime, probeErr := h.writeFileChecker(ctid, host, path, 3*time.Second)
 		if probeErr != nil {
 			h.audit.Log("write_file_probe_failed", "", map[string]interface{}{

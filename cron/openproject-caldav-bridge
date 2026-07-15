@@ -1,0 +1,7 @@
+# OP -> CalDAV bridge (Project Kronos) — mirrors OpenProject work-package
+# dates into the Radicale `openproject` calendar on kronos (CTID 167).
+# Installed by deploy.sh into /etc/cron.d/ on every deploy (cron-as-code).
+# Runs in the LXC; execs into the relay docker container for env + script.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+7 * * * * root cd /opt/human-relay && docker compose exec -T human-relay python3 /scripts/openproject-caldav-bridge.py >> /var/log/op-caldav-bridge.log 2>&1

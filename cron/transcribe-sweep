@@ -1,5 +1,6 @@
 # !transcribe pipeline — drains the Satellites !transcribe list unattended:
-# ingest card media into Speakr (CTID 166), then on COMPLETED attach the
+# upload card media to Speakr's /upload API (CTID 166, titled with the card
+# name so no LLM titling fires), then on COMPLETED attach the
 # transcript, rename "[TRANSCRIBED] ...", and move the card to the Processing
 # board Inbox. Idempotent; in-flight cards resolve on a later run.
 # Installed by deploy.sh into /etc/cron.d/ on every deploy (cron-as-code).

@@ -57,7 +57,13 @@ jobs:
           # Transfer freshly built image from CTID 131 to CTID 2009
           $SSH root@192.168.10.88 'docker save human-relay-human-relay:latest' | \
             $SSH root@192.168.40.13 'docker load'
-          # Restart service with new image
+          # Render the OpenProject API token from cobble-bao into the relay .env,
+          # idempotently (strip any stale OPENPROJECT_ lines, then re-render). The
+          # relay is the sanctioned exception to the "no secrets in .env" policy:
+          # it holds service tokens by design (documented cobble-side).
+          $SSH root@192.168.40.13 \
+            'set -a; . /etc/openbao/cobble-relay.env; set +a; cd /opt/human-relay/hr-deploy; sed -i "/^OPENPROJECT_/d" .env; /usr/local/bin/bao-env services/openproject >> .env; chmod 600 .env'
+          # Restart service with new image (--force-recreate reloads the .env)
           $SSH root@192.168.40.13 \
             'cd /opt/human-relay/hr-deploy && docker compose up -d --force-recreate --no-build && docker image prune -f'
           rm /tmp/deploy_key

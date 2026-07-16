@@ -12,3 +12,4 @@ chmod 600 /opt/human-relay/.env
 docker compose up -d
 docker image prune -f
 install -m 0644 /opt/human-relay/cron/openproject-caldav-bridge /etc/cron.d/openproject-caldav-bridge
+install -m 0644 /opt/human-relay/cron/transcribe-sweep /etc/cron.d/transcribe-sweep

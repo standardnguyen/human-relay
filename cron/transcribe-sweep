@@ -1,0 +1,12 @@
+# !transcribe pipeline — drains the Satellites !transcribe list unattended:
+# ingest card media into Speakr (CTID 166), then on COMPLETED attach the
+# transcript, rename "[TRANSCRIBED] ...", and move the card to the Processing
+# board Inbox. Idempotent; in-flight cards resolve on a later run.
+# Installed by deploy.sh into /etc/cron.d/ on every deploy (cron-as-code).
+# Runs in the LXC; execs into the relay docker container for env + script.
+# Every 15 min at :04/:19/:34/:49 — offset off the :07 OP->CalDAV bridge.
+# Ingest and delivery are separate passes, so a dropped card is ~30 min to
+# transcript worst-case.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+4-59/15 * * * * root cd /opt/human-relay && docker compose exec -T human-relay python3 /scripts/transcribe-sweep.py >> /var/log/transcribe-sweep.log 2>&1

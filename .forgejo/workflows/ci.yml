@@ -61,8 +61,12 @@ jobs:
           # idempotently (strip any stale OPENPROJECT_ lines, then re-render). The
           # relay is the sanctioned exception to the "no secrets in .env" policy:
           # it holds service tokens by design (documented cobble-side).
+          # NOTE: the compose here uses env_file: ../.env, so the file the container
+          # actually reads is /opt/human-relay/.env (one dir up from hr-deploy) — not
+          # hr-deploy/.env. Render into that absolute path. &&-chained so a failed
+          # bao-env fails the job instead of being masked by a trailing chmod.
           $SSH root@192.168.40.13 \
-            'set -a; . /etc/openbao/cobble-relay.env; set +a; cd /opt/human-relay/hr-deploy; sed -i "/^OPENPROJECT_/d" .env; /usr/local/bin/bao-env services/openproject >> .env; chmod 600 .env'
+            'set -a; . /etc/openbao/cobble-relay.env; set +a; E=/opt/human-relay/.env && sed -i "/^OPENPROJECT_/d" "$E" && /usr/local/bin/bao-env services/openproject >> "$E" && chmod 600 "$E"'
           # Restart service with new image (--force-recreate reloads the .env)
           $SSH root@192.168.40.13 \
             'cd /opt/human-relay/hr-deploy && docker compose up -d --force-recreate --no-build && docker image prune -f'

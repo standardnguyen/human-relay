@@ -16,6 +16,19 @@ services:
       - ./ssh_config:/root/.ssh/config:ro
       - ./scripts:/scripts
 
+  # Signal bridge for the relay's messaging surface. Compose-internal only —
+  # no published ports; the API is unauthenticated, so the relay's approval
+  # flow (http_request / run_script) is the sole path to it.
+  # :latest is deliberate: Signal server compat requires a current client.
+  signal-api:
+    image: bbernhard/signal-cli-rest-api:latest
+    restart: unless-stopped
+    environment:
+      - MODE=normal
+    volumes:
+      - signal-data:/home/.local/share/signal-cli
+
 volumes:
   relay-ssh:
   relay-data:
+  signal-data:

@@ -427,19 +427,25 @@ func (h *Handler) watchRequests() {
 				wlCommand = "create_then_run"
 				wlArgs = []string{req.ScriptName}
 			}
-			if req != nil && req.Status == store.StatusPending && h.whitelist.Match(wlCommand, wlArgs) {
-				h.autoApprove(req)
+			if rule, ok := h.whitelist.MatchRule(wlCommand, wlArgs); ok && req != nil && req.Status == store.StatusPending {
+				h.autoApprove(req, rule.GateOutput)
 			}
 		}
 	}
 }
 
-func (h *Handler) autoApprove(req *store.Request) {
+func (h *Handler) autoApprove(req *store.Request, gateOutput bool) {
 	h.store.SetStatus(req.ID, store.StatusApproved)
-	log.Printf("request %s auto-approved (whitelist): %s %v", req.ID, req.Command, req.Args)
+	if gateOutput {
+		// "Whitelist but gate outputs": execution is auto-approved, but the
+		// result stays output_gated until the human releases it.
+		h.store.SetOutputGated(req.ID)
+	}
+	log.Printf("request %s auto-approved (whitelist, gated=%v): %s %v", req.ID, gateOutput, req.Command, req.Args)
 	h.audit.Log("request_auto_approved", req.ID, map[string]interface{}{
-		"command": req.Command,
-		"args":    req.Args,
+		"command":     req.Command,
+		"args":        req.Args,
+		"gate_output": gateOutput,
 	})
 	h.broadcastEvent("update", req.ID)
 
@@ -490,6 +496,12 @@ func (h *Handler) executeRequest(req *store.Request) {
 		"stdout":    audit.Truncate(result.Stdout),
 		"stderr":    audit.Truncate(result.Stderr),
 	})
+	// Gating protects content; an empty result has none to screen. Auto-release
+	// so gated-whitelist polls that find nothing don't queue no-op Release clicks.
+	if cur := h.store.Get(req.ID); cur != nil && cur.OutputGated && result.Stdout == "" && result.Stderr == "" {
+		h.store.ReleaseOutput(req.ID)
+		h.audit.Log("output_auto_released_empty", req.ID, nil)
+	}
 	h.broadcastEvent("update", req.ID)
 }
 
@@ -508,20 +520,22 @@ func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var body struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
+			Command    string   `json:"command"`
+			Args       []string `json:"args"`
+			GateOutput bool     `json:"gate_output"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Command == "" {
 			http.Error(w, "command is required", http.StatusBadRequest)
 			return
 		}
-		h.whitelist.Add(body.Command, body.Args)
+		h.whitelist.Add(body.Command, body.Args, body.GateOutput)
 		if err := h.whitelist.Save(); err != nil {
 			log.Printf("whitelist save error: %v", err)
 		}
 		h.audit.Log("whitelist_add", "", map[string]interface{}{
-			"command": body.Command,
-			"args":    body.Args,
+			"command":     body.Command,
+			"args":        body.Args,
+			"gate_output": body.GateOutput,
 		})
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "added"})

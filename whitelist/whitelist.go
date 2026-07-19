@@ -9,6 +9,10 @@ import (
 type Rule struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
+	// GateOutput auto-approves matching requests but leaves their output
+	// gated (output_gated) until the human releases it — "whitelist but
+	// gate outputs". Absent/false = classic ungated auto-approve.
+	GateOutput bool `json:"gate_output,omitempty"`
 }
 
 type Whitelist struct {
@@ -33,14 +37,21 @@ func Load(path string) (*Whitelist, error) {
 }
 
 func (w *Whitelist) Match(command string, args []string) bool {
+	_, ok := w.MatchRule(command, args)
+	return ok
+}
+
+// MatchRule returns the matching rule (so callers can honor per-rule
+// options like GateOutput) and whether a match was found.
+func (w *Whitelist) MatchRule(command string, args []string) (Rule, bool) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	for _, r := range w.rules {
 		if r.Command == command && argsEqual(r.Args, args) {
-			return true
+			return r, true
 		}
 	}
-	return false
+	return Rule{}, false
 }
 
 func (w *Whitelist) Rules() []Rule {
@@ -51,16 +62,17 @@ func (w *Whitelist) Rules() []Rule {
 	return out
 }
 
-func (w *Whitelist) Add(command string, args []string) {
+func (w *Whitelist) Add(command string, args []string, gateOutput bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// Don't add duplicates
-	for _, r := range w.rules {
+	// Re-adding an existing rule updates its gate flag instead of duplicating
+	for i, r := range w.rules {
 		if r.Command == command && argsEqual(r.Args, args) {
+			w.rules[i].GateOutput = gateOutput
 			return
 		}
 	}
-	w.rules = append(w.rules, Rule{Command: command, Args: args})
+	w.rules = append(w.rules, Rule{Command: command, Args: args, GateOutput: gateOutput})
 }
 
 func (w *Whitelist) Remove(command string, args []string) bool {

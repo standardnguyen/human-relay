@@ -127,13 +127,13 @@ func TestLoadInvalidJSON(t *testing.T) {
 func TestAddAndRemove(t *testing.T) {
 	w := &Whitelist{}
 
-	w.Add("echo", []string{"hello"})
+	w.Add("echo", []string{"hello"}, false)
 	if !w.Match("echo", []string{"hello"}) {
 		t.Error("expected match after Add")
 	}
 
 	// Duplicate add should be no-op
-	w.Add("echo", []string{"hello"})
+	w.Add("echo", []string{"hello"}, false)
 	if len(w.Rules()) != 1 {
 		t.Errorf("expected 1 rule after duplicate add, got %d", len(w.Rules()))
 	}
@@ -157,8 +157,8 @@ func TestSave(t *testing.T) {
 	path := filepath.Join(dir, "whitelist.json")
 
 	w := &Whitelist{path: path}
-	w.Add("echo", []string{"hello"})
-	w.Add("ls", []string{"-la"})
+	w.Add("echo", []string{"hello"}, false)
+	w.Add("ls", []string{"-la"}, false)
 
 	if err := w.Save(); err != nil {
 		t.Fatal(err)
@@ -187,6 +187,105 @@ func TestRulesReturnsCopy(t *testing.T) {
 
 	if !w.Match("echo", []string{"hello"}) {
 		t.Error("modifying returned rules should not affect whitelist")
+	}
+}
+
+func TestMatchRuleReturnsGateFlag(t *testing.T) {
+	w := &Whitelist{
+		rules: []Rule{
+			{Command: "run_script", Args: []string{"signal-read"}, GateOutput: true},
+			{Command: "run_script", Args: []string{"signal-read-standard"}},
+		},
+	}
+
+	r, ok := w.MatchRule("run_script", []string{"signal-read"})
+	if !ok {
+		t.Fatal("expected match for gated rule")
+	}
+	if !r.GateOutput {
+		t.Error("expected GateOutput true on matched gated rule")
+	}
+
+	r, ok = w.MatchRule("run_script", []string{"signal-read-standard"})
+	if !ok {
+		t.Fatal("expected match for ungated rule")
+	}
+	if r.GateOutput {
+		t.Error("expected GateOutput false on matched ungated rule")
+	}
+
+	if _, ok := w.MatchRule("run_script", []string{"other"}); ok {
+		t.Error("should not match unlisted script")
+	}
+}
+
+func TestAddWithGateOutput(t *testing.T) {
+	w := &Whitelist{}
+
+	w.Add("run_script", []string{"signal-read"}, true)
+	r, ok := w.MatchRule("run_script", []string{"signal-read"})
+	if !ok || !r.GateOutput {
+		t.Error("expected gated rule after Add with gate")
+	}
+
+	// Re-adding with a different gate flag updates the existing rule
+	w.Add("run_script", []string{"signal-read"}, false)
+	if len(w.Rules()) != 1 {
+		t.Errorf("expected 1 rule after re-add, got %d", len(w.Rules()))
+	}
+	r, _ = w.MatchRule("run_script", []string{"signal-read"})
+	if r.GateOutput {
+		t.Error("expected re-add to clear gate flag")
+	}
+}
+
+func TestSaveLoadGateOutput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "whitelist.json")
+
+	w := &Whitelist{path: path}
+	w.Add("run_script", []string{"signal-read"}, true)
+	w.Add("uptime", nil, false)
+	if err := w.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	w2, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := w2.MatchRule("run_script", []string{"signal-read"})
+	if !ok || !r.GateOutput {
+		t.Error("gate_output should survive save+load")
+	}
+	r, ok = w2.MatchRule("uptime", nil)
+	if !ok || r.GateOutput {
+		t.Error("ungated rule should stay ungated after save+load")
+	}
+}
+
+func TestLoadLegacyRulesWithoutGateField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "whitelist.json")
+
+	// Pre-gate_output whitelist.json — field absent entirely
+	err := os.WriteFile(path, []byte(`[
+		{"command": "run_script", "args": ["next-task"]}
+	]`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := w.MatchRule("run_script", []string{"next-task"})
+	if !ok {
+		t.Fatal("legacy rule should still match")
+	}
+	if r.GateOutput {
+		t.Error("legacy rule must default to ungated")
 	}
 }
 

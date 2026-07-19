@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signet Gate — Signal lane</title>
+<style>
+  :root {
+    --bg: #121317; --panel: #1b1d22; --panel2: #23262d; --line: #2e323b;
+    --text: #e7e9ee; --dim: #9aa0ab; --in-bubble: #2e3138; --out-bubble: #2c6bed;
+    --gated: #f0b232; --released: #3ba55d; --pending: #6ea8fe; --danger: #e5484d;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  a { color: var(--pending); }
+
+  header.top { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header.top .logo { width: 30px; height: 30px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #8E1F2F, #5a1420); display: grid; place-items: center; font-weight: 700; color: #D4AF37; flex-shrink: 0; }
+  header.top h1 { font-size: 16px; font-weight: 600; }
+  header.top .tagline { font-size: 11px; color: var(--dim); }
+  header.top .spacer { flex: 1; }
+  header.top .conn { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+  header.top .conn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--released); }
+  header.top .conn .dot.off { background: var(--danger); }
+  header.top .backlink { font-size: 12px; text-decoration: none; color: var(--dim); }
+  header.top .backlink:hover { color: var(--text); }
+  .agentview { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); cursor: pointer; user-select: none; }
+  .agentview .switch { width: 36px; height: 20px; border-radius: 12px; background: var(--panel2); border: 1px solid var(--line); position: relative; transition: background .15s; }
+  .agentview .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--dim); transition: all .15s; }
+  body.agent-mode .agentview .switch { background: var(--released); }
+  body.agent-mode .agentview .switch::after { left: 18px; background: #fff; }
+  body.agent-mode .agentview { color: var(--released); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  aside { width: 290px; min-width: 230px; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; }
+  .convo { display: flex; gap: 10px; padding: 11px 12px; cursor: pointer; align-items: center; border-left: 3px solid transparent; }
+  .convo:hover { background: var(--panel2); }
+  .convo.active { background: var(--panel2); border-left-color: var(--out-bubble); }
+  .convo .avatar { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 16px; color: #fff; flex-shrink: 0; }
+  .convo .meta { flex: 1; min-width: 0; }
+  .convo .name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .convo .preview { font-size: 12.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .convo .badges { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+  .badge { font-size: 11px; font-weight: 700; border-radius: 10px; padding: 1px 7px; color: #000; }
+  .badge.gated-b { background: var(--gated); }
+  .badge.pend-b { background: var(--pending); }
+  aside .legend { margin-top: auto; padding: 12px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); line-height: 1.8; }
+  .dot-i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+
+  section.thread { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .thread-head { display: flex; align-items: center; gap: 10px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .thread-head .avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: #fff; }
+  .thread-head .who .name { font-weight: 600; font-size: 15px; }
+  .thread-head .who .sub { font-size: 12px; color: var(--dim); font-family: ui-monospace, monospace; }
+  .thread-head .spacer { flex: 1; }
+  button { font: inherit; cursor: pointer; border: none; border-radius: 7px; }
+  .btn { padding: 6px 12px; font-size: 12.5px; font-weight: 600; background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  .btn:hover { filter: brightness(1.2); }
+  .btn.release-all { border-color: var(--released); color: var(--released); }
+
+  .messages { flex: 1; overflow-y: auto; padding: 18px 22px; display: flex; flex-direction: column; gap: 10px; }
+  .empty-thread { margin: auto; color: var(--dim); font-size: 14px; text-align: center; }
+
+  .msg { max-width: 66%; display: flex; flex-direction: column; gap: 5px; }
+  .msg.in { align-self: flex-start; }
+  .msg.out { align-self: flex-end; align-items: flex-end; }
+  .bubble { padding: 9px 13px; border-radius: 14px; font-size: 14.5px; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
+  .msg.in .bubble { background: var(--in-bubble); border-bottom-left-radius: 4px; }
+  .msg.out .bubble { background: var(--out-bubble); border-bottom-right-radius: 4px; }
+  .stamp { font-size: 11px; color: var(--dim); padding: 0 4px; }
+  .stamp .req { font-family: ui-monospace, monospace; opacity: .75; }
+
+  .msg.gated .bubble { border: 1.5px solid var(--gated); box-shadow: 0 0 0 3px rgba(240,178,50,.08); }
+  .gatebar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .gatetag { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 2px 8px; border-radius: 4px; color: #000; }
+  .gatetag.g { background: var(--gated); }
+  .gatetag.r { background: transparent; color: var(--released); border: 1px solid var(--released); font-weight: 600; }
+  .gatetag.p { background: var(--pending); }
+  .gatetag.recv { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 600; }
+  .gatetag.w { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 600; }
+  .gact { padding: 4px 10px; font-size: 12px; font-weight: 600; }
+  .gact.ok { background: var(--released); color: #04140a; }
+  .gact.no { background: transparent; color: var(--dim); border: 1px solid var(--line); }
+  .gact.ap { background: var(--pending); color: #06131f; }
+  .gact.dn { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .msg.out.pending .bubble { background: transparent; border: 1.5px dashed var(--pending); color: var(--text); }
+  .msg.out.denied .bubble { opacity: .5; text-decoration: line-through; }
+
+  body.agent-mode .msg.gated, body.agent-mode .msg.receiving,
+  body.agent-mode .msg.out.pending, body.agent-mode .msg.out.sending,
+  body.agent-mode .msg.out.denied { display: none; }
+  body.agent-mode .messages { background: repeating-linear-gradient(45deg, transparent 0 40px, rgba(59,165,93,.025) 40px 80px); }
+  .agentnote { display: none; align-self: center; font-size: 12px; color: var(--released); border: 1px dashed var(--released); border-radius: 8px; padding: 5px 14px; }
+  body.agent-mode .agentnote { display: block; }
+
+  #toasts { position: fixed; bottom: 18px; right: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+  .toast { background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--released); border-radius: 8px; padding: 9px 14px; font-size: 13px; box-shadow: 0 4px 18px rgba(0,0,0,.4); }
+  .toast.err { border-left-color: var(--danger); }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="logo">S</div>
+  <div>
+    <h1>Signet Gate</h1>
+    <div class="tagline">chat-shaped view of the human-relay signal lane — same queue, gated</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="agentview" onclick="toggleAgent()">
+    <span id="avlabel">&#128065; human view</span>
+    <div class="switch"></div>
+  </div>
+  <div class="conn"><span class="dot" id="connDot"></span><span id="connStatus">connecting</span></div>
+  <a class="backlink" href="/">&#8592; dashboard</a>
+</header>
+
+<main>
+  <aside>
+    <div id="convos"></div>
+    <div class="legend">
+      <div><span class="dot-i" style="background:var(--gated)"></span><b>gated</b> — you see it, agent doesn't yet</div>
+      <div><span class="dot-i" style="background:var(--released)"></span><b>released</b> — agent can see it</div>
+      <div><span class="dot-i" style="background:var(--pending)"></span><b>pending</b> — agent's outbound, awaiting you</div>
+    </div>
+  </aside>
+
+  <section class="thread">
+    <div class="thread-head">
+      <div class="avatar" id="t-avatar" style="display:none"></div>
+      <div class="who">
+        <div class="name" id="t-name">Signal lane</div>
+        <div class="sub" id="t-sub"></div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn release-all" id="releaseAllBtn" onclick="releaseAll()" style="display:none">&#10003; release all gated</button>
+    </div>
+    <div class="messages" id="messages"></div>
+    <div class="agentnote">agent view — only released inbound + sent outbound exist down here</div>
+  </section>
+</main>
+
+<div id="toasts"></div>
+
+<script>
+const TOKEN = localStorage.getItem('mhr_token') || prompt('Enter auth token:');
+if (TOKEN) localStorage.setItem('mhr_token', TOKEN);
+const headers = { 'Authorization': 'Bearer ' + TOKEN };
+
+const STANDARD_UUID = "944c412b-6e81-45e8-b7e9-b5036a8a5e40";
+let requests = [];
+let convos = {};       // key -> { key, name, messages:[], lastTs }
+let active = null;
+let agentMode = false;
+
+function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function shortId(s) { return s ? String(s).slice(0, 8) : 'unknown'; }
+function fmtTime(iso) {
+  try { const d = new Date(iso); return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; }
+}
+
+// Map one relay request into a signal-lane message, or null if it isn't one.
+function mapRequest(r) {
+  if (r.type !== 'script') return null;
+  const name = r.script_name || '';
+  if (!name.startsWith('signal-') || name === 'signal-poll') return null;
+
+  const isRead = (name === 'signal-read' || name === 'signal-read-standard');
+  const isSend = (name === 'signal-send' || name === 'signal-send-standard');
+  if (!isRead && !isSend) return null;
+
+  const done = (r.status === 'complete' || r.status === 'error');
+
+  if (isRead) {
+    const stdout = (r.result && r.result.stdout) ? r.result.stdout.trim() : '';
+    let rec = null;
+    if (stdout) { try { rec = JSON.parse(stdout); } catch (e) { rec = null; } }
+    // A completed read with no message = an empty poll; nothing to show.
+    if (done && !rec) return null;
+    const isStd = (name === 'signal-read-standard');
+    const convoKey = isStd ? 'standard' : ((rec && rec.from_uuid) || 'unknown');
+    const convoName = isStd ? 'Standard (you)' : ((rec && rec.from_name) || shortId(rec && rec.from_uuid));
+    let state = !done ? 'receiving' : (r.output_gated ? 'gated' : 'released');
+    return {
+      id: r.id, dir: 'in', convoKey, convoName,
+      text: rec ? rec.message : '(receiving…)',
+      created: r.created_at, state,
+    };
+  }
+
+  // isSend — outbound. Script requests carry args in script_args (top-level
+  // args is null for type=script).
+  const args = r.script_args || r.args || [];
+  const isStd = (name === 'signal-send-standard');
+  const text = isStd ? (args[0] || '') : (args[1] || '');
+  const convoKey = isStd ? 'standard' : (args[0] || 'unknown');
+  const convoName = isStd ? 'Standard (you)' : shortId(args[0]);
+  let state;
+  if (r.status === 'pending') state = 'pending';
+  else if (r.status === 'approved' || r.status === 'running') state = 'sending';
+  else if (r.status === 'denied' || r.status === 'withdrawn') state = 'denied';
+  else state = 'sent';
+  return { id: r.id, dir: 'out', convoKey, convoName, text, created: r.created_at, state };
+}
+
+function rebuild() {
+  convos = {};
+  const msgs = requests.map(mapRequest).filter(Boolean);
+  msgs.sort((a, b) => new Date(a.created) - new Date(b.created));
+  for (const m of msgs) {
+    if (!convos[m.convoKey]) convos[m.convoKey] = { key: m.convoKey, name: m.convoName, messages: [], lastTs: 0 };
+    const c = convos[m.convoKey];
+    // Prefer a real (non-uuid) name from any inbound message in the convo.
+    if (m.dir === 'in' && m.convoName && !/^[0-9a-f]{8}$/.test(m.convoName)) c.name = m.convoName;
+    c.messages.push(m);
+    c.lastTs = Math.max(c.lastTs, new Date(m.created).getTime());
+  }
+  if (active && !convos[active]) active = null;
+  if (!active) {
+    const keys = Object.keys(convos).sort((a, b) => convos[b].lastTs - convos[a].lastTs);
+    active = keys[0] || null;
+  }
+}
+
+function convoStats(c) {
+  return {
+    gated: c.messages.filter(m => m.state === 'gated').length,
+    pending: c.messages.filter(m => m.state === 'pending').length,
+  };
+}
+function avatarColor(key) {
+  if (key === 'standard') return '#2c6bed';
+  let h = 0; for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) & 0xffff;
+  return 'hsl(' + (h % 360) + ',45%,45%)';
+}
+
+function renderConvos() {
+  const el = document.getElementById('convos');
+  const keys = Object.keys(convos).sort((a, b) => convos[b].lastTs - convos[a].lastTs);
+  if (!keys.length) { el.innerHTML = '<div class="legend" style="border:none">no signal messages yet.<br>they appear here as the lane runs.</div>'; return; }
+  el.innerHTML = keys.map(k => {
+    const c = convos[k], s = convoStats(c);
+    const last = c.messages[c.messages.length - 1];
+    const initial = (c.name || '?').replace(/[^A-Za-z0-9]/g, '').charAt(0).toUpperCase() || '#';
+    return '<div class="convo' + (k === active ? ' active' : '') + '" onclick="selectConvo(\'' + k.replace(/'/g, "\\'") + '\')">' +
+      '<div class="avatar" style="background:' + avatarColor(k) + '">' + escapeHtml(initial) + '</div>' +
+      '<div class="meta"><div class="name">' + escapeHtml(c.name) + '</div>' +
+      '<div class="preview">' + (last ? (last.dir === 'out' ? 'you: ' : '') + escapeHtml(last.text) : '') + '</div></div>' +
+      '<div class="badges">' +
+      (s.gated ? '<span class="badge gated-b">&#128274; ' + s.gated + '</span>' : '') +
+      (s.pending ? '<span class="badge pend-b">&#9992; ' + s.pending + '</span>' : '') +
+      '</div></div>';
+  }).join('');
+}
+
+function gatebar(m) {
+  if (m.dir === 'in') {
+    if (m.state === 'gated') return '<div class="gatebar"><span class="gatetag g">&#128274; GATED</span>' +
+      '<button class="gact ok" onclick="release(\'' + m.id + '\')">release to agent</button></div>';
+    if (m.state === 'receiving') return '<div class="gatebar"><span class="gatetag recv">&#8230; receiving</span></div>';
+    if (m.state === 'released') return '<div class="gatebar"><span class="gatetag r">&#10003; released</span></div>';
+  } else {
+    if (m.state === 'pending') return '<div class="gatebar"><span class="gatetag p">&#9992; DRAFT — awaiting you</span>' +
+      '<button class="gact ap" onclick="approve(\'' + m.id + '\')">approve &amp; send</button>' +
+      '<button class="gact dn" onclick="deny(\'' + m.id + '\')">deny</button></div>';
+    if (m.state === 'sending') return '<div class="gatebar"><span class="gatetag recv">&#8230; sending</span></div>';
+    if (m.state === 'sent') return '<div class="gatebar"><span class="gatetag r">&#10003;&#10003; sent</span></div>';
+    if (m.state === 'denied') return '<div class="gatebar"><span class="gatetag w">&#10007; denied</span></div>';
+  }
+  return '';
+}
+
+function renderThread() {
+  const nameEl = document.getElementById('t-name'), subEl = document.getElementById('t-sub');
+  const avEl = document.getElementById('t-avatar'), relBtn = document.getElementById('releaseAllBtn');
+  const el = document.getElementById('messages');
+  const c = active ? convos[active] : null;
+  if (!c) {
+    nameEl.textContent = 'Signal lane'; subEl.textContent = '';
+    avEl.style.display = 'none'; relBtn.style.display = 'none';
+    el.innerHTML = '<div class="empty-thread">select a conversation<br>or wait for the lane to fill</div>';
+    return;
+  }
+  nameEl.textContent = c.name;
+  subEl.textContent = (c.key === 'standard') ? '' : c.key;
+  avEl.style.display = 'grid'; avEl.style.background = avatarColor(c.key);
+  avEl.textContent = (c.name || '?').replace(/[^A-Za-z0-9]/g, '').charAt(0).toUpperCase() || '#';
+  const gatedCount = convoStats(c).gated;
+  relBtn.style.display = gatedCount ? 'inline-block' : 'none';
+
+  el.innerHTML = c.messages.map(m =>
+    '<div class="msg ' + m.dir + ' ' + m.state + '">' +
+      '<div class="bubble">' + escapeHtml(m.text) + '</div>' +
+      gatebar(m) +
+      '<div class="stamp"><span class="req">' + escapeHtml(shortId(m.id)) + '</span> &middot; ' + fmtTime(m.created) + '</div>' +
+    '</div>'
+  ).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function render() { renderConvos(); renderThread(); }
+
+function selectConvo(k) { active = k; render(); }
+function toggleAgent() {
+  agentMode = !agentMode;
+  document.body.classList.toggle('agent-mode', agentMode);
+  document.getElementById('avlabel').innerHTML = agentMode ? '&#129302; agent view' : '&#128065; human view';
+  render();
+}
+
+async function act(id, action, body) {
+  try {
+    const resp = await fetch('/api/requests/' + id + '/' + action, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (resp.status === 429) { toast('cooldown active — wait a moment', true); return false; }
+    if (!resp.ok) { toast(action + ' failed: ' + resp.status, true); return false; }
+    await load();
+    return true;
+  } catch (e) { toast(action + ' error: ' + e, true); return false; }
+}
+async function release(id) { if (await act(id, 'release')) toast('released to agent'); }
+async function approve(id) { if (await act(id, 'approve')) toast('approved — sending'); }
+async function deny(id) {
+  const reason = prompt('Deny reason (optional):') || '';
+  if (await act(id, 'deny', { reason })) toast('denied');
+}
+async function releaseAll() {
+  const c = active ? convos[active] : null; if (!c) return;
+  const gated = c.messages.filter(m => m.state === 'gated');
+  if (!gated.length) { toast('nothing gated here'); return; }
+  for (const m of gated) { await act(m.id, 'release'); }
+  toast('released ' + gated.length + ' message' + (gated.length > 1 ? 's' : ''));
+}
+
+async function load() {
+  try {
+    const resp = await fetch('/api/requests', { headers });
+    if (!resp.ok) { setConn(false); return; }
+    requests = await resp.json();
+    setConn(true);
+    rebuild(); render();
+  } catch (e) { setConn(false); }
+}
+
+function setConn(ok) {
+  document.getElementById('connDot').classList.toggle('off', !ok);
+  document.getElementById('connStatus').textContent = ok ? 'connected' : 'disconnected';
+}
+
+function toast(text, isErr) {
+  const t = document.createElement('div');
+  t.className = 'toast' + (isErr ? ' err' : ''); t.textContent = text;
+  document.getElementById('toasts').appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+function connectSSE() {
+  const es = new EventSource('/events');
+  es.onopen = () => setConn(true);
+  es.onmessage = () => load();
+  es.onerror = () => setConn(false);
+}
+
+load();
+connectSSE();
+setInterval(load, 8000); // fallback refresh if SSE misses
+</script>
+</body>
+</html>

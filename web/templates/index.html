@@ -339,6 +339,18 @@
     transition: all 0.15s;
   }
   .filter-whitelist:hover { border-color: var(--green); color: var(--green); }
+  .filter-chat {
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .filter-chat:hover { border-color: var(--blue); color: var(--blue); }
   .filter-whitelist.active {
     background: rgba(63,185,80,0.2);
     color: var(--green);
@@ -518,6 +530,7 @@
   <button data-filter="error">Error</button>
   <span class="filter-divider"></span>
   <button class="filter-whitelist" data-filter="whitelist">Whitelist <span id="wlCount"></span></button>
+  <a class="filter-chat" href="/chat" target="_blank" rel="noopener" title="Chat-shaped view of the signal message lane">Chat &#8599;</a>
 </div>
 
 <div id="requests" class="request-list"></div>

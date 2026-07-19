@@ -137,8 +137,9 @@ func main() {
 		webMux.ServeHTTP(w, r)
 	})
 	authedMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Dashboard page itself doesn't need auth (token entered client-side)
-		if r.URL.Path == "/" && r.Method == http.MethodGet {
+		// The dashboard and chat pages themselves don't need auth (the token is
+		// entered client-side and used only for the API/action calls they make).
+		if r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/chat") {
 			webMux.ServeHTTP(w, r)
 			return
 		}

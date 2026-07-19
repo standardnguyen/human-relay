@@ -1047,6 +1047,7 @@ type RequestResult struct {
 	DenyReason     string      `json:"deny_reason"`
 	WithdrawReason string      `json:"withdraw_reason"`
 	Result         *ExecResult `json:"result"`
+	OutputGated    bool        `json:"output_gated"`
 	StdinLen       int         `json:"stdin_len"`
 	DisplayCommand string      `json:"display_command"`
 	Shell          bool        `json:"shell"`

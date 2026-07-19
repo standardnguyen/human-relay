@@ -5,9 +5,9 @@ git fetch origin main
 git reset --hard origin/main
 docker compose build --no-cache
 /usr/local/bin/bao-env services/human-relay -o /opt/human-relay/.env
-/usr/local/bin/bao-env services/openproject >> /opt/human-relay/.env
-/usr/local/bin/bao-env services/speakr >> /opt/human-relay/.env
-/usr/local/bin/bao-env services/kronos >> /opt/human-relay/.env
+for svc in openproject speakr kronos bsky-signet; do
+  /usr/local/bin/bao-env "services/$svc" >> /opt/human-relay/.env
+done
 chmod 600 /opt/human-relay/.env
 docker compose up -d
 docker image prune -f

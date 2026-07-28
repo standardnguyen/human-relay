@@ -1,7 +1,7 @@
 services:
   human-relay:
     build: .
-    restart: unless-stopped
+    restart: always
     ports:
       - "8080:8080"
       - "8090:8090"
@@ -22,7 +22,7 @@ services:
   # :latest is deliberate: Signal server compat requires a current client.
   signal-api:
     image: bbernhard/signal-cli-rest-api:latest
-    restart: unless-stopped
+    restart: always
     environment:
       - MODE=normal
     volumes:

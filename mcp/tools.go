@@ -794,6 +794,9 @@ func (h *ToolHandler) registerContainer(args map[string]interface{}) *CallToolRe
 
 	hasRelaySSH, _ := args["has_relay_ssh"].(bool)
 	sshUser, _ := args["ssh_user"].(string)
+	if sshUserInjectable(sshUser) {
+		return errorResult("ssh_user must not begin with '-' (ssh would parse it as an option)")
+	}
 
 	c, err := h.containers.Register(ctid, ip, hostname, hasRelaySSH, sshUser)
 	if err != nil {
@@ -953,6 +956,19 @@ func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult
 // then alphanumeric/hyphen/underscore. Same shape as a flat script name.
 var validMachineNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
+// sshUserInjectable reports whether an ssh_user value would be parsed by
+// OpenSSH as an option rather than a username. The value is interpolated as
+// "user@ip" into an ssh argv slot; a leading '-' (e.g. "-oProxyCommand=...")
+// makes ssh treat the whole token as an option, yielding argument injection.
+// Only the leading-dash shape is dangerous here — these sinks pass a single
+// argv token with no shell, so spaces and other chars in a username (e.g. the
+// legitimately-supported "Lara Duong") are harmless. See the 2026-07-31
+// security review. NOTE: the shell-form writeFileFromSource sink is a separate
+// (post-approval) concern tracked as its own finding, not addressed here.
+func sshUserInjectable(u string) bool {
+	return strings.HasPrefix(u, "-")
+}
+
 func (h *ToolHandler) registerMachine(args map[string]interface{}) *CallToolResult {
 	if h.machines == nil {
 		return errorResult("machine registry not configured")
@@ -974,6 +990,9 @@ func (h *ToolHandler) registerMachine(args map[string]interface{}) *CallToolResu
 	sshUser, _ := args["ssh_user"].(string)
 	if sshUser == "" {
 		return errorResult("ssh_user is required")
+	}
+	if sshUserInjectable(sshUser) {
+		return errorResult("ssh_user must not begin with '-' (ssh would parse it as an option)")
 	}
 	shell, _ := args["shell"].(string)
 	switch shell {
@@ -1493,7 +1512,11 @@ func (h *ToolHandler) defaultWriteFileCheck(ctid int, host, path string, timeout
 			// stat returns non-zero when the path doesn't exist. We want a
 			// clean "doesn't exist" to come back as (false, 0, zero, nil),
 			// so swallow stat's stderr and check stdout emptiness instead.
-			sshArgs = append(pfx, fmt.Sprintf("%s@%s", user, c.IP), "--",
+			// -oProxyCommand=none is defence-in-depth: ssh uses the first
+			// obtained value, so even if a malformed user string ever reached
+			// this pre-approval probe it could not inject a ProxyCommand. The
+			// registration-time sshUserInjectable check is the primary guard.
+			sshArgs = append(pfx, "-oProxyCommand=none", fmt.Sprintf("%s@%s", user, c.IP), "--",
 				fmt.Sprintf("stat -c '%%s %%Y' %s 2>/dev/null", shellQuote(path)))
 		} else {
 			sshArgs = append(pfx, fmt.Sprintf("root@%s", h.hostIP), "--",

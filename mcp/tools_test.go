@@ -81,6 +81,69 @@ func TestRegisterContainerMissingFields(t *testing.T) {
 	}
 }
 
+// TestRegisterRejectsSSHUserInjection pins the 2026-07-31 fix: ssh_user is
+// interpolated as "user@ip" into an ssh argv slot, so a value parsed by
+// OpenSSH as an option (leading '-', e.g. "-oProxyCommand=...") must be
+// rejected at registration for BOTH register_container and register_machine.
+func TestRegisterRejectsSSHUserInjection(t *testing.T) {
+	// Only the leading-dash class is dangerous (ssh parses it as an option).
+	// Everything else the relay already accepts stays accepted — see the
+	// positive controls below, which include a username with a space.
+	bad := []string{
+		"-oProxyCommand=sh -c 'id'",
+		"-oProxyCommand=none",
+		"-lroot",
+		"-x",
+		"-",
+	}
+
+	t.Run("container", func(t *testing.T) {
+		for _, u := range bad {
+			h := setup(t)
+			res := h.Handle("register_container", map[string]interface{}{
+				"ctid": float64(200), "ip": "192.168.10.90", "hostname": "t",
+				"has_relay_ssh": true, "ssh_user": u,
+			})
+			if !res.IsError {
+				t.Fatalf("register_container accepted malicious ssh_user %q", u)
+			}
+		}
+	})
+
+	t.Run("machine", func(t *testing.T) {
+		for _, u := range bad {
+			h := setup(t)
+			res := h.Handle("register_machine", map[string]interface{}{
+				"name": "m", "host": "1.2.3.4", "ssh_user": u,
+			})
+			if !res.IsError {
+				t.Fatalf("register_machine accepted malicious ssh_user %q", u)
+			}
+		}
+	})
+
+	// Positive controls: real usernames must still be accepted — including the
+	// space-bearing "Lara Duong" the relay is documented/tested to support.
+	for _, u := range []string{"root", "esthie", "gpu", "svc_deploy", "user-1", "a.b_c-2", "Lara Duong"} {
+		h := setup(t)
+		res := h.Handle("register_container", map[string]interface{}{
+			"ctid": float64(201), "ip": "192.168.10.90", "hostname": "t",
+			"has_relay_ssh": true, "ssh_user": u,
+		})
+		if res.IsError {
+			t.Fatalf("register_container rejected valid ssh_user %q: %s", u, res.Content[0].Text)
+		}
+	}
+
+	// An empty ssh_user on a container is still valid (defaults to root downstream).
+	h := setup(t)
+	if res := h.Handle("register_container", map[string]interface{}{
+		"ctid": float64(202), "ip": "192.168.10.90", "hostname": "t", "has_relay_ssh": true,
+	}); res.IsError {
+		t.Fatalf("register_container rejected empty ssh_user: %s", res.Content[0].Text)
+	}
+}
+
 func TestListContainersEmpty(t *testing.T) {
 	h := setup(t)
 

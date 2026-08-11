@@ -13,3 +13,4 @@ docker compose up -d
 docker image prune -f
 install -m 0644 /opt/human-relay/cron/openproject-caldav-bridge /etc/cron.d/openproject-caldav-bridge
 install -m 0644 /opt/human-relay/cron/transcribe-sweep /etc/cron.d/transcribe-sweep
+install -m 0644 /opt/human-relay/cron/signal-poll /etc/cron.d/signal-poll

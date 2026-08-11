@@ -1,0 +1,11 @@
+# Signal lane keep-alive + inbound spool (Signet's Signal surface).
+# Hourly signal-poll: keeps the linked secondary device from idle-unlinking
+# (~30d, folklore-grade figure) and sorts any inbound into the spool files
+# (standard ungated / others gated) for screened reads. See wiki signal.md.
+# Installed by deploy.sh into /etc/cron.d/ on every deploy (cron-as-code);
+# first installed manually 2026-08-11 ahead of the next deploy.
+# Runs in the LXC; execs into the relay docker container for env + script.
+# Hourly at :23 — offset off the :07 OP bridge and :04/19/34/49 transcribe-sweep.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+23 * * * * root cd /opt/human-relay && docker compose exec -T human-relay python3 /scripts/signal-poll.py >> /var/log/signal-poll.log 2>&1

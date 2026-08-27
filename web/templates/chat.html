@@ -178,8 +178,16 @@ function mapRequest(r) {
     // A completed read with no message = an empty poll; nothing to show.
     if (done && !rec) return null;
     const isStd = (name === 'signal-read-standard');
-    const convoKey = isStd ? 'standard' : ((rec && rec.from_uuid) || 'unknown');
-    const convoName = isStd ? 'Standard (you)' : ((rec && rec.from_name) || shortId(rec && rec.from_uuid));
+    // Group messages route to the group conversation regardless of which
+    // spool they came from (a group post from the operator still lands in
+    // the standard lane) -- group_id/group_name are resolved server-side
+    // by signal-poll.py against a live /v1/groups lookup, so this key is
+    // already the same "group.<base64>" string an outbound signal-send to
+    // that group uses, and the two sides thread together naturally.
+    const isGroup = !!(rec && rec.group_id);
+    const convoKey = isGroup ? rec.group_id : (isStd ? 'standard' : ((rec && rec.from_uuid) || 'unknown'));
+    const convoName = isGroup ? (rec.group_name || shortId(rec.group_id))
+      : (isStd ? 'Standard (you)' : ((rec && rec.from_name) || shortId(rec && rec.from_uuid)));
     let state = !done ? 'receiving' : (r.output_gated ? 'gated' : 'released');
     return {
       id: r.id, dir: 'in', convoKey, convoName,

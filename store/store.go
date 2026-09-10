@@ -341,6 +341,39 @@ func (s *Store) Withdraw(id string, reason string) (bool, Status) {
 	return true, StatusWithdrawn
 }
 
+// Approve atomically transitions a pending request to StatusApproved, marking
+// its output gated when gateOutput is set. The lookup, the pending check and
+// the mutation all happen under one lock acquisition, so concurrent approvals
+// of the same request produce exactly one ok=true -- a caller that gets
+// ok=false must not execute the request.
+//
+// Returns (false, nil) when the request does not exist or is no longer pending.
+// On success the returned request is a copy (same semantics as Get), not a live
+// pointer into the store.
+func (s *Store) Approve(id string, gateOutput bool) (bool, *Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.requests[id]
+	if !ok {
+		return false, nil
+	}
+	if r.Status != StatusPending {
+		return false, nil
+	}
+	r.Status = StatusApproved
+	now := time.Now()
+	r.DecidedAt = &now
+	if gateOutput {
+		r.OutputGated = true
+	}
+	cp := *r
+	if r.Result != nil {
+		rc := *r.Result
+		cp.Result = &rc
+	}
+	return true, &cp
+}
+
 func (s *Store) SetResult(id string, result *Result, status Status) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

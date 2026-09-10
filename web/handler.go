@@ -238,12 +238,22 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		h.lastApproval = time.Now()
 		h.cooldownMu.Unlock()
 
-		if action == "approve-gated" {
-			h.store.SetStatus(id, store.StatusApproved)
-			h.store.SetOutputGated(id)
-		} else {
-			h.store.SetStatus(id, store.StatusApproved)
+		// Atomic approve: the pending check above is only a fast, friendly
+		// rejection for an obviously-decided request. This is the authoritative
+		// guard -- it holds the store lock across lookup, pending check and
+		// mutation, so two concurrent approvals of the same request can never
+		// both execute it.
+		ok, approved := h.store.Approve(id, action == "approve-gated")
+		if !ok {
+			current := store.Status("decided")
+			if cur := h.store.Get(id); cur != nil {
+				current = cur.Status
+			}
+			log.Printf("request %s approve raced a concurrent decision (now %s), ignoring", id, current)
+			http.Error(w, fmt.Sprintf("request is already %s", current), http.StatusConflict)
+			return
 		}
+		req = approved
 		switch req.Type {
 		case "http":
 			log.Printf("request %s approved, executing: %s %s", id, req.HTTPMethod, req.HTTPURL)
@@ -470,12 +480,17 @@ func (h *Handler) watchRequests() {
 }
 
 func (h *Handler) autoApprove(req *store.Request, gateOutput bool) {
-	h.store.SetStatus(req.ID, store.StatusApproved)
-	if gateOutput {
-		// "Whitelist but gate outputs": execution is auto-approved, but the
-		// result stays output_gated until the human releases it.
-		h.store.SetOutputGated(req.ID)
+	// Same atomic guard as the manual approve path: the pending check in
+	// watchRequests is a separate read, so without this a whitelist
+	// auto-approval could race an operator click and execute the request twice.
+	// gateOutput means "whitelist but gate outputs": execution is auto-approved,
+	// but the result stays output_gated until the human releases it.
+	ok, approved := h.store.Approve(req.ID, gateOutput)
+	if !ok {
+		log.Printf("request %s auto-approve raced a concurrent decision, ignoring", req.ID)
+		return
 	}
+	req = approved
 	log.Printf("request %s auto-approved (whitelist, gated=%v): %s %v", req.ID, gateOutput, req.Command, req.Args)
 	h.audit.Log("request_auto_approved", req.ID, map[string]interface{}{
 		"command":     req.Command,

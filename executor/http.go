@@ -19,11 +19,29 @@ import (
 // envVarRe matches ${VAR_NAME} patterns for server-side env var expansion.
 var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+// protectedEnvVars are relay-security-critical variables that must never be
+// substituted into an outbound request. The reviewer approves the unexpanded
+// string, so a request referencing ${MHR_AUTH_TOKEN} looks harmless at review
+// time but would otherwise resolve to the relay's own MCP bearer secret and
+// ship it to whatever host the request points at.
+//
+// Deliberately narrow: the rest of the MHR_* surface is non-secret config
+// (ports, paths, timeouts), and expansion of other real secrets (a vaulted API
+// key set as an env var on the relay container) is the feature's whole point.
+var protectedEnvVars = map[string]bool{
+	"MHR_AUTH_TOKEN": true,
+}
+
 // expandEnvVars replaces ${VAR} placeholders with values from the relay's
-// own environment. Unset variables expand to empty string.
+// own environment. Unset variables expand to empty string. Placeholders naming
+// a protected variable are left literal, so they can never resolve to the
+// relay's own auth secret.
 func expandEnvVars(s string) string {
 	return envVarRe.ReplaceAllStringFunc(s, func(match string) string {
 		name := envVarRe.FindStringSubmatch(match)[1]
+		if protectedEnvVars[name] {
+			return match
+		}
 		return os.Getenv(name)
 	})
 }
@@ -99,7 +117,17 @@ func (e *Executor) ExecuteHTTP(r *store.Request) *store.Result {
 		req.Header.Set("Content-Type", multipartContentType)
 	}
 
-	client := &http.Client{}
+	// Never follow redirects: Go's default policy only strips Authorization,
+	// Cookie and WWW-Authenticate on a cross-host hop, so any other custom
+	// header — including one holding an expanded ${VAR} secret — would be
+	// forwarded to whatever host a 3xx points at. The reviewer approved the
+	// original URL, not the redirect target. Return the 3xx itself instead;
+	// it maps to ExitCode 1 and RespHeaders carries Location for inspection.
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

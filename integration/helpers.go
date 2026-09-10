@@ -57,6 +57,12 @@ func WithWhitelistFile(path string) ServerOption {
 	}
 }
 
+func WithScriptsDir(dir string) ServerOption {
+	return func(s *TestServer) {
+		s.env = append(s.env, "MHR_SCRIPTS_DIR="+dir)
+	}
+}
+
 func WithPermissionsFile(path string) ServerOption {
 	return func(s *TestServer) {
 		s.env = append(s.env, "MHR_PERMISSIONS_FILE="+path)

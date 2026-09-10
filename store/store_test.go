@@ -135,8 +135,10 @@ func TestAddScriptTypedRaceWithReaders(t *testing.T) {
 				}
 				for _, r := range s.List("") {
 					_ = r.Type
+					_ = r.StdinSHA256
 					if got := s.Get(r.ID); got != nil {
 						_ = got.Type
+						_ = got.StdinSHA256
 					}
 				}
 			}
@@ -149,7 +151,7 @@ func TestAddScriptTypedRaceWithReaders(t *testing.T) {
 		writers.Add(1)
 		go func(i int) {
 			defer writers.Done()
-			r := s.AddScriptTyped("script_create", "racy", nil, "finding 26 store race test", 0)
+			r := s.AddScriptTyped("script_create", "racy", nil, "finding 26 store race test", 0, []byte("#!/bin/sh\necho racy\n"))
 			ids[i] = r.ID
 		}(i)
 	}
@@ -165,6 +167,56 @@ func TestAddScriptTypedRaceWithReaders(t *testing.T) {
 		if r.Type != "script_create" {
 			t.Errorf("write %d: Type = %q, want %q", i, r.Type, "script_create")
 		}
+	}
+}
+
+// TestAddScriptTypedPublishesStdinAtConstruction pins the invariant finding #8
+// leans on: the script body — and its digest, which the whitelist keys script
+// creates on — must already be set by the time AddScriptTyped returns, because
+// the request is published (and the whitelist matcher woken) inside that call.
+// A caller filling stdin in afterwards would race the matcher, which would then
+// key the rule off an empty body.
+func TestAddScriptTypedPublishesStdinAtConstruction(t *testing.T) {
+	s := New()
+	body := []byte("#!/bin/sh\necho hi\n")
+
+	r := s.AddScriptTyped("script_create", "constructed", nil, "stdin at construction", 0, body)
+	if r.StdinSHA256 != StdinDigest(body) {
+		t.Errorf("returned request digest = %q, want %q", r.StdinSHA256, StdinDigest(body))
+	}
+	if r.StdinLen != len(body) {
+		t.Errorf("returned request stdin_len = %d, want %d", r.StdinLen, len(body))
+	}
+
+	got := s.Get(r.ID)
+	if got == nil {
+		t.Fatal("request missing from store")
+	}
+	if string(got.Stdin) != string(body) {
+		t.Errorf("stored stdin = %q, want %q", got.Stdin, body)
+	}
+	if got.StdinSHA256 != StdinDigest(body) {
+		t.Errorf("stored digest = %q, want %q", got.StdinSHA256, StdinDigest(body))
+	}
+}
+
+// TestStdinDigestDistinguishesBodies is the property the content-keyed
+// whitelist rests on: same bytes, same key; different bytes, different key.
+func TestStdinDigestDistinguishesBodies(t *testing.T) {
+	a := []byte("#!/bin/sh\necho reviewed\n")
+	b := []byte("#!/bin/sh\necho pwned\n")
+
+	if StdinDigest(a) != StdinDigest(a) {
+		t.Error("digest is not stable for identical input")
+	}
+	if StdinDigest(a) == StdinDigest(b) {
+		t.Error("digest collides across different bodies")
+	}
+	if len(StdinDigest(a)) != 64 {
+		t.Errorf("digest length = %d, want 64 hex chars", len(StdinDigest(a)))
+	}
+	if StdinDigest(nil) != "" {
+		t.Errorf("empty input digest = %q, want empty string", StdinDigest(nil))
 	}
 }
 

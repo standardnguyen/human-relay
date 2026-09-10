@@ -452,27 +452,39 @@ func (h *Handler) watchUpdates() {
 	}
 }
 
+// whitelistKey maps a request to the (command, args) pair the whitelist is
+// keyed on. Both sides of the match go through it — watchRequests when
+// deciding whether an incoming request auto-approves, and handleWhitelist when
+// recording the rule an operator clicked — so the two cannot drift apart.
+//
+// Script creates include a hash of the script body in the key. Keying them on
+// the name alone made "whitelist this create_script" a standing grant to run
+// ANY future content submitted under that name with no human review.
+func whitelistKey(req *store.Request) (string, []string) {
+	switch req.Type {
+	case "http":
+		return req.HTTPMethod, []string{req.HTTPURL}
+	case "script":
+		return "run_script", []string{req.ScriptName}
+	case "script_create":
+		return "create_script", []string{req.ScriptName, store.StdinDigest(req.Stdin)}
+	case "script_create_then_run":
+		return "create_then_run", []string{req.ScriptName, store.StdinDigest(req.Stdin)}
+	}
+	return req.Command, req.Args
+}
+
 func (h *Handler) watchRequests() {
 	sub := h.store.Subscribe()
 	for id := range sub {
 		h.broadcastEvent("new", id)
 		if h.whitelist != nil {
 			req := h.store.Get(id)
-			wlCommand, wlArgs := req.Command, req.Args
-			if req.Type == "http" {
-				wlCommand = req.HTTPMethod
-				wlArgs = []string{req.HTTPURL}
-			} else if req.Type == "script" {
-				wlCommand = "run_script"
-				wlArgs = []string{req.ScriptName}
-			} else if req.Type == "script_create" {
-				wlCommand = "create_script"
-				wlArgs = []string{req.ScriptName}
-			} else if req.Type == "script_create_then_run" {
-				wlCommand = "create_then_run"
-				wlArgs = []string{req.ScriptName}
+			if req == nil {
+				continue
 			}
-			if rule, ok := h.whitelist.MatchRule(wlCommand, wlArgs); ok && req != nil && req.Status == store.StatusPending {
+			wlCommand, wlArgs := whitelistKey(req)
+			if rule, ok := h.whitelist.MatchRule(wlCommand, wlArgs); ok && req.Status == store.StatusPending {
 				h.autoApprove(req, rule.GateOutput)
 			}
 		}
@@ -644,21 +656,40 @@ func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var body struct {
+			// RequestID names the request being whitelisted. When present the
+			// rule's key is derived server-side from the stored request via
+			// whitelistKey — the same function the auto-approve path matches
+			// with — instead of being taken from the client. That is what lets
+			// script creates key on a body hash the browser never sees.
+			RequestID  string   `json:"request_id"`
 			Command    string   `json:"command"`
 			Args       []string `json:"args"`
 			GateOutput bool     `json:"gate_output"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Command == "" {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		command, wlArgs := body.Command, body.Args
+		if body.RequestID != "" {
+			req := h.store.Get(body.RequestID)
+			if req == nil {
+				http.Error(w, "request not found", http.StatusNotFound)
+				return
+			}
+			command, wlArgs = whitelistKey(req)
+		}
+		if command == "" {
 			http.Error(w, "command is required", http.StatusBadRequest)
 			return
 		}
-		h.whitelist.Add(body.Command, body.Args, body.GateOutput)
+		h.whitelist.Add(command, wlArgs, body.GateOutput)
 		if err := h.whitelist.Save(); err != nil {
 			log.Printf("whitelist save error: %v", err)
 		}
-		h.audit.Log("whitelist_add", "", map[string]interface{}{
-			"command":     body.Command,
-			"args":        body.Args,
+		h.audit.Log("whitelist_add", body.RequestID, map[string]interface{}{
+			"command":     command,
+			"args":        wlArgs,
 			"gate_output": body.GateOutput,
 		})
 		w.Header().Set("Content-Type", "application/json")

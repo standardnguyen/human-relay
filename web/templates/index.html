@@ -963,8 +963,12 @@ function render() {
       : isScriptCreate ? 'create_script'
       : isScriptCreateThenRun ? 'create_then_run'
       : r.command;
+    // Script creates key on name + body hash (see whitelistKey in handler.go):
+    // whitelisting one create by name alone would auto-approve any later
+    // content submitted under that name.
     const wlArgsKey = isHTTP ? [r.http_url]
-      : (isScript || isScriptCreate || isScriptCreateThenRun) ? [r.script_name]
+      : (isScriptCreate || isScriptCreateThenRun) ? [r.script_name, r.stdin_sha256 || '']
+      : isScript ? [r.script_name]
       : (r.args || []);
     const wlRule = whitelistRuleFor(wlCmdKey, wlArgsKey);
     const wlCmdEsc = escapeHtml(wlCmdKey).replace(/'/g, "\\'");
@@ -974,8 +978,8 @@ function render() {
         ? (wlRule.gate_output
           ? '<button class="btn-whitelist active gated" disabled title="Auto-approves, but output stays gated until you release it">Whitelisted 🔒</button>'
           : '<button class="btn-whitelist active" disabled>Whitelisted</button>')
-        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + wlCmdEsc + '\',' + wlArgsEsc + ',false)">Whitelist</button>' +
-          '<button class="btn-whitelist gate-add" title="Auto-approve future runs, but keep their output gated until you release it" onclick="addWhitelist(\'' + wlCmdEsc + '\',' + wlArgsEsc + ',true)">Whitelist 🔒</button>')
+        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + r.id + '\',\'' + wlCmdEsc + '\',' + wlArgsEsc + ',false)">Whitelist</button>' +
+          '<button class="btn-whitelist gate-add" title="Auto-approve future runs, but keep their output gated until you release it" onclick="addWhitelist(\'' + r.id + '\',\'' + wlCmdEsc + '\',' + wlArgsEsc + ',true)">Whitelist 🔒</button>')
       : '';
 
     let actions = '';
@@ -1145,16 +1149,18 @@ function renderWhitelistView(el) {
   }).join('');
 }
 
-async function addWhitelist(command, args, gateOutput) {
+async function addWhitelist(requestId, command, args, gateOutput) {
   const argsStr = (args || []).length ? ' ' + (args || []).join(' ') : '';
   const prompt = gateOutput
     ? 'Whitelist this command for auto-approval WITH gated output?\n\nIt will run without approval, but you must release each result before the agent sees it.\n\n'
     : 'Whitelist this command for auto-approval?\n\n';
   if (!confirm(prompt + command + argsStr)) return;
+  // request_id lets the server derive the rule key itself — for script creates
+  // that key includes a hash of the body, which the browser never receives.
   const resp = await fetch('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, args: args || [], gate_output: !!gateOutput })
+    body: JSON.stringify({ request_id: requestId, command, args: args || [], gate_output: !!gateOutput })
   });
   if (resp.ok) {
     await fetchWhitelist();
@@ -1235,7 +1241,7 @@ async function approveAndWhitelist(id, command, args) {
   await fetch('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, args: args || [] })
+    body: JSON.stringify({ request_id: id, command, args: args || [] })
   });
   await fetchWhitelist();
   fetchRequests();

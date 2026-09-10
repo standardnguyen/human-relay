@@ -2,6 +2,7 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"sync"
 	"time"
@@ -37,6 +38,10 @@ type Request struct {
 	Result         *Result   `json:"result,omitempty"`
 	Stdin          []byte     `json:"-"`
 	StdinLen       int        `json:"stdin_len,omitempty"`
+	// StdinSHA256 identifies the stdin bytes without exposing them. Script
+	// whitelist rules key on it, so the dashboard needs it to tell whether a
+	// given create_script body is already whitelisted.
+	StdinSHA256    string     `json:"stdin_sha256,omitempty"`
 	DisplayCommand string     `json:"display_command,omitempty"`
 	OutputGated    bool       `json:"output_gated,omitempty"`
 
@@ -189,7 +194,7 @@ func (s *Store) AddPermission(displayCommand, reason string, timeout int) *Reque
 
 // AddScript queues a plain run_script request (Type "script").
 func (s *Store) AddScript(name string, args []string, reason string, timeout int) *Request {
-	return s.AddScriptTyped("script", name, args, reason, timeout)
+	return s.AddScriptTyped("script", name, args, reason, timeout, nil)
 }
 
 // AddScriptTyped queues a script-family request with an explicit Type
@@ -197,17 +202,25 @@ func (s *Store) AddScript(name string, args []string, reason string, timeout int
 // construction: callers must never mutate it on the returned pointer, because
 // that pointer is already published into the store's map and readers (Get,
 // List) touch it under the lock only.
-func (s *Store) AddScriptTyped(typ, name string, args []string, reason string, timeout int) *Request {
+//
+// stdin (the script body, for the create types) is a construction argument for
+// the same reason plus one more: publishing the request wakes the whitelist
+// matcher, which keys script creates on a hash of this body. Filling it in
+// after the fact would let the matcher see an empty body and mis-key the rule.
+func (s *Store) AddScriptTyped(typ, name string, args []string, reason string, timeout int, stdin []byte) *Request {
 	id := generateID()
 	r := &Request{
-		ID:         id,
-		Type:       typ,
-		ScriptName: name,
-		ScriptArgs: args,
-		Reason:     reason,
-		Timeout:    timeout,
-		Status:     StatusPending,
-		CreatedAt:  time.Now(),
+		ID:          id,
+		Type:        typ,
+		ScriptName:  name,
+		ScriptArgs:  args,
+		Reason:      reason,
+		Timeout:     timeout,
+		Status:      StatusPending,
+		CreatedAt:   time.Now(),
+		Stdin:       stdin,
+		StdinLen:    len(stdin),
+		StdinSHA256: StdinDigest(stdin),
 	}
 	s.mu.Lock()
 	s.requests[id] = r
@@ -263,8 +276,9 @@ func (s *Store) AddWithStdin(cmd string, args []string, reason, workingDir strin
 		Timeout:    timeout,
 		Status:     StatusPending,
 		CreatedAt:  time.Now(),
-		Stdin:      stdin,
-		StdinLen:   len(stdin),
+		Stdin:       stdin,
+		StdinLen:    len(stdin),
+		StdinSHA256: StdinDigest(stdin),
 	}
 	s.mu.Lock()
 	s.requests[id] = r
@@ -427,16 +441,15 @@ func (s *Store) SubscribeUpdates() <-chan string {
 	return s.updates
 }
 
-func (s *Store) SetStdin(id string, data []byte) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.requests[id]
-	if !ok {
-		return false
+// StdinDigest is the canonical fingerprint of a request's stdin bytes: hex
+// SHA-256, empty for empty input. Whitelist matching for script creates keys
+// on it, so every producer of that key must go through this one function.
+func StdinDigest(data []byte) string {
+	if len(data) == 0 {
+		return ""
 	}
-	r.Stdin = data
-	r.StdinLen = len(data)
-	return true
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Store) SetDisplayCommand(id string, cmd string) bool {

@@ -741,25 +741,38 @@ func (h *ToolHandler) listRequests(args map[string]interface{}) *CallToolResult 
 	}
 
 	requests := h.store.List(filter)
+	// Gating is per-request, so it has to be applied per-request here too:
+	// marshaling the raw list would hand back every gated request's real
+	// stdout/stderr in one call and bypass the gate entirely.
+	for i, r := range requests {
+		requests[i] = redactIfGated(r)
+	}
 	data, _ := json.Marshal(requests)
 	return textResult(string(data))
 }
 
-func requestResult(r *store.Request) *CallToolResult {
-	if r.OutputGated && r.Result != nil {
-		gated := *r
-		gr := *r.Result
-		stdoutLen := len(gr.Stdout)
-		stderrLen := len(gr.Stderr)
-		gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
-		if stderrLen > 0 {
-			gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
-		}
-		gated.Result = &gr
-		data, _ := json.Marshal(gated)
-		return textResult(string(data))
+// redactIfGated returns r untouched when its output isn't gated, and a copy
+// with stdout/stderr replaced by placeholders when it is. Every agent-facing
+// path that marshals a store.Request must run it through this — get_result and
+// list_requests both do.
+func redactIfGated(r *store.Request) *store.Request {
+	if r == nil || !r.OutputGated || r.Result == nil {
+		return r
 	}
-	data, _ := json.Marshal(r)
+	gated := *r
+	gr := *r.Result
+	stdoutLen := len(gr.Stdout)
+	stderrLen := len(gr.Stderr)
+	gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
+	if stderrLen > 0 {
+		gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
+	}
+	gated.Result = &gr
+	return &gated
+}
+
+func requestResult(r *store.Request) *CallToolResult {
+	data, _ := json.Marshal(redactIfGated(r))
 	return textResult(string(data))
 }
 
@@ -1380,9 +1393,10 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 	}
 	prefixedReason := fmt.Sprintf("[SCRIPT %s%s %dB] %s\n---\n%s", name, ext, len(content), reason, preview)
 
-	r := h.store.AddScriptTyped("script_create", name, nil, prefixedReason, 0)
-	// Store script content for execution (writing to disk)
-	h.store.SetStdin(r.ID, []byte(content))
+	// Script content rides in at construction (it is what gets written to disk,
+	// and what the whitelist keys on) — never assigned after the request is
+	// published into the store.
+	r := h.store.AddScriptTyped("script_create", name, nil, prefixedReason, 0, []byte(content))
 
 	displayCmd := fmt.Sprintf("create_script %s (%dB)", name, len(content))
 	h.store.SetDisplayCommand(r.ID, displayCmd)
@@ -1478,8 +1492,7 @@ func (h *ToolHandler) createThenRun(args map[string]interface{}) *CallToolResult
 	prefixedReason := fmt.Sprintf("[CREATE+RUN %s%s %dB]%s %s\n---\n%s",
 		targetName, ext, len(content), argsStr, reason, preview)
 
-	r := h.store.AddScriptTyped("script_create_then_run", targetName, scriptArgs, prefixedReason, timeout)
-	h.store.SetStdin(r.ID, []byte(content))
+	r := h.store.AddScriptTyped("script_create_then_run", targetName, scriptArgs, prefixedReason, timeout, []byte(content))
 
 	displayCmd := fmt.Sprintf("create_then_run %s%s (%dB)", targetName, ext, len(content))
 	if len(scriptArgs) > 0 {

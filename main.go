@@ -159,8 +159,11 @@ func main() {
 
 	errCh := make(chan error, 2)
 
+	// The MCP port exposes the full tool surface (request_command, write_file,
+	// exec_container, ...), so it requires the same bearer token as the web API.
+	// No CSRF middleware here: nothing on this port is browser-originated.
 	go func() {
-		errCh <- http.ListenAndServe(fmt.Sprintf(":%d", mcpPort), mcpServer)
+		errCh <- http.ListenAndServe(fmt.Sprintf(":%d", mcpPort), web.AuthMiddleware(authToken, mcpServer))
 	}()
 
 	go func() {

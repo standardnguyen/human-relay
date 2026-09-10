@@ -91,11 +91,13 @@ ssh root@${PROXMOX_HOST} "pct exec 9010 -- cat /root/.ssh/id_ed25519.pub" | \
 ```bash
 # Register target-ssh (has direct SSH)
 curl -sf -X POST http://${RELAY_IP}:8080/message \
+  -H "Authorization: Bearer changeme" \
   -H "Content-Type: application/json" \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"register_container\",\"arguments\":{\"ctid\":9011,\"ip\":\"${TARGET_SSH_IP}\",\"hostname\":\"hr-target-ssh\",\"has_relay_ssh\":true}}}"
 
 # Register target-pct (no SSH, pct exec fallback)
 curl -sf -X POST http://${RELAY_IP}:8080/message \
+  -H "Authorization: Bearer changeme" \
   -H "Content-Type: application/json" \
   -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"register_container\",\"arguments\":{\"ctid\":9012,\"ip\":\"${TARGET_PCT_IP}\",\"hostname\":\"hr-target-pct\",\"has_relay_ssh\":false}}}"
 ```
@@ -107,6 +109,7 @@ curl -sf -X POST http://${RELAY_IP}:8080/message \
 ```bash
 # Submit request_command
 RESPONSE=$(curl -sf -X POST http://${RELAY_IP}:8080/message \
+  -H "Authorization: Bearer changeme" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"request_command","arguments":{"command":"hostname","reason":"test host execution"}}}')
 
@@ -125,6 +128,7 @@ curl -sf "http://${RELAY_IP}:8090/api/requests" -H "Authorization: Bearer change
 
 ```bash
 RESPONSE=$(curl -sf -X POST http://${RELAY_IP}:8080/message \
+  -H "Authorization: Bearer changeme" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"exec_container","arguments":{"ctid":9011,"command":"hostname","reason":"test direct SSH exec"}}}')
 
@@ -143,6 +147,7 @@ echo "=== Test B: exec_container via direct SSH ==="
 
 ```bash
 RESPONSE=$(curl -sf -X POST http://${RELAY_IP}:8080/message \
+  -H "Authorization: Bearer changeme" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"exec_container","arguments":{"ctid":9012,"command":"hostname","reason":"test pct exec fallback"}}}')
 
@@ -163,6 +168,7 @@ echo "=== Test C: exec_container via pct exec ==="
 CONTENT_B64=$(echo "hello from nested test" | base64)
 
 RESPONSE=$(curl -sf -X POST http://${RELAY_IP}:8080/message \
+  -H "Authorization: Bearer changeme" \
   -H "Content-Type: application/json" \
   -d "{\"jsonrpc\":\"2.0\",\"id\":40,\"method\":\"tools/call\",\"params\":{\"name\":\"write_file\",\"arguments\":{\"ctid\":9012,\"path\":\"/tmp/nested-test.txt\",\"content_base64\":\"${CONTENT_B64}\",\"reason\":\"test pct push write\"}}}")
 

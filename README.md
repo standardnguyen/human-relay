@@ -78,13 +78,22 @@ From wherever your agent runs (a different machine, container, or VM), add to yo
   "mcpServers": {
     "human-relay": {
       "command": "npx",
-      "args": ["mcp-remote", "http://RELAY_HOST:8080/sse", "--allow-http"]
+      "args": [
+        "mcp-remote", "http://RELAY_HOST:8080/sse", "--allow-http",
+        "--header", "Authorization: Bearer YOUR_MHR_AUTH_TOKEN"
+      ]
     }
   }
 }
 ```
 
-Replace `RELAY_HOST` with the IP or hostname of the machine running the relay.
+Replace `RELAY_HOST` with the IP or hostname of the machine running the relay, and
+`YOUR_MHR_AUTH_TOKEN` with the value of `MHR_AUTH_TOKEN` from the relay's `.env`.
+
+**The MCP port requires the bearer token.** Both `/sse` and `/message` on `:8080`
+reject requests without `Authorization: Bearer $MHR_AUTH_TOKEN` — the same token the
+dashboard API uses. If your MCP client sets custom headers some other way, use that;
+the only requirement is that the header reaches the relay.
 
 Human Relay works with any MCP client that supports remote SSE transport via `mcp-remote` — Claude Code, Cursor, Windsurf, Continue, Cline, Zed, Goose. Primary development and testing is against Claude Code; client-specific quirks are tracked in GitHub issues.
 

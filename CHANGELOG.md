@@ -21,6 +21,9 @@ Notable changes to Human Relay. Format loosely follows [Keep a Changelog](https:
 - Security section moved to `SECURITY.md`; README now links to it.
 - `run_script` validator no longer rejects slashes outright — they now denote subpaths under the scripts directory.
 
+### Security
+- **The MCP port (`:8080`) now requires the bearer token.** Both `/sse` and `/message` go through the same constant-time `Authorization: Bearer $MHR_AUTH_TOKEN` check the dashboard API uses. Previously the port that exposes the entire tool surface (`request_command`, `write_file`, `exec_container`, ...) was served with no authentication at all, so anything that could reach it could queue commands as the agent. No CSRF middleware there — nothing on that port is browser-originated. **Breaking for clients:** MCP client configs must now send the header (see README → Connect your agent); an unauthenticated client gets `401`.
+
 ## 2026-04-17
 
 ### Added

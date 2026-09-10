@@ -54,8 +54,9 @@ docker compose ps --format '{{.Service}} {{.State}}'
 # Dashboard
 curl -sf http://127.0.0.1:8090/ > /dev/null && echo "Dashboard: OK" || echo "Dashboard: FAIL"
 
-# MCP endpoint
-timeout 3 curl -sf http://127.0.0.1:8080/sse 2>&1 | head -1
+# MCP endpoint (requires the bearer token, same as the dashboard API)
+timeout 3 curl -sf -H "Authorization: Bearer local-smoke-token" \
+  http://127.0.0.1:8080/sse 2>&1 | head -1
 echo "SSE: OK"
 ```
 
@@ -64,6 +65,7 @@ echo "SSE: OK"
 ```bash
 # Submit command
 RESPONSE=$(curl -sf -X POST http://127.0.0.1:8080/message \
+  -H "Authorization: Bearer local-smoke-token" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"request_command","arguments":{"command":"echo","args":["local-smoke-ok"],"reason":"local smoke test"}}}')
 

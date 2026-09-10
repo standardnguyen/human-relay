@@ -462,8 +462,10 @@ func approveAndWait(t *testing.T, c *mcpClient, s *testServer, requestID string,
 	return nil
 }
 
-// registerNode registers a test container with the relay.
-func registerNode(t *testing.T, c *mcpClient, ctid int, ip, hostname string, callID int) {
+// registerNode registers a test container with the relay. register_container is
+// approval-gated (finding #23 part 2): the tool only queues a request, so this
+// approves it and waits for the registry write before returning.
+func registerNode(t *testing.T, c *mcpClient, s *testServer, ctid int, ip, hostname string, callID int) {
 	t.Helper()
 	resp := c.call(t, callID, "tools/call", map[string]interface{}{
 		"name": "register_container",
@@ -476,5 +478,9 @@ func registerNode(t *testing.T, c *mcpClient, ctid int, ip, hostname string, cal
 	})
 	if resp.Error != nil {
 		t.Fatalf("register_container error: %s", resp.Error.Message)
+	}
+	r := approveAndWait(t, c, s, extractRequestID(t, resp), callID)
+	if r.Status != "complete" {
+		t.Fatalf("register_container ended %s: %+v", r.Status, r.Result)
 	}
 }

@@ -8,12 +8,15 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/standardnguyen/human-relay/audit"
+	"github.com/standardnguyen/human-relay/containers"
 	"github.com/standardnguyen/human-relay/executor"
+	"github.com/standardnguyen/human-relay/machines"
 	"github.com/standardnguyen/human-relay/permissions"
 	"github.com/standardnguyen/human-relay/store"
 	"github.com/standardnguyen/human-relay/whitelist"
@@ -39,6 +42,8 @@ type Handler struct {
 	whitelist        *whitelist.Whitelist
 	permissions      *permissions.Permissions
 	scriptsDir       string
+	containerStore   *containers.Store
+	machineStore     *machines.Store
 }
 
 type HandlerOption func(*Handler)
@@ -64,6 +69,17 @@ func WithScriptsDir(dir string) HandlerOption {
 func WithPermissions(p *permissions.Permissions) HandlerOption {
 	return func(h *Handler) {
 		h.permissions = p
+	}
+}
+
+// WithRegistries wires the container and machine registries into the handler.
+// registry_op requests (register_container, delete_container, register_machine,
+// delete_machine) are queued by the MCP tools and applied here after approval,
+// so without this option those requests fail with "registry not configured".
+func WithRegistries(cs *containers.Store, ms *machines.Store) HandlerOption {
+	return func(h *Handler) {
+		h.containerStore = cs
+		h.machineStore = ms
 	}
 }
 
@@ -253,6 +269,13 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 			h.audit.Log("request_approved", id, map[string]interface{}{
 				"type":   "script_create_then_run",
 				"script": req.ScriptName,
+			})
+		case "registry_op":
+			log.Printf("request %s approved, applying registry op: %s", id, req.RegistryOp)
+			h.audit.Log("request_approved", id, map[string]interface{}{
+				"type":          "registry_op",
+				"registry_op":   req.RegistryOp,
+				"registry_args": req.RegistryArgs,
 			})
 		default:
 			log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
@@ -492,6 +515,8 @@ func (h *Handler) executeRequest(req *store.Request) {
 		result = h.executor.ExecuteScriptCreate(req, h.scriptsDir)
 	case "script_create_then_run":
 		result = h.executor.ExecuteScriptCreateThenRun(req, h.scriptsDir)
+	case "registry_op":
+		result = executeRegistryOp(req, h.containerStore, h.machineStore)
 	default:
 		result = h.executor.Execute(req)
 	}
@@ -515,6 +540,78 @@ func (h *Handler) executeRequest(req *store.Request) {
 		h.audit.Log("output_auto_released_empty", req.ID, nil)
 	}
 	h.broadcastEvent("update", req.ID)
+}
+
+// executeRegistryOp applies an approved container/machine registry mutation.
+// The MCP tools (register_container, delete_container, register_machine,
+// delete_machine) validate their arguments and queue the request; the registry
+// is only touched here, after a human approved it in the dashboard. Success is
+// a zero-exit result whose stdout is the JSON the tool used to return
+// synchronously; failure is exit 1 with the error on stderr.
+func executeRegistryOp(req *store.Request, cs *containers.Store, ms *machines.Store) *store.Result {
+	args := req.RegistryArgs
+	switch req.RegistryOp {
+	case "register_container":
+		if cs == nil {
+			return registryFailure("container registry not configured")
+		}
+		ctid, err := strconv.Atoi(args["ctid"])
+		if err != nil {
+			return registryFailure(fmt.Sprintf("invalid ctid %q: %v", args["ctid"], err))
+		}
+		c, err := cs.Register(ctid, args["ip"], args["hostname"], args["has_relay_ssh"] == "true", args["ssh_user"])
+		if err != nil {
+			return registryFailure(fmt.Sprintf("failed to register container: %v", err))
+		}
+		return registrySuccess(c)
+
+	case "delete_container":
+		if cs == nil {
+			return registryFailure("container registry not configured")
+		}
+		ctid, err := strconv.Atoi(args["ctid"])
+		if err != nil {
+			return registryFailure(fmt.Sprintf("invalid ctid %q: %v", args["ctid"], err))
+		}
+		if err := cs.Delete(ctid); err != nil {
+			return registryFailure(fmt.Sprintf("failed to delete container: %v", err))
+		}
+		return registrySuccess(map[string]interface{}{"ctid": ctid, "deleted": true})
+
+	case "register_machine":
+		if ms == nil {
+			return registryFailure("machine registry not configured")
+		}
+		m, err := ms.Register(args["name"], args["host"], args["ssh_user"], args["shell"], args["identity_file"])
+		if err != nil {
+			return registryFailure(fmt.Sprintf("failed to register machine: %v", err))
+		}
+		return registrySuccess(m)
+
+	case "delete_machine":
+		if ms == nil {
+			return registryFailure("machine registry not configured")
+		}
+		if err := ms.Delete(args["name"]); err != nil {
+			return registryFailure(fmt.Sprintf("failed to delete machine: %v", err))
+		}
+		return registrySuccess(map[string]interface{}{"name": args["name"], "deleted": true})
+
+	default:
+		return registryFailure(fmt.Sprintf("unknown registry op %q", req.RegistryOp))
+	}
+}
+
+func registrySuccess(v interface{}) *store.Result {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return registryFailure(fmt.Sprintf("marshal registry result: %v", err))
+	}
+	return &store.Result{ExitCode: 0, Stdout: string(data)}
+}
+
+func registryFailure(msg string) *store.Result {
+	return &store.Result{ExitCode: 1, Stderr: msg}
 }
 
 func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {

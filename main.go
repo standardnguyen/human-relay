@@ -119,7 +119,7 @@ func main() {
 	log.Printf("Permissions: %d allow, %d deny, %d ask from %s", len(rules.Allow), len(rules.Deny), len(rules.Ask), permPath)
 
 	cd := envInt("MHR_APPROVAL_COOLDOWN", 30)
-	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms))
+	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms), web.WithRegistries(containerStore, machineStore))
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 

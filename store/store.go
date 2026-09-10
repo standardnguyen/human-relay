@@ -54,6 +54,14 @@ type Request struct {
 	// Script-specific fields (only when Type == "script")
 	ScriptName string   `json:"script_name,omitempty"`
 	ScriptArgs []string `json:"script_args,omitempty"`
+
+	// Registry-specific fields (only when Type == "registry_op")
+	// RegistryOp is one of "register_container", "delete_container",
+	// "register_machine", "delete_machine"; RegistryArgs carries that op's
+	// already-validated arguments, stringified (ints via strconv.Itoa,
+	// bools as "true"/"false").
+	RegistryOp   string            `json:"registry_op,omitempty"`
+	RegistryArgs map[string]string `json:"registry_args,omitempty"`
 }
 
 // FormFile describes the file part of a multipart http_request. FetchCmd is
@@ -190,6 +198,35 @@ func (s *Store) AddScript(name string, args []string, reason string, timeout int
 		Timeout:    timeout,
 		Status:     StatusPending,
 		CreatedAt:  time.Now(),
+	}
+	s.mu.Lock()
+	s.requests[id] = r
+	s.order = append(s.order, id)
+	s.mu.Unlock()
+
+	select {
+	case s.notify <- id:
+	default:
+	}
+
+	return r
+}
+
+// AddRegistryOp creates a pending request for a container/machine registry
+// mutation (register_container, delete_container, register_machine,
+// delete_machine). The MCP tools validate the arguments and queue the request;
+// the registry is only touched once a human approves in the dashboard, at
+// which point the web handler applies the op.
+func (s *Store) AddRegistryOp(op string, args map[string]string, reason string) *Request {
+	id := generateID()
+	r := &Request{
+		ID:           id,
+		Type:         "registry_op",
+		RegistryOp:   op,
+		RegistryArgs: args,
+		Reason:       reason,
+		Status:       StatusPending,
+		CreatedAt:    time.Now(),
 	}
 	s.mu.Lock()
 	s.requests[id] = r

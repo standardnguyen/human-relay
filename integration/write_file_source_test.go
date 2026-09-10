@@ -15,8 +15,8 @@ import (
 func TestWriteFileSourceCtidToCtidDirectSSH(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 115, "192.168.10.66", "claude-personal", true)
-	registerContainer(t, c, 3, 131, "192.168.10.90", "human-relay", true)
+	registerContainer(t, s, c, 2, 115, "192.168.10.66", "claude-personal", true)
+	registerContainer(t, s, c, 3, 131, "192.168.10.90", "human-relay", true)
 
 	resp := c.Call(t, 4, "tools/call", map[string]interface{}{
 		"name": "write_file",
@@ -130,7 +130,7 @@ func TestWriteFileSourceCtidPctExecFallback(t *testing.T) {
 	s, c := initClient(t)
 
 	// Source container without relay SSH: pull via pct exec cat on the Proxmox host.
-	registerContainer(t, c, 2, 153, "192.168.10.113", "habit-isekai", false)
+	registerContainer(t, s, c, 2, 153, "192.168.10.113", "habit-isekai", false)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "write_file",
@@ -296,8 +296,8 @@ func TestWriteFileSourceUnregisteredCtid(t *testing.T) {
 func TestWriteFileSourcePctPushDest(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 115, "192.168.10.66", "claude-personal", true)
-	registerContainer(t, c, 3, 108, "192.168.10.59", "wikijs", false)
+	registerContainer(t, s, c, 2, 115, "192.168.10.66", "claude-personal", true)
+	registerContainer(t, s, c, 3, 108, "192.168.10.59", "wikijs", false)
 
 	resp := c.Call(t, 4, "tools/call", map[string]interface{}{
 		"name": "write_file",

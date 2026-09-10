@@ -93,7 +93,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "register_container",
-		Description: "Register or update a container in the relay's container registry. Instant — no human approval needed.",
+		Description: "Register or update a container in the relay's container registry. Requires human approval — returns a request ID that can be used to poll for the result; the registry is only written once the human approves.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -135,7 +135,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "delete_container",
-		Description: "Remove a container from the relay's container registry. Use this to retire stale or recycled CTID registrations (e.g. a deprecated pseudo-CTID now migrated to the machine registry). Does NOT touch the actual container — only the registry entry. Instant — no human approval needed.",
+		Description: "Remove a container from the relay's container registry. Use this to retire stale or recycled CTID registrations (e.g. a deprecated pseudo-CTID now migrated to the machine registry). Does NOT touch the actual container — only the registry entry. Requires human approval — returns a request ID that can be used to poll for the result.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -186,7 +186,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "register_machine",
-		Description: "Register or update a non-LXC SSH target (Windows workstation, bare-metal host, VM, WSL instance) in the relay's machine registry, keyed by a string name. This is the first-class home for SSH targets that aren't Proxmox containers — use it instead of registering a fake 'pseudo-CTID' in the container registry. Instant — no human approval needed.",
+		Description: "Register or update a non-LXC SSH target (Windows workstation, bare-metal host, VM, WSL instance) in the relay's machine registry, keyed by a string name. This is the first-class home for SSH targets that aren't Proxmox containers — use it instead of registering a fake 'pseudo-CTID' in the container registry. Requires human approval — returns a request ID that can be used to poll for the result; the registry is only written once the human approves.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -228,7 +228,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "delete_machine",
-		Description: "Remove a machine from the relay's machine registry. Instant — no human approval needed.",
+		Description: "Remove a machine from the relay's machine registry. Requires human approval — returns a request ID that can be used to poll for the result.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -798,12 +798,41 @@ func (h *ToolHandler) registerContainer(args map[string]interface{}) *CallToolRe
 		return errorResult("ssh_user must not begin with '-' (ssh would parse it as an option)")
 	}
 
-	c, err := h.containers.Register(ctid, ip, hostname, hasRelaySSH, sshUser)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to register container: %v", err))
+	regArgs := map[string]string{
+		"ctid":          strconv.Itoa(ctid),
+		"ip":            ip,
+		"hostname":      hostname,
+		"has_relay_ssh": strconv.FormatBool(hasRelaySSH),
+	}
+	if sshUser != "" {
+		regArgs["ssh_user"] = sshUser
 	}
 
-	data, _ := json.Marshal(c)
+	reason := fmt.Sprintf("register container CTID %d at %s (%s), has_relay_ssh=%t", ctid, ip, hostname, hasRelaySSH)
+	if sshUser != "" {
+		reason += fmt.Sprintf(", ssh_user=%s", sshUser)
+	}
+	return h.queueRegistryOp("register_container", regArgs, reason)
+}
+
+// queueRegistryOp files an already-validated registry mutation as a pending
+// request. The registry is only touched after a human approves — see
+// web.executeRegistryOp. Shared by the four register/delete tools.
+func (h *ToolHandler) queueRegistryOp(op string, regArgs map[string]string, reason string) *CallToolResult {
+	r := h.store.AddRegistryOp(op, regArgs, reason)
+	h.store.SetDisplayCommand(r.ID, reason)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":          op,
+		"registry_op":   op,
+		"registry_args": regArgs,
+		"reason":        reason,
+	})
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+	})
 	return textResult(string(data))
 }
 
@@ -824,12 +853,11 @@ func (h *ToolHandler) deleteContainer(args map[string]interface{}) *CallToolResu
 	if ctid == 0 {
 		return errorResult("ctid is required and must be > 0")
 	}
-	if err := h.containers.Delete(ctid); err != nil {
-		return errorResult(fmt.Sprintf("failed to delete container: %v", err))
-	}
-	result := map[string]interface{}{"ctid": ctid, "deleted": true}
-	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return h.queueRegistryOp(
+		"delete_container",
+		map[string]string{"ctid": strconv.Itoa(ctid)},
+		fmt.Sprintf("delete container CTID %d from the relay registry", ctid),
+	)
 }
 
 func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult {
@@ -1005,12 +1033,21 @@ func (h *ToolHandler) registerMachine(args map[string]interface{}) *CallToolResu
 		return errorResult("identity_file must be an absolute path")
 	}
 
-	m, err := h.machines.Register(name, host, sshUser, shell, identityFile)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to register machine: %v", err))
+	regArgs := map[string]string{
+		"name":     name,
+		"host":     host,
+		"ssh_user": sshUser,
 	}
-	data, _ := json.Marshal(m)
-	return textResult(string(data))
+	reason := fmt.Sprintf("register machine %s at %s as user %s", name, host, sshUser)
+	if shell != "" {
+		regArgs["shell"] = shell
+		reason += fmt.Sprintf(", shell=%s", shell)
+	}
+	if identityFile != "" {
+		regArgs["identity_file"] = identityFile
+		reason += fmt.Sprintf(", identity_file=%s", identityFile)
+	}
+	return h.queueRegistryOp("register_machine", regArgs, reason)
 }
 
 func (h *ToolHandler) listMachines(args map[string]interface{}) *CallToolResult {
@@ -1036,12 +1073,11 @@ func (h *ToolHandler) deleteMachine(args map[string]interface{}) *CallToolResult
 	if name == "" {
 		return errorResult("name is required")
 	}
-	if err := h.machines.Delete(name); err != nil {
-		return errorResult(fmt.Sprintf("failed to delete machine: %v", err))
-	}
-	result := map[string]interface{}{"name": name, "deleted": true}
-	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return h.queueRegistryOp(
+		"delete_machine",
+		map[string]string{"name": name},
+		fmt.Sprintf("delete machine %s from the relay registry", name),
+	)
 }
 
 // machineSSHBase returns the ssh arg prefix for a machine up to and including

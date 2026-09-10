@@ -88,18 +88,39 @@ ssh root@${PROXMOX_HOST} "pct exec 9010 -- cat /root/.ssh/id_ed25519.pub" | \
 
 ### 4. Register Containers
 
+`register_container` is approval-gated: the call queues a request and the
+registry is only written once you approve it. Note the 30-second approval
+cooldown between the two registrations below (or start the relay with
+`MHR_APPROVAL_COOLDOWN=0` for the smoke run).
+
 ```bash
 # Register target-ssh (has direct SSH)
-curl -sf -X POST http://${RELAY_IP}:8080/message \
+REG1=$(curl -sf -X POST http://${RELAY_IP}:8080/message \
   -H "Authorization: Bearer changeme" \
   -H "Content-Type: application/json" \
-  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"register_container\",\"arguments\":{\"ctid\":9011,\"ip\":\"${TARGET_SSH_IP}\",\"hostname\":\"hr-target-ssh\",\"has_relay_ssh\":true}}}"
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"register_container\",\"arguments\":{\"ctid\":9011,\"ip\":\"${TARGET_SSH_IP}\",\"hostname\":\"hr-target-ssh\",\"has_relay_ssh\":true}}}")
+
+REG1_ID=$(echo "${REG1}" | python3 -c "import sys,json; print(json.loads(json.loads(sys.stdin.read())['result']['content'][0]['text'])['request_id'])")
+
+curl -sf -X POST "http://${RELAY_IP}:8090/api/requests/${REG1_ID}/approve" \
+  -H "Authorization: Bearer changeme" -H "Origin: http://${RELAY_IP}:8090"
 
 # Register target-pct (no SSH, pct exec fallback)
+REG2=$(curl -sf -X POST http://${RELAY_IP}:8080/message \
+  -H "Authorization: Bearer changeme" \
+  -H "Content-Type: application/json" \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"register_container\",\"arguments\":{\"ctid\":9012,\"ip\":\"${TARGET_PCT_IP}\",\"hostname\":\"hr-target-pct\",\"has_relay_ssh\":false}}}")
+
+REG2_ID=$(echo "${REG2}" | python3 -c "import sys,json; print(json.loads(json.loads(sys.stdin.read())['result']['content'][0]['text'])['request_id'])")
+
+curl -sf -X POST "http://${RELAY_IP}:8090/api/requests/${REG2_ID}/approve" \
+  -H "Authorization: Bearer changeme" -H "Origin: http://${RELAY_IP}:8090"
+
+# Confirm both landed in the registry
 curl -sf -X POST http://${RELAY_IP}:8080/message \
   -H "Authorization: Bearer changeme" \
   -H "Content-Type: application/json" \
-  -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"register_container\",\"arguments\":{\"ctid\":9012,\"ip\":\"${TARGET_PCT_IP}\",\"hostname\":\"hr-target-pct\",\"has_relay_ssh\":false}}}"
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_containers","arguments":{}}}'
 ```
 
 ## Tests

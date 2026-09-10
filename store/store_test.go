@@ -109,3 +109,75 @@ func TestApproveReturnsCopy(t *testing.T) {
 		t.Errorf("stored command = %q, want %q -- Approve handed out a live pointer", got.Command, "echo")
 	}
 }
+
+// TestAddScriptTypedRaceWithReaders pins finding #26 at the store layer: the
+// script-family Type is set inside the struct literal, before the request is
+// published into the map, so a concurrent List/Get never races the write.
+// The test is concurrent on purpose — if a future change goes back to setting
+// Type (or any other field) on the returned pointer after Add* returns, the
+// reader goroutines here give `go test -race` an unsynchronized read to pair
+// it with.
+func TestAddScriptTypedRaceWithReaders(t *testing.T) {
+	s := New()
+
+	const writes = 50
+	done := make(chan struct{})
+	var readers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				for _, r := range s.List("") {
+					_ = r.Type
+					if got := s.Get(r.ID); got != nil {
+						_ = got.Type
+					}
+				}
+			}
+		}()
+	}
+
+	var writers sync.WaitGroup
+	ids := make([]string, writes)
+	for i := 0; i < writes; i++ {
+		writers.Add(1)
+		go func(i int) {
+			defer writers.Done()
+			r := s.AddScriptTyped("script_create", "racy", nil, "finding 26 store race test", 0)
+			ids[i] = r.ID
+		}(i)
+	}
+	writers.Wait()
+	close(done)
+	readers.Wait()
+
+	for i, id := range ids {
+		r := s.Get(id)
+		if r == nil {
+			t.Fatalf("write %d: request %s missing", i, id)
+		}
+		if r.Type != "script_create" {
+			t.Errorf("write %d: Type = %q, want %q", i, r.Type, "script_create")
+		}
+	}
+}
+
+// TestAddScriptDefaultsToScriptType keeps the plain run_script path pinned to
+// the untyped Type after the AddScriptTyped refactor.
+func TestAddScriptDefaultsToScriptType(t *testing.T) {
+	s := New()
+	r := s.AddScript("some-script", []string{"a"}, "type default test", 0)
+	got := s.Get(r.ID)
+	if got == nil {
+		t.Fatal("request missing from store")
+	}
+	if got.Type != "script" {
+		t.Errorf("Type = %q, want %q", got.Type, "script")
+	}
+}

@@ -1379,8 +1379,7 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 	}
 	prefixedReason := fmt.Sprintf("[SCRIPT %s%s %dB] %s\n---\n%s", name, ext, len(content), reason, preview)
 
-	r := h.store.AddScript(name, nil, prefixedReason, 0)
-	r.Type = "script_create"
+	r := h.store.AddScriptTyped("script_create", name, nil, prefixedReason, 0)
 	// Store script content for execution (writing to disk)
 	h.store.SetStdin(r.ID, []byte(content))
 
@@ -1478,8 +1477,7 @@ func (h *ToolHandler) createThenRun(args map[string]interface{}) *CallToolResult
 	prefixedReason := fmt.Sprintf("[CREATE+RUN %s%s %dB]%s %s\n---\n%s",
 		targetName, ext, len(content), argsStr, reason, preview)
 
-	r := h.store.AddScript(targetName, scriptArgs, prefixedReason, timeout)
-	r.Type = "script_create_then_run"
+	r := h.store.AddScriptTyped("script_create_then_run", targetName, scriptArgs, prefixedReason, timeout)
 	h.store.SetStdin(r.ID, []byte(content))
 
 	displayCmd := fmt.Sprintf("create_then_run %s%s (%dB)", targetName, ext, len(content))

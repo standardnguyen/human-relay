@@ -187,11 +187,21 @@ func (s *Store) AddPermission(displayCommand, reason string, timeout int) *Reque
 	return r
 }
 
+// AddScript queues a plain run_script request (Type "script").
 func (s *Store) AddScript(name string, args []string, reason string, timeout int) *Request {
+	return s.AddScriptTyped("script", name, args, reason, timeout)
+}
+
+// AddScriptTyped queues a script-family request with an explicit Type
+// ("script", "script_create", "script_create_then_run"). Type must be set at
+// construction: callers must never mutate it on the returned pointer, because
+// that pointer is already published into the store's map and readers (Get,
+// List) touch it under the lock only.
+func (s *Store) AddScriptTyped(typ, name string, args []string, reason string, timeout int) *Request {
 	id := generateID()
 	r := &Request{
 		ID:         id,
-		Type:       "script",
+		Type:       typ,
 		ScriptName: name,
 		ScriptArgs: args,
 		Reason:     reason,

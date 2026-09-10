@@ -3,9 +3,11 @@ package mcp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2371,3 +2373,97 @@ func TestWriteFileCheckerReceivesCorrectArgs(t *testing.T) {
 	}
 }
 
+
+// --- finding #26: script Type must be set at construction, not mutated after
+// the request is published into the store ---
+
+// TestCreateScriptTypeNotMutatedAfterPublish drives create_script and
+// create_then_run concurrently with readers hammering store.Get/List. Before
+// finding #26 was fixed, the handlers did `r := store.AddScript(...)` followed
+// by an unlocked `r.Type = "script_create"` on a pointer that AddScript had
+// already published into the store's map — so the write raced every reader
+// that copies the struct under RLock. This test is deliberately concurrent:
+// a sequential call would not reproduce the race even with the bug present,
+// so `go test -race` needs the reader goroutines to flag a regression.
+func TestCreateScriptTypeNotMutatedAfterPublish(t *testing.T) {
+	h := setup(t)
+	h.SetScriptsDir(t.TempDir())
+
+	const creates = 60
+	done := make(chan struct{})
+	var readers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				for _, r := range h.store.List("") {
+					_ = r.Type
+					if got := h.store.Get(r.ID); got != nil {
+						_ = got.Type
+					}
+				}
+			}
+		}()
+	}
+
+	ids := make([]string, 0, creates*2)
+	var mu sync.Mutex
+	var writers sync.WaitGroup
+	for i := 0; i < creates; i++ {
+		writers.Add(1)
+		go func(i int) {
+			defer writers.Done()
+			cs := h.Handle("create_script", map[string]interface{}{
+				"name":    fmt.Sprintf("race_create_%d", i),
+				"content": "#!/bin/bash\necho hi\n",
+				"reason":  "finding 26 race test",
+			})
+			ctr := h.Handle("create_then_run", map[string]interface{}{
+				"name":    fmt.Sprintf("race_ctr_%d", i),
+				"content": "#!/bin/bash\necho hi\n",
+				"reason":  "finding 26 race test",
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			for _, res := range []*CallToolResult{cs, ctr} {
+				if res.IsError {
+					t.Errorf("unexpected error result: %v", res.Content)
+					continue
+				}
+				var out map[string]interface{}
+				if err := json.Unmarshal([]byte(res.Content[0].Text), &out); err != nil {
+					t.Errorf("unmarshal: %v", err)
+					continue
+				}
+				ids = append(ids, out["request_id"].(string))
+			}
+		}(i)
+	}
+	writers.Wait()
+	close(done)
+	readers.Wait()
+
+	if len(ids) != creates*2 {
+		t.Fatalf("got %d request ids, want %d", len(ids), creates*2)
+	}
+	counts := map[string]int{}
+	for _, id := range ids {
+		r := h.store.Get(id)
+		if r == nil {
+			t.Fatalf("request %s missing from store", id)
+		}
+		counts[r.Type]++
+	}
+	if counts["script_create"] != creates {
+		t.Errorf("script_create count = %d, want %d (types seen: %v)", counts["script_create"], creates, counts)
+	}
+	if counts["script_create_then_run"] != creates {
+		t.Errorf("script_create_then_run count = %d, want %d (types seen: %v)", counts["script_create_then_run"], creates, counts)
+	}
+}

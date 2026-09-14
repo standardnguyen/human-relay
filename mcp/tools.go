@@ -2059,8 +2059,14 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	}
 	machineName, _ := args["machine"].(string)
 	host, _ := args["host"].(string)
-	if host == "" {
-		host = h.hostIP
+	// 🔴 No default target (2026-09-14). `host` used to fall back to the Proxmox
+	// host, so a call that meant a container and forgot its target wrote to the
+	// hypervisor instead - and reported success with target 192.168.10.50, which
+	// reads as confirmation. The default cost at least one wrong-machine write.
+	// Require the target explicitly, and have the error name every way to give
+	// one; a caller that genuinely means the host says so.
+	if host == "" && ctid == 0 && machineName == "" {
+		return errorResult("no target: pass ctid=<n> (registered container), machine=<name> (registered machine), or host=<ip> (the Proxmox host). write_file no longer defaults to the host.")
 	}
 
 	timeout := 0

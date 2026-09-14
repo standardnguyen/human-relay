@@ -180,6 +180,7 @@ func TestWriteFileHostTarget(t *testing.T) {
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
 		"name": "write_file",
 		"arguments": map[string]interface{}{
+			"host": "192.168.10.50",
 			"path":           "/opt/grafana/prometheus.yml",
 			"content_base64": b64,
 			"reason":         "Deploy prometheus config",
@@ -399,6 +400,7 @@ func TestWriteFileDefaultMode(t *testing.T) {
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
 		"name": "write_file",
 		"arguments": map[string]interface{}{
+			"host": "192.168.10.50",
 			"path":           "/tmp/test.txt",
 			"content_base64": b64,
 			"reason":         "test default mode",
@@ -428,6 +430,7 @@ func TestWriteFileExecutableMode(t *testing.T) {
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
 		"name": "write_file",
 		"arguments": map[string]interface{}{
+			"host": "192.168.10.50",
 			"path":           "/tmp/test.sh",
 			"content_base64": b64,
 			"reason":         "test executable mode",
@@ -558,6 +561,7 @@ func TestWriteFilePlaintextContent(t *testing.T) {
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
 		"name": "write_file",
 		"arguments": map[string]interface{}{
+			"host": "192.168.10.50",
 			"path":    "/opt/grafana/prometheus.yml",
 			"content": content,
 			"reason":  "Deploy prometheus config (plaintext)",
@@ -602,6 +606,7 @@ func TestWriteFilePlaintextByteExact(t *testing.T) {
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
 		"name": "write_file",
 		"arguments": map[string]interface{}{
+			"host": "192.168.10.50",
 			"path":    "/tmp/exact-bytes.txt",
 			"content": content,
 			"reason":  "byte-exact check",
@@ -745,3 +750,49 @@ func TestWriteFileDashboardBadge(t *testing.T) {
 		t.Error("expected dashboard HTML to contain stdin_len reference")
 	}
 }
+
+// TestWriteFileNoTargetRejected pins the 2026-09-14 change end-to-end: with no
+// ctid, machine, or host the relay must REJECT the call rather than write to the
+// Proxmox host, and the message must name every way to give a target - the old
+// behavior answered with a cheerful {"target":"192.168.10.50"}, which is what
+// made a wrong-machine write look like a confirmation.
+func TestWriteFileNoTargetRejected(t *testing.T) {
+	s := StartServer(t)
+	c := NewMCPClient(t, s.MCPURL())
+
+	c.Call(t, 1, "initialize", map[string]interface{}{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]interface{}{},
+		"clientInfo":      map[string]string{"name": "test", "version": "1.0"},
+	})
+	c.Notify(t, "notifications/initialized", nil)
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "write_file",
+		"arguments": map[string]interface{}{
+			"path":    "/opt/whatever.conf",
+			"content": "x",
+			"reason":  "no target given",
+		},
+	})
+	if !isErrorResponse(resp) {
+		t.Fatal("expected an error when no ctid/machine/host is given")
+	}
+
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	json.Unmarshal(resp.Result, &result)
+	if len(result.Content) == 0 {
+		t.Fatal("no content in error response")
+	}
+	msg := result.Content[0].Text
+	for _, want := range []string{"ctid", "machine", "host"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("rejection must name %q as a way to give the target; got: %s", want, msg)
+		}
+	}
+}
+

@@ -2339,3 +2339,44 @@ func TestWriteFileCheckerReceivesCorrectArgs(t *testing.T) {
 	}
 }
 
+// TestWriteFileRequiresExplicitTarget pins the 2026-09-14 change: `host` used
+// to fall back to the Proxmox host, so a call that meant a container and forgot
+// its target wrote to the hypervisor and reported success. There is no default
+// target any more - the error must name every way to supply one.
+func TestWriteFileRequiresExplicitTarget(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("write_file", map[string]interface{}{
+		"path":    "/opt/whatever.conf",
+		"content": "x",
+		"reason":  "no target given",
+	})
+	if !result.IsError {
+		t.Fatalf("expected an error when no ctid/machine/host is given, got: %s", result.Content[0].Text)
+	}
+	msg := result.Content[0].Text
+	for _, want := range []string{"ctid", "machine", "host"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error must name %q as a way to give the target; got: %s", want, msg)
+		}
+	}
+}
+
+// TestWriteFileStillRoutesToHostWhenNamedExplicitly is the control for the test
+// above: killing the default must not break a write that names the host.
+func TestWriteFileStillRoutesToHostWhenNamedExplicitly(t *testing.T) {
+	h := setup(t)
+	h.SetWriteFileChecker(func(ctid int, host, path string, timeout time.Duration) (bool, int64, time.Time, error) {
+		return false, 0, time.Time{}, nil
+	})
+
+	result := h.Handle("write_file", map[string]interface{}{
+		"path":    "/opt/named.conf",
+		"content": "content",
+		"host":    "192.168.10.99",
+		"reason":  "explicit host target",
+	})
+	if result.IsError {
+		t.Fatalf("an explicitly named host must still work, got: %s", result.Content[0].Text)
+	}
+}

@@ -81,8 +81,10 @@ ssh root@${PROXMOX_HOST} "pct exec ${CTID} -- docker compose -f /opt/human-relay
 # Dashboard reachable?
 curl -sf http://${CT_IP}:8090/ > /dev/null && echo "Dashboard: OK" || echo "Dashboard: FAIL"
 
-# MCP SSE endpoint (will hang — timeout is expected and fine)
-timeout 3 curl -sf http://${CT_IP}:8080/sse 2>&1 | head -1
+# MCP SSE endpoint (will hang — timeout is expected and fine).
+# Requires the bearer token, same as the dashboard API.
+timeout 3 curl -sf -H "Authorization: Bearer smoke-test-token" \
+  http://${CT_IP}:8080/sse 2>&1 | head -1
 echo "SSE endpoint: OK (timeout expected)"
 ```
 
@@ -91,6 +93,7 @@ echo "SSE endpoint: OK (timeout expected)"
 ```bash
 # Submit via MCP JSON-RPC
 RESPONSE=$(curl -sf -X POST http://${CT_IP}:8080/message \
+  -H "Authorization: Bearer smoke-test-token" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"request_command","arguments":{"command":"echo","args":["hello-from-smoke-test"],"reason":"smoke test"}}}')
 

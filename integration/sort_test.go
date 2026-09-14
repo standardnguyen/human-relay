@@ -29,7 +29,7 @@ func webListRequests(t *testing.T, s *TestServer, status string) []RequestResult
 func createRequest(t *testing.T, c *MCPClient, id int, reason string) string {
 	t.Helper()
 	resp := c.Call(t, id, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{reason},
@@ -134,7 +134,7 @@ func TestSortErrorNewestFirst(t *testing.T) {
 	ids := make([]string, 3)
 	for i := 0; i < 3; i++ {
 		resp := c.Call(t, 10+i, "tools/call", map[string]interface{}{
-			"name": "request_command",
+			"name": "request_command_for_relay",
 			"arguments": map[string]interface{}{
 				"command": "false",
 				"reason":  fmt.Sprintf("error-%d", i),

@@ -62,7 +62,7 @@ func TestToolsList(t *testing.T) {
 		toolNames[tool.Name] = true
 	}
 
-	for _, expected := range []string{"request_command", "get_result", "list_requests", "register_container", "list_containers", "exec_container"} {
+	for _, expected := range []string{"request_command", "request_command_for_relay", "request_command_for_host", "get_result", "list_requests", "register_container", "list_containers", "exec_container"} {
 		if !toolNames[expected] {
 			t.Errorf("expected tool %s not found", expected)
 		}
@@ -81,7 +81,7 @@ func TestRequestCommand(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello"},
@@ -128,7 +128,7 @@ func TestApprovalFlow(t *testing.T) {
 
 	// Submit a command
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello", "world"},
@@ -183,7 +183,7 @@ func TestDenialFlow(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "rm",
 			"args":    []string{"-rf", "/"},
@@ -230,7 +230,7 @@ func TestShellMode(t *testing.T) {
 
 	// Test shell mode with pipe
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo hello | tr a-z A-Z",
 			"reason":  "test shell mode",
@@ -279,7 +279,7 @@ func TestDirectMode(t *testing.T) {
 
 	// Direct mode — no shell
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"direct", "mode"},
@@ -320,7 +320,7 @@ func TestBlockingPoll(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"blocking"},
@@ -407,7 +407,7 @@ func TestListRequestsFilter(t *testing.T) {
 
 	// Create two requests
 	c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"one"},
@@ -416,7 +416,7 @@ func TestListRequestsFilter(t *testing.T) {
 	})
 
 	resp2 := c.Call(t, 3, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"two"},
@@ -469,7 +469,7 @@ func TestAllowedDirs(t *testing.T) {
 
 	// Command with disallowed working dir
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command":     "ls",
 			"reason":      "test allowed dirs",
@@ -519,7 +519,7 @@ func TestAllowedDirsPermitted(t *testing.T) {
 
 	// Command with allowed working dir
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command":     "echo",
 			"args":        []string{"allowed"},
@@ -564,7 +564,7 @@ func TestDoubleApprove(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"once"},
@@ -616,7 +616,7 @@ func TestAllowedDirsPrefixCollision(t *testing.T) {
 
 	// /tmp-evil shares a prefix with /tmp but is NOT a subdirectory
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command":     "echo",
 			"args":        []string{"pwned"},
@@ -665,7 +665,7 @@ func TestAllowedDirsPathTraversal(t *testing.T) {
 
 	// Path traversal: /tmp/../../etc normalizes to /etc
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command":     "echo",
 			"args":        []string{"traversed"},
@@ -714,7 +714,7 @@ func TestAllowedDirsSubdirPermitted(t *testing.T) {
 
 	// Create the subdir first
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "mkdir",
 			"args":    []string{"-p", "/tmp/hr-test-subdir"},
@@ -729,7 +729,7 @@ func TestAllowedDirsSubdirPermitted(t *testing.T) {
 
 	// Now use the subdir as working_dir
 	resp = c.Call(t, 3, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command":     "echo",
 			"args":        []string{"subdir-ok"},
@@ -765,7 +765,7 @@ func TestAllowedDirsSubdirPermitted(t *testing.T) {
 
 	// Cleanup
 	cleanResp := c.Call(t, 5, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "rmdir",
 			"args":    []string{"/tmp/hr-test-subdir"},
@@ -791,7 +791,7 @@ func TestOutputTruncation(t *testing.T) {
 
 	// Generate ~2.7MB of output (2048 * 1024 bytes of zeros, base64-encoded)
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "dd if=/dev/zero bs=1024 count=2048 | base64",
 			"reason":  "test output truncation",
@@ -847,7 +847,7 @@ func TestNonAsciiCommandPreserved(t *testing.T) {
 
 	// Submit a command with Cyrillic characters (homoglyph attack simulation)
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello-\u0430\u0441\u0446\u0438\u0438"},
@@ -996,7 +996,7 @@ func TestBase64CommandPreserved(t *testing.T) {
 	shellCmd := "base64 -d > /tmp/test.yml <<'B64EOF'\n" + b64Content + "\nB64EOF"
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": shellCmd,
 			"reason":  "test base64 command preservation",
@@ -1049,6 +1049,8 @@ type RequestResult struct {
 	Result         *ExecResult `json:"result"`
 	OutputGated    bool        `json:"output_gated"`
 	StdinLen       int         `json:"stdin_len"`
+	StdinSHA256    string      `json:"stdin_sha256"`
+	ScriptName     string      `json:"script_name"`
 	DisplayCommand string      `json:"display_command"`
 	Shell          bool        `json:"shell"`
 	HTTPFormFile   *FormFile   `json:"http_form_file"`

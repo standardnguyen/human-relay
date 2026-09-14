@@ -6,15 +6,26 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
-// Container matches the JSON returned by register_container / list_containers.
+// Container matches the JSON returned by list_containers (and by an approved
+// register_container request's stdout).
 type Container struct {
 	CTID        int    `json:"ctid"`
 	IP          string `json:"ip"`
 	Hostname    string `json:"hostname"`
 	HasRelaySSH bool   `json:"has_relay_ssh"`
 	SSHUser     string `json:"ssh_user,omitempty"`
+}
+
+// Machine matches the JSON returned by list_machines.
+type Machine struct {
+	Name         string `json:"name"`
+	Host         string `json:"host"`
+	SSHUser      string `json:"ssh_user"`
+	Shell        string `json:"shell"`
+	IdentityFile string `json:"identity_file,omitempty"`
 }
 
 // ExecResponse matches the JSON returned by exec_container.
@@ -39,8 +50,8 @@ func initClient(t *testing.T, opts ...ServerOption) (*TestServer, *MCPClient) {
 	return s, c
 }
 
-// extractContainer parses a single Container from an MCP tools/call response.
-func extractContainer(t *testing.T, resp *JSONRPCResponse) Container {
+// toolText returns the first text block of an MCP tools/call response.
+func toolText(t *testing.T, resp *JSONRPCResponse) string {
 	t.Helper()
 	var result struct {
 		Content []struct {
@@ -51,11 +62,80 @@ func extractContainer(t *testing.T, resp *JSONRPCResponse) Container {
 	if len(result.Content) == 0 {
 		t.Fatal("no content in response")
 	}
-	var c Container
-	if err := json.Unmarshal([]byte(result.Content[0].Text), &c); err != nil {
-		t.Fatalf("failed to parse container: %v\nraw: %s", err, result.Content[0].Text)
+	return result.Content[0].Text
+}
+
+// extractPendingID asserts that a registry tool queued a request for human
+// approval — {"request_id":..., "status":"pending"} — and returns the ID.
+// Registry mutations stopped being synchronous with finding #23 part 2.
+func extractPendingID(t *testing.T, resp *JSONRPCResponse) string {
+	t.Helper()
+	if isErrorResponse(resp) {
+		t.Fatalf("tool returned an error: %s", toolText(t, resp))
 	}
-	return c
+	text := toolText(t, resp)
+	var out struct {
+		RequestID string `json:"request_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("failed to parse pending envelope: %v\nraw: %s", err, text)
+	}
+	if out.Status != "pending" {
+		t.Fatalf("expected status pending, got %q\nraw: %s", out.Status, text)
+	}
+	if out.RequestID == "" {
+		t.Fatalf("empty request_id\nraw: %s", text)
+	}
+	return out.RequestID
+}
+
+// waitForRequest polls the dashboard API until the request leaves the
+// pending/approved/running states, then returns it.
+func waitForRequest(t *testing.T, s *TestServer, requestID string) RequestResult {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, body := WebGet(t, s.WebURL()+"/api/requests", s.token)
+		if code != 200 {
+			t.Fatalf("list requests: status %d", code)
+		}
+		var list []RequestResult
+		if err := json.Unmarshal(body, &list); err != nil {
+			t.Fatalf("parse requests: %v\nraw: %s", err, body)
+		}
+		for _, r := range list {
+			if r.ID != requestID {
+				continue
+			}
+			switch r.Status {
+			case "pending", "approved", "running":
+			default:
+				return r
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("request %s did not finish within 5s", requestID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// approveRequest approves a pending request through the dashboard API and waits
+// for it to finish. It fails the test unless the request completed cleanly.
+func approveRequest(t *testing.T, s *TestServer, requestID string) RequestResult {
+	t.Helper()
+	code, body := WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/approve", s.WebURL(), requestID),
+		s.token, nil)
+	if code != 200 {
+		t.Fatalf("approve %s: status %d, body %s", requestID, code, body)
+	}
+	done := waitForRequest(t, s, requestID)
+	if done.Status != "complete" {
+		t.Fatalf("request %s ended %s: %+v", requestID, done.Status, done.Result)
+	}
+	return done
 }
 
 // extractContainerList parses a []Container from an MCP tools/call response.
@@ -125,18 +205,43 @@ func findRequestByID(t *testing.T, c *MCPClient, callID int, requestID string) *
 	return nil
 }
 
-// registerContainer registers a container via MCP and fatals on error.
-func registerContainer(t *testing.T, c *MCPClient, callID int, ctid float64, ip, hostname string, hasRelaySSH bool) {
+// registerContainer registers a container end-to-end: queue via MCP, approve in
+// the dashboard, wait for the registry write. register_container is
+// approval-gated (finding #23 part 2), so calling the tool alone leaves the
+// registry empty.
+func registerContainer(t *testing.T, s *TestServer, c *MCPClient, callID int, ctid float64, ip, hostname string, hasRelaySSH bool) Container {
+	t.Helper()
+	return registerContainerArgs(t, s, c, callID, map[string]interface{}{
+		"ctid": ctid, "ip": ip, "hostname": hostname, "has_relay_ssh": hasRelaySSH,
+	})
+}
+
+// registerContainerArgs is registerContainer with the full argument map, for
+// tests that pass ssh_user or omit has_relay_ssh. Returns the Container the
+// approved request wrote to the registry.
+func registerContainerArgs(t *testing.T, s *TestServer, c *MCPClient, callID int, args map[string]interface{}) Container {
 	t.Helper()
 	resp := c.Call(t, callID, "tools/call", map[string]interface{}{
-		"name": "register_container",
-		"arguments": map[string]interface{}{
-			"ctid": ctid, "ip": ip, "hostname": hostname, "has_relay_ssh": hasRelaySSH,
-		},
+		"name": "register_container", "arguments": args,
 	})
-	if isErrorResponse(resp) {
-		t.Fatalf("register_container(%v, %s, %s) failed", ctid, ip, hostname)
+	done := approveRequest(t, s, extractPendingID(t, resp))
+	if done.Result == nil {
+		t.Fatalf("register_container produced no result: %+v", done)
 	}
+	var ct Container
+	if err := json.Unmarshal([]byte(done.Result.Stdout), &ct); err != nil {
+		t.Fatalf("parse registered container: %v\nraw: %s", err, done.Result.Stdout)
+	}
+	return ct
+}
+
+// listContainers calls list_containers and parses the registry contents.
+func listContainers(t *testing.T, c *MCPClient, callID int) []Container {
+	t.Helper()
+	resp := c.Call(t, callID, "tools/call", map[string]interface{}{
+		"name": "list_containers", "arguments": map[string]interface{}{},
+	})
+	return extractContainerList(t, resp)
 }
 
 // assertArgs checks that got matches want element-by-element, with clear diffs.
@@ -154,8 +259,11 @@ func assertArgs(t *testing.T, got, want []string) {
 
 // --- register_container tests ---
 
+// TestRegisterContainer drives finding #23 part 2 end-to-end: the tool returns
+// a pending request instead of a Container, the registry stays untouched until
+// the human approves, and the approved request is what writes the entry.
 func TestRegisterContainer(t *testing.T) {
-	_, c := initClient(t)
+	s, c := initClient(t)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
 		"name": "register_container",
@@ -167,11 +275,20 @@ func TestRegisterContainer(t *testing.T) {
 		},
 	})
 
-	if isErrorResponse(resp) {
-		t.Fatalf("unexpected error")
+	requestID := extractPendingID(t, resp)
+
+	// Before approval the registry is empty.
+	if list := listContainers(t, c, 3); len(list) != 0 {
+		t.Fatalf("registry mutated before approval: %+v", list)
 	}
 
-	ct := extractContainer(t, resp)
+	approveRequest(t, s, requestID)
+
+	list := listContainers(t, c, 4)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 container after approval, got %d", len(list))
+	}
+	ct := list[0]
 	if ct.CTID != 133 {
 		t.Errorf("expected CTID 133, got %d", ct.CTID)
 	}
@@ -183,6 +300,32 @@ func TestRegisterContainer(t *testing.T) {
 	}
 	if !ct.HasRelaySSH {
 		t.Error("expected has_relay_ssh to be true")
+	}
+}
+
+// TestRegisterContainerDeniedLeavesRegistryEmpty is the control for the test
+// above: an approval click is what writes the registry, so a denial must leave
+// it exactly as it was.
+func TestRegisterContainerDeniedLeavesRegistryEmpty(t *testing.T) {
+	s, c := initClient(t)
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "register_container",
+		"arguments": map[string]interface{}{
+			"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox",
+		},
+	})
+	requestID := extractPendingID(t, resp)
+
+	code, body := WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), requestID),
+		s.token, map[string]string{"reason": "not this one"})
+	if code != 200 {
+		t.Fatalf("deny returned status %d, body %s", code, body)
+	}
+
+	if list := listContainers(t, c, 3); len(list) != 0 {
+		t.Fatalf("denied register_container still wrote the registry: %+v", list)
 	}
 }
 
@@ -212,28 +355,21 @@ func TestRegisterContainerMissingFields(t *testing.T) {
 }
 
 func TestRegisterContainerUpsert(t *testing.T) {
-	_, c := initClient(t)
+	s, c := initClient(t)
 
 	// Register initial
-	c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "register_container",
-		"arguments": map[string]interface{}{
-			"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox",
-		},
+	registerContainerArgs(t, s, c, 2, map[string]interface{}{
+		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox",
 	})
 
 	// Update same CTID
-	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
-		"name": "register_container",
-		"arguments": map[string]interface{}{
-			"ctid":          float64(133),
-			"ip":            "192.168.10.91",
-			"hostname":      "archivebox-v2",
-			"has_relay_ssh": true,
-		},
+	ct := registerContainerArgs(t, s, c, 3, map[string]interface{}{
+		"ctid":          float64(133),
+		"ip":            "192.168.10.91",
+		"hostname":      "archivebox-v2",
+		"has_relay_ssh": true,
 	})
 
-	ct := extractContainer(t, resp)
 	if ct.IP != "192.168.10.91" {
 		t.Errorf("expected updated IP 192.168.10.91, got %s", ct.IP)
 	}
@@ -245,11 +381,7 @@ func TestRegisterContainerUpsert(t *testing.T) {
 	}
 
 	// List should show only 1 container
-	listResp := c.Call(t, 4, "tools/call", map[string]interface{}{
-		"name": "list_containers", "arguments": map[string]interface{}{},
-	})
-	list := extractContainerList(t, listResp)
-	if len(list) != 1 {
+	if list := listContainers(t, c, 4); len(list) != 1 {
 		t.Errorf("expected 1 container after upsert, got %d", len(list))
 	}
 }
@@ -274,7 +406,7 @@ func TestListContainersEmpty(t *testing.T) {
 }
 
 func TestListContainersOrdered(t *testing.T) {
-	_, c := initClient(t)
+	s, c := initClient(t)
 
 	// Register in non-sorted order
 	for i, ct := range []struct {
@@ -286,19 +418,12 @@ func TestListContainersOrdered(t *testing.T) {
 		{100, "192.168.10.52", "ingress"},
 		{115, "192.168.10.66", "claude-code"},
 	} {
-		c.Call(t, i+2, "tools/call", map[string]interface{}{
-			"name": "register_container",
-			"arguments": map[string]interface{}{
-				"ctid": ct.ctid, "ip": ct.ip, "hostname": ct.hostname,
-			},
+		registerContainerArgs(t, s, c, i+2, map[string]interface{}{
+			"ctid": ct.ctid, "ip": ct.ip, "hostname": ct.hostname,
 		})
 	}
 
-	resp := c.Call(t, 5, "tools/call", map[string]interface{}{
-		"name": "list_containers", "arguments": map[string]interface{}{},
-	})
-
-	list := extractContainerList(t, resp)
+	list := listContainers(t, c, 5)
 	if len(list) != 3 {
 		t.Fatalf("expected 3 containers, got %d", len(list))
 	}
@@ -330,7 +455,7 @@ func TestExecContainerNotFound(t *testing.T) {
 func TestExecContainerDirectSSH(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 133, "192.168.10.90", "archivebox", true)
+	registerContainer(t, s, c, 2, 133, "192.168.10.90", "archivebox", true)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -375,7 +500,7 @@ func TestExecContainerDirectSSH(t *testing.T) {
 func TestExecContainerPctExecFallback(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 133, "192.168.10.90", "archivebox", false)
+	registerContainer(t, s, c, 2, 133, "192.168.10.90", "archivebox", false)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -403,7 +528,7 @@ func TestExecContainerPctExecFallback(t *testing.T) {
 func TestExecContainerShellMode(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 133, "192.168.10.90", "archivebox", true)
+	registerContainer(t, s, c, 2, 133, "192.168.10.90", "archivebox", true)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -430,7 +555,7 @@ func TestExecContainerShellMode(t *testing.T) {
 func TestExecContainerReasonPrefix(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 133, "192.168.10.90", "archivebox", true)
+	registerContainer(t, s, c, 2, 133, "192.168.10.90", "archivebox", true)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -482,7 +607,7 @@ func TestExecContainerMissingFields(t *testing.T) {
 func TestExecContainerPctExecShellMode(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 133, "192.168.10.90", "archivebox", false)
+	registerContainer(t, s, c, 2, 133, "192.168.10.90", "archivebox", false)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -511,7 +636,7 @@ func TestExecContainerPctExecShellMode(t *testing.T) {
 func TestExecContainerResponseFields(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 133, "192.168.10.90", "archivebox", true)
+	registerContainer(t, s, c, 2, 133, "192.168.10.90", "archivebox", true)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -558,7 +683,7 @@ func TestContainerRegistryPersistence(t *testing.T) {
 	})
 	c1.Notify(t, "notifications/initialized", nil)
 
-	registerContainer(t, c1, 2, 133, "192.168.10.90", "archivebox", true)
+	registerContainer(t, s1, c1, 2, 133, "192.168.10.90", "archivebox", true)
 
 	// Verify it's there
 	listResp := c1.Call(t, 3, "tools/call", map[string]interface{}{
@@ -608,24 +733,16 @@ func TestContainerRegistryPersistence(t *testing.T) {
 // --- ssh_user tests ---
 
 func TestRegisterContainerWithSSHUser(t *testing.T) {
-	_, c := initClient(t)
+	s, c := initClient(t)
 
-	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "register_container",
-		"arguments": map[string]interface{}{
-			"ctid":          float64(9999),
-			"ip":            "192.168.10.104",
-			"hostname":      "corsair",
-			"has_relay_ssh": true,
-			"ssh_user":      "Lara Duong",
-		},
+	ct := registerContainerArgs(t, s, c, 2, map[string]interface{}{
+		"ctid":          float64(9999),
+		"ip":            "192.168.10.104",
+		"hostname":      "corsair",
+		"has_relay_ssh": true,
+		"ssh_user":      "Lara Duong",
 	})
 
-	if isErrorResponse(resp) {
-		t.Fatal("unexpected error")
-	}
-
-	ct := extractContainer(t, resp)
 	if ct.SSHUser != "Lara Duong" {
 		t.Errorf("expected ssh_user 'Lara Duong', got %q", ct.SSHUser)
 	}
@@ -635,15 +752,12 @@ func TestExecContainerCustomSSHUser(t *testing.T) {
 	s, c := initClient(t)
 
 	// Register with custom ssh_user
-	c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "register_container",
-		"arguments": map[string]interface{}{
-			"ctid":          float64(9999),
-			"ip":            "192.168.10.104",
-			"hostname":      "corsair",
-			"has_relay_ssh": true,
-			"ssh_user":      "Lara Duong",
-		},
+	registerContainerArgs(t, s, c, 2, map[string]interface{}{
+		"ctid":          float64(9999),
+		"ip":            "192.168.10.104",
+		"hostname":      "corsair",
+		"has_relay_ssh": true,
+		"ssh_user":      "Lara Duong",
 	})
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
@@ -674,7 +788,7 @@ func TestExecContainerDefaultSSHUser(t *testing.T) {
 	s, c := initClient(t)
 
 	// Register without ssh_user — should default to root
-	registerContainer(t, c, 2, 133, "192.168.10.90", "archivebox", true)
+	registerContainer(t, s, c, 2, 133, "192.168.10.90", "archivebox", true)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -697,32 +811,25 @@ func TestExecContainerDefaultSSHUser(t *testing.T) {
 }
 
 func TestSSHUserPreservedOnUpsert(t *testing.T) {
-	_, c := initClient(t)
+	s, c := initClient(t)
 
 	// Register with ssh_user
-	c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "register_container",
-		"arguments": map[string]interface{}{
-			"ctid":          float64(9999),
-			"ip":            "192.168.10.104",
-			"hostname":      "corsair",
-			"has_relay_ssh": true,
-			"ssh_user":      "Lara Duong",
-		},
+	registerContainerArgs(t, s, c, 2, map[string]interface{}{
+		"ctid":          float64(9999),
+		"ip":            "192.168.10.104",
+		"hostname":      "corsair",
+		"has_relay_ssh": true,
+		"ssh_user":      "Lara Duong",
 	})
 
 	// Upsert without ssh_user — should preserve existing value
-	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
-		"name": "register_container",
-		"arguments": map[string]interface{}{
-			"ctid":          float64(9999),
-			"ip":            "192.168.10.105",
-			"hostname":      "corsair-v2",
-			"has_relay_ssh": true,
-		},
+	ct := registerContainerArgs(t, s, c, 3, map[string]interface{}{
+		"ctid":          float64(9999),
+		"ip":            "192.168.10.105",
+		"hostname":      "corsair-v2",
+		"has_relay_ssh": true,
 	})
 
-	ct := extractContainer(t, resp)
 	if ct.IP != "192.168.10.105" {
 		t.Errorf("expected updated IP, got %s", ct.IP)
 	}
@@ -748,15 +855,12 @@ func TestSSHUserPersistence(t *testing.T) {
 	})
 	c1.Notify(t, "notifications/initialized", nil)
 
-	c1.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "register_container",
-		"arguments": map[string]interface{}{
-			"ctid":          float64(9999),
-			"ip":            "192.168.10.104",
-			"hostname":      "corsair",
-			"has_relay_ssh": true,
-			"ssh_user":      "Lara Duong",
-		},
+	registerContainerArgs(t, s1, c1, 2, map[string]interface{}{
+		"ctid":          float64(9999),
+		"ip":            "192.168.10.104",
+		"hostname":      "corsair",
+		"has_relay_ssh": true,
+		"ssh_user":      "Lara Duong",
 	})
 
 	s1.cmd.Process.Kill()
@@ -781,5 +885,198 @@ func TestSSHUserPersistence(t *testing.T) {
 	}
 	if list[0].SSHUser != "Lara Duong" {
 		t.Errorf("expected ssh_user 'Lara Duong' after restart, got %q", list[0].SSHUser)
+	}
+}
+
+// --- registry approval-gate tests (finding #23 part 2) ---
+//
+// register_container, delete_container, register_machine and delete_machine
+// used to mutate the registry synchronously from the MCP port, with no human
+// in the loop. They now queue a "registry_op" request like every other mutating
+// tool; these tests drive the full queue → approve → mutate path.
+
+// listMachines calls list_machines and parses the registry contents.
+func listMachines(t *testing.T, c *MCPClient, callID int) []Machine {
+	t.Helper()
+	resp := c.Call(t, callID, "tools/call", map[string]interface{}{
+		"name": "list_machines", "arguments": map[string]interface{}{},
+	})
+	var list []Machine
+	text := toolText(t, resp)
+	if err := json.Unmarshal([]byte(text), &list); err != nil {
+		t.Fatalf("failed to parse machine list: %v\nraw: %s", err, text)
+	}
+	return list
+}
+
+func TestDeleteContainerRequiresApproval(t *testing.T) {
+	s, c := initClient(t)
+
+	registerContainer(t, s, c, 2, 133, "192.168.10.90", "archivebox", true)
+
+	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
+		"name":      "delete_container",
+		"arguments": map[string]interface{}{"ctid": float64(133)},
+	})
+	requestID := extractPendingID(t, resp)
+
+	// Still registered until the human approves.
+	if list := listContainers(t, c, 4); len(list) != 1 {
+		t.Fatalf("expected the container to survive until approval, got %+v", list)
+	}
+
+	done := approveRequest(t, s, requestID)
+	if !strings.Contains(done.Result.Stdout, `"deleted":true`) {
+		t.Errorf("expected deleted:true in result stdout, got %q", done.Result.Stdout)
+	}
+
+	if list := listContainers(t, c, 5); len(list) != 0 {
+		t.Fatalf("expected empty registry after approved delete, got %+v", list)
+	}
+}
+
+// TestDeleteContainerUnregisteredFailsAfterApproval pins where the "not found"
+// error moved to: the MCP call can no longer know, so the failure surfaces on
+// the approved request instead of at submission time.
+func TestDeleteContainerUnregisteredFailsAfterApproval(t *testing.T) {
+	s, c := initClient(t)
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name":      "delete_container",
+		"arguments": map[string]interface{}{"ctid": float64(999)},
+	})
+	requestID := extractPendingID(t, resp)
+
+	code, body := WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/approve", s.WebURL(), requestID),
+		s.token, nil)
+	if code != 200 {
+		t.Fatalf("approve returned status %d, body %s", code, body)
+	}
+
+	done := waitForRequest(t, s, requestID)
+	if done.Status != "error" {
+		t.Fatalf("expected status error, got %s (%+v)", done.Status, done.Result)
+	}
+	if !strings.Contains(done.Result.Stderr, "not found") {
+		t.Errorf("expected a not-found error on stderr, got %q", done.Result.Stderr)
+	}
+}
+
+func TestRegisterMachineRequiresApproval(t *testing.T) {
+	s, c := initClient(t)
+
+	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "register_machine",
+		"arguments": map[string]interface{}{
+			"name":     "corsair-win",
+			"host":     "100.106.181.59",
+			"ssh_user": "esthie",
+			"shell":    "powershell",
+		},
+	})
+	requestID := extractPendingID(t, resp)
+
+	if list := listMachines(t, c, 3); len(list) != 0 {
+		t.Fatalf("machine registry mutated before approval: %+v", list)
+	}
+
+	approveRequest(t, s, requestID)
+
+	list := listMachines(t, c, 4)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 machine after approval, got %d", len(list))
+	}
+	if list[0].Name != "corsair-win" || list[0].Host != "100.106.181.59" {
+		t.Errorf("unexpected machine: %+v", list[0])
+	}
+	if list[0].SSHUser != "esthie" {
+		t.Errorf("expected ssh_user esthie, got %q", list[0].SSHUser)
+	}
+	if list[0].Shell != "powershell" {
+		t.Errorf("expected shell powershell, got %q", list[0].Shell)
+	}
+}
+
+func TestDeleteMachineRequiresApproval(t *testing.T) {
+	s, c := initClient(t)
+
+	regResp := c.Call(t, 2, "tools/call", map[string]interface{}{
+		"name": "register_machine",
+		"arguments": map[string]interface{}{
+			"name": "corsair-win", "host": "100.106.181.59", "ssh_user": "esthie",
+		},
+	})
+	approveRequest(t, s, extractPendingID(t, regResp))
+
+	delResp := c.Call(t, 3, "tools/call", map[string]interface{}{
+		"name":      "delete_machine",
+		"arguments": map[string]interface{}{"name": "corsair-win"},
+	})
+	requestID := extractPendingID(t, delResp)
+
+	if list := listMachines(t, c, 4); len(list) != 1 {
+		t.Fatalf("expected the machine to survive until approval, got %+v", list)
+	}
+
+	done := approveRequest(t, s, requestID)
+	if !strings.Contains(done.Result.Stdout, `"deleted":true`) {
+		t.Errorf("expected deleted:true in result stdout, got %q", done.Result.Stdout)
+	}
+
+	if list := listMachines(t, c, 5); len(list) != 0 {
+		t.Fatalf("expected empty machine registry after approved delete, got %+v", list)
+	}
+}
+
+// TestRegistryOpValidationStillRejectsAtSubmission confirms the arg validation
+// that used to guard the synchronous path still runs before anything is queued
+// — a malformed call must never reach the approval queue.
+func TestRegistryOpValidationStillRejectsAtSubmission(t *testing.T) {
+	s, c := initClient(t)
+
+	cases := []struct {
+		name string
+		tool string
+		args map[string]interface{}
+	}{
+		{"container missing ip", "register_container", map[string]interface{}{
+			"ctid": float64(133), "hostname": "archivebox",
+		}},
+		{"container option-injectable ssh_user", "register_container", map[string]interface{}{
+			"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox",
+			"ssh_user": "-oProxyCommand=id",
+		}},
+		{"machine bad name", "register_machine", map[string]interface{}{
+			"name": "a/b", "host": "1.2.3.4", "ssh_user": "esthie",
+		}},
+		{"machine bad shell", "register_machine", map[string]interface{}{
+			"name": "m", "host": "1.2.3.4", "ssh_user": "esthie", "shell": "fish",
+		}},
+		{"delete_machine missing name", "delete_machine", map[string]interface{}{}},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := c.Call(t, i+2, "tools/call", map[string]interface{}{
+				"name": tc.tool, "arguments": tc.args,
+			})
+			if !isErrorResponse(resp) {
+				t.Fatalf("expected a validation error, got: %s", toolText(t, resp))
+			}
+		})
+	}
+
+	// A rejected call must not leave anything in the approval queue.
+	code, body := WebGet(t, s.WebURL()+"/api/requests", s.token)
+	if code != 200 {
+		t.Fatalf("list requests: status %d", code)
+	}
+	var queued []RequestResult
+	if err := json.Unmarshal(body, &queued); err != nil {
+		t.Fatalf("parse requests: %v\nraw: %s", err, body)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("expected an empty approval queue, got %d requests", len(queued))
 	}
 }

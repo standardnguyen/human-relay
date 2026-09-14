@@ -119,7 +119,7 @@ func main() {
 	log.Printf("Permissions: %d allow, %d deny, %d ask from %s", len(rules.Allow), len(rules.Deny), len(rules.Ask), permPath)
 
 	cd := envInt("MHR_APPROVAL_COOLDOWN", 30)
-	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms))
+	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms), web.WithRegistries(containerStore, machineStore))
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 
@@ -159,8 +159,11 @@ func main() {
 
 	errCh := make(chan error, 2)
 
+	// The MCP port exposes the full tool surface (request_command, write_file,
+	// exec_container, ...), so it requires the same bearer token as the web API.
+	// No CSRF middleware here: nothing on this port is browser-originated.
 	go func() {
-		errCh <- http.ListenAndServe(fmt.Sprintf(":%d", mcpPort), mcpServer)
+		errCh <- http.ListenAndServe(fmt.Sprintf(":%d", mcpPort), web.AuthMiddleware(authToken, mcpServer))
 	}()
 
 	go func() {

@@ -8,12 +8,15 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/standardnguyen/human-relay/audit"
+	"github.com/standardnguyen/human-relay/containers"
 	"github.com/standardnguyen/human-relay/executor"
+	"github.com/standardnguyen/human-relay/machines"
 	"github.com/standardnguyen/human-relay/permissions"
 	"github.com/standardnguyen/human-relay/store"
 	"github.com/standardnguyen/human-relay/whitelist"
@@ -39,6 +42,8 @@ type Handler struct {
 	whitelist        *whitelist.Whitelist
 	permissions      *permissions.Permissions
 	scriptsDir       string
+	containerStore   *containers.Store
+	machineStore     *machines.Store
 }
 
 type HandlerOption func(*Handler)
@@ -64,6 +69,17 @@ func WithScriptsDir(dir string) HandlerOption {
 func WithPermissions(p *permissions.Permissions) HandlerOption {
 	return func(h *Handler) {
 		h.permissions = p
+	}
+}
+
+// WithRegistries wires the container and machine registries into the handler.
+// registry_op requests (register_container, delete_container, register_machine,
+// delete_machine) are queued by the MCP tools and applied here after approval,
+// so without this option those requests fail with "registry not configured".
+func WithRegistries(cs *containers.Store, ms *machines.Store) HandlerOption {
+	return func(h *Handler) {
+		h.containerStore = cs
+		h.machineStore = ms
 	}
 }
 
@@ -222,12 +238,22 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		h.lastApproval = time.Now()
 		h.cooldownMu.Unlock()
 
-		if action == "approve-gated" {
-			h.store.SetStatus(id, store.StatusApproved)
-			h.store.SetOutputGated(id)
-		} else {
-			h.store.SetStatus(id, store.StatusApproved)
+		// Atomic approve: the pending check above is only a fast, friendly
+		// rejection for an obviously-decided request. This is the authoritative
+		// guard -- it holds the store lock across lookup, pending check and
+		// mutation, so two concurrent approvals of the same request can never
+		// both execute it.
+		ok, approved := h.store.Approve(id, action == "approve-gated")
+		if !ok {
+			current := store.Status("decided")
+			if cur := h.store.Get(id); cur != nil {
+				current = cur.Status
+			}
+			log.Printf("request %s approve raced a concurrent decision (now %s), ignoring", id, current)
+			http.Error(w, fmt.Sprintf("request is already %s", current), http.StatusConflict)
+			return
 		}
+		req = approved
 		switch req.Type {
 		case "http":
 			log.Printf("request %s approved, executing: %s %s", id, req.HTTPMethod, req.HTTPURL)
@@ -253,6 +279,13 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 			h.audit.Log("request_approved", id, map[string]interface{}{
 				"type":   "script_create_then_run",
 				"script": req.ScriptName,
+			})
+		case "registry_op":
+			log.Printf("request %s approved, applying registry op: %s", id, req.RegistryOp)
+			h.audit.Log("request_approved", id, map[string]interface{}{
+				"type":          "registry_op",
+				"registry_op":   req.RegistryOp,
+				"registry_args": req.RegistryArgs,
 			})
 		default:
 			log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
@@ -419,27 +452,39 @@ func (h *Handler) watchUpdates() {
 	}
 }
 
+// whitelistKey maps a request to the (command, args) pair the whitelist is
+// keyed on. Both sides of the match go through it — watchRequests when
+// deciding whether an incoming request auto-approves, and handleWhitelist when
+// recording the rule an operator clicked — so the two cannot drift apart.
+//
+// Script creates include a hash of the script body in the key. Keying them on
+// the name alone made "whitelist this create_script" a standing grant to run
+// ANY future content submitted under that name with no human review.
+func whitelistKey(req *store.Request) (string, []string) {
+	switch req.Type {
+	case "http":
+		return req.HTTPMethod, []string{req.HTTPURL}
+	case "script":
+		return "run_script", []string{req.ScriptName}
+	case "script_create":
+		return "create_script", []string{req.ScriptName, store.StdinDigest(req.Stdin)}
+	case "script_create_then_run":
+		return "create_then_run", []string{req.ScriptName, store.StdinDigest(req.Stdin)}
+	}
+	return req.Command, req.Args
+}
+
 func (h *Handler) watchRequests() {
 	sub := h.store.Subscribe()
 	for id := range sub {
 		h.broadcastEvent("new", id)
 		if h.whitelist != nil {
 			req := h.store.Get(id)
-			wlCommand, wlArgs := req.Command, req.Args
-			if req.Type == "http" {
-				wlCommand = req.HTTPMethod
-				wlArgs = []string{req.HTTPURL}
-			} else if req.Type == "script" {
-				wlCommand = "run_script"
-				wlArgs = []string{req.ScriptName}
-			} else if req.Type == "script_create" {
-				wlCommand = "create_script"
-				wlArgs = []string{req.ScriptName}
-			} else if req.Type == "script_create_then_run" {
-				wlCommand = "create_then_run"
-				wlArgs = []string{req.ScriptName}
+			if req == nil {
+				continue
 			}
-			if rule, ok := h.whitelist.MatchRule(wlCommand, wlArgs); ok && req != nil && req.Status == store.StatusPending {
+			wlCommand, wlArgs := whitelistKey(req)
+			if rule, ok := h.whitelist.MatchRule(wlCommand, wlArgs); ok && req.Status == store.StatusPending {
 				h.autoApprove(req, rule.GateOutput)
 			}
 		}
@@ -447,12 +492,17 @@ func (h *Handler) watchRequests() {
 }
 
 func (h *Handler) autoApprove(req *store.Request, gateOutput bool) {
-	h.store.SetStatus(req.ID, store.StatusApproved)
-	if gateOutput {
-		// "Whitelist but gate outputs": execution is auto-approved, but the
-		// result stays output_gated until the human releases it.
-		h.store.SetOutputGated(req.ID)
+	// Same atomic guard as the manual approve path: the pending check in
+	// watchRequests is a separate read, so without this a whitelist
+	// auto-approval could race an operator click and execute the request twice.
+	// gateOutput means "whitelist but gate outputs": execution is auto-approved,
+	// but the result stays output_gated until the human releases it.
+	ok, approved := h.store.Approve(req.ID, gateOutput)
+	if !ok {
+		log.Printf("request %s auto-approve raced a concurrent decision, ignoring", req.ID)
+		return
 	}
+	req = approved
 	log.Printf("request %s auto-approved (whitelist, gated=%v): %s %v", req.ID, gateOutput, req.Command, req.Args)
 	h.audit.Log("request_auto_approved", req.ID, map[string]interface{}{
 		"command":     req.Command,
@@ -492,6 +542,8 @@ func (h *Handler) executeRequest(req *store.Request) {
 		result = h.executor.ExecuteScriptCreate(req, h.scriptsDir)
 	case "script_create_then_run":
 		result = h.executor.ExecuteScriptCreateThenRun(req, h.scriptsDir)
+	case "registry_op":
+		result = executeRegistryOp(req, h.containerStore, h.machineStore)
 	default:
 		result = h.executor.Execute(req)
 	}
@@ -517,6 +569,78 @@ func (h *Handler) executeRequest(req *store.Request) {
 	h.broadcastEvent("update", req.ID)
 }
 
+// executeRegistryOp applies an approved container/machine registry mutation.
+// The MCP tools (register_container, delete_container, register_machine,
+// delete_machine) validate their arguments and queue the request; the registry
+// is only touched here, after a human approved it in the dashboard. Success is
+// a zero-exit result whose stdout is the JSON the tool used to return
+// synchronously; failure is exit 1 with the error on stderr.
+func executeRegistryOp(req *store.Request, cs *containers.Store, ms *machines.Store) *store.Result {
+	args := req.RegistryArgs
+	switch req.RegistryOp {
+	case "register_container":
+		if cs == nil {
+			return registryFailure("container registry not configured")
+		}
+		ctid, err := strconv.Atoi(args["ctid"])
+		if err != nil {
+			return registryFailure(fmt.Sprintf("invalid ctid %q: %v", args["ctid"], err))
+		}
+		c, err := cs.Register(ctid, args["ip"], args["hostname"], args["has_relay_ssh"] == "true", args["ssh_user"])
+		if err != nil {
+			return registryFailure(fmt.Sprintf("failed to register container: %v", err))
+		}
+		return registrySuccess(c)
+
+	case "delete_container":
+		if cs == nil {
+			return registryFailure("container registry not configured")
+		}
+		ctid, err := strconv.Atoi(args["ctid"])
+		if err != nil {
+			return registryFailure(fmt.Sprintf("invalid ctid %q: %v", args["ctid"], err))
+		}
+		if err := cs.Delete(ctid); err != nil {
+			return registryFailure(fmt.Sprintf("failed to delete container: %v", err))
+		}
+		return registrySuccess(map[string]interface{}{"ctid": ctid, "deleted": true})
+
+	case "register_machine":
+		if ms == nil {
+			return registryFailure("machine registry not configured")
+		}
+		m, err := ms.Register(args["name"], args["host"], args["ssh_user"], args["shell"], args["identity_file"])
+		if err != nil {
+			return registryFailure(fmt.Sprintf("failed to register machine: %v", err))
+		}
+		return registrySuccess(m)
+
+	case "delete_machine":
+		if ms == nil {
+			return registryFailure("machine registry not configured")
+		}
+		if err := ms.Delete(args["name"]); err != nil {
+			return registryFailure(fmt.Sprintf("failed to delete machine: %v", err))
+		}
+		return registrySuccess(map[string]interface{}{"name": args["name"], "deleted": true})
+
+	default:
+		return registryFailure(fmt.Sprintf("unknown registry op %q", req.RegistryOp))
+	}
+}
+
+func registrySuccess(v interface{}) *store.Result {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return registryFailure(fmt.Sprintf("marshal registry result: %v", err))
+	}
+	return &store.Result{ExitCode: 0, Stdout: string(data)}
+}
+
+func registryFailure(msg string) *store.Result {
+	return &store.Result{ExitCode: 1, Stderr: msg}
+}
+
 func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 	if h.whitelist == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -532,21 +656,40 @@ func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var body struct {
+			// RequestID names the request being whitelisted. When present the
+			// rule's key is derived server-side from the stored request via
+			// whitelistKey — the same function the auto-approve path matches
+			// with — instead of being taken from the client. That is what lets
+			// script creates key on a body hash the browser never sees.
+			RequestID  string   `json:"request_id"`
 			Command    string   `json:"command"`
 			Args       []string `json:"args"`
 			GateOutput bool     `json:"gate_output"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Command == "" {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		command, wlArgs := body.Command, body.Args
+		if body.RequestID != "" {
+			req := h.store.Get(body.RequestID)
+			if req == nil {
+				http.Error(w, "request not found", http.StatusNotFound)
+				return
+			}
+			command, wlArgs = whitelistKey(req)
+		}
+		if command == "" {
 			http.Error(w, "command is required", http.StatusBadRequest)
 			return
 		}
-		h.whitelist.Add(body.Command, body.Args, body.GateOutput)
+		h.whitelist.Add(command, wlArgs, body.GateOutput)
 		if err := h.whitelist.Save(); err != nil {
 			log.Printf("whitelist save error: %v", err)
 		}
-		h.audit.Log("whitelist_add", "", map[string]interface{}{
-			"command":     body.Command,
-			"args":        body.Args,
+		h.audit.Log("whitelist_add", body.RequestID, map[string]interface{}{
+			"command":     command,
+			"args":        wlArgs,
 			"gate_output": body.GateOutput,
 		})
 		w.Header().Set("Content-Type", "application/json")

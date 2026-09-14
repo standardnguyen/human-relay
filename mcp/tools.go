@@ -20,10 +20,50 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+// commandToolProps is the input schema shared by the two explicit command tools
+// (request_command_for_relay / request_command_for_host). They differ only in
+// whether they take a `host`, so one builder keeps the pair from drifting.
+func commandToolProps(withHost bool) map[string]Property {
+	props := map[string]Property{
+		"command": {
+			Type:        "string",
+			Description: "The command/binary to execute",
+		},
+		"args": {
+			Type:        "array",
+			Description: "Arguments to pass to the command. Each element is passed as its own argv entry (quoted for the remote shell on the host route), so spaces and shell metacharacters inside an argument are not re-split.",
+			Items:       &Items{Type: "string"},
+		},
+		"reason": {
+			Type:        "string",
+			Description: "Why this command needs to be run (shown to the human reviewer)",
+		},
+		"working_dir": {
+			Type:        "string",
+			Description: "Working directory for command execution (relay route only; the host route rejects it)",
+		},
+		"shell": {
+			Type:        "boolean",
+			Description: "If true, run via sh -c (allows pipes/redirects but less secure). Default false.",
+		},
+		"timeout": {
+			Type:        "integer",
+			Description: "Command timeout in seconds (default: server default, max: server max)",
+		},
+	}
+	if withHost {
+		props["host"] = Property{
+			Type:        "string",
+			Description: "Host to run the command on (IP or hostname). Defaults to the configured Proxmox host.",
+		}
+	}
+	return props
+}
+
 var ToolDefinitions = []Tool{
 	{
 		Name:        "request_command",
-		Description: "Submit a command for human approval. Returns a request ID that can be used to poll for the result.",
+		Description: "🔴 RETIRED 2026-09-14 — every call to this name is REJECTED with an explanation. It ran in the relay container but never said so, which is how a command meant for the host came back with `pct: not found` and a command meant for the relay got hand-wrapped in ssh. Use `request_command_for_relay` (runs in the relay container, CTID 131) or `request_command_for_host` (the relay builds the ssh itself).",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -58,6 +98,26 @@ var ToolDefinitions = []Tool{
 		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
 	},
 	{
+		Name:        "request_command_for_relay",
+		Description: "Submit a command for human approval that runs INSIDE THE RELAY CONTAINER (Docker, CTID 131). `pct`, `qm` and other Proxmox host binaries are NOT in PATH here, and it is a different filesystem from every host you write to. For a command that must run on the Proxmox host, use request_command_for_host. Returns a request ID for get_result.",
+		InputSchema: InputSchema{
+			Type:       "object",
+			Properties: commandToolProps(false),
+			Required:   []string{"command", "reason"},
+		},
+		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
+	},
+	{
+		Name:        "request_command_for_host",
+		Description: "Submit a command for human approval that runs ON THE PROXMOX HOST via ssh. The relay builds the ssh invocation itself (`ssh root@<host> -- <command> <args...>`), so arguments are passed as argv and a shell never re-splits them - you do not hand-roll the ssh wrapper, which is where `&&`/pipe/quote mangling used to silently run the wrong half of a command. `host` defaults to the configured Proxmox host. For a command that runs in the relay container, use request_command_for_relay.",
+		InputSchema: InputSchema{
+			Type:       "object",
+			Properties: commandToolProps(true),
+			Required:   []string{"command", "reason"},
+		},
+		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
+	},
+	{
 		Name:        "get_result",
 		Description: "Get the result of a previously submitted command request. Supports blocking poll — if timeout is set, the server will hold the connection until the request is decided or the timeout expires.",
 		InputSchema: InputSchema{
@@ -65,7 +125,7 @@ var ToolDefinitions = []Tool{
 			Properties: map[string]Property{
 				"request_id": {
 					Type:        "string",
-					Description: "The request ID returned by request_command",
+					Description: "The request ID returned by request_command_for_relay, request_command_for_host, write_file, exec_container, or any other approving tool.",
 				},
 				"timeout": {
 					Type:        "integer",
@@ -93,7 +153,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "register_container",
-		Description: "Register or update a container in the relay's container registry. Instant — no human approval needed.",
+		Description: "Register or update a container in the relay's container registry. Requires human approval — returns a request ID that can be used to poll for the result; the registry is only written once the human approves.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -135,7 +195,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "delete_container",
-		Description: "Remove a container from the relay's container registry. Use this to retire stale or recycled CTID registrations (e.g. a deprecated pseudo-CTID now migrated to the machine registry). Does NOT touch the actual container — only the registry entry. Instant — no human approval needed.",
+		Description: "Remove a container from the relay's container registry. Use this to retire stale or recycled CTID registrations (e.g. a deprecated pseudo-CTID now migrated to the machine registry). Does NOT touch the actual container — only the registry entry. Requires human approval — returns a request ID that can be used to poll for the result.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -186,7 +246,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "register_machine",
-		Description: "Register or update a non-LXC SSH target (Windows workstation, bare-metal host, VM, WSL instance) in the relay's machine registry, keyed by a string name. This is the first-class home for SSH targets that aren't Proxmox containers — use it instead of registering a fake 'pseudo-CTID' in the container registry. Instant — no human approval needed.",
+		Description: "Register or update a non-LXC SSH target (Windows workstation, bare-metal host, VM, WSL instance) in the relay's machine registry, keyed by a string name. This is the first-class home for SSH targets that aren't Proxmox containers — use it instead of registering a fake 'pseudo-CTID' in the container registry. Requires human approval — returns a request ID that can be used to poll for the result; the registry is only written once the human approves.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -228,7 +288,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "delete_machine",
-		Description: "Remove a machine from the relay's machine registry. Instant — no human approval needed.",
+		Description: "Remove a machine from the relay's machine registry. Requires human approval — returns a request ID that can be used to poll for the result.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -525,7 +585,7 @@ var ToolDefinitions = []Tool{
 			Properties: map[string]Property{
 				"request_id": {
 					Type:        "string",
-					Description: "The request ID returned by a previous tool call (request_command, write_file, http_request, run_script, etc.)",
+					Description: "The request ID returned by a previous tool call (request_command_for_relay, request_command_for_host, write_file, http_request, run_script, etc.)",
 				},
 				"reason": {
 					Type:        "string",
@@ -597,7 +657,11 @@ func (h *ToolHandler) sshPrefix() []string {
 func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallToolResult {
 	switch name {
 	case "request_command":
-		return h.requestCommand(args)
+		return h.requestCommandRetired(args)
+	case "request_command_for_relay":
+		return h.requestCommandForRelay(args)
+	case "request_command_for_host":
+		return h.requestCommandForHost(args)
 	case "get_result":
 		return h.getResult(args)
 	case "list_requests":
@@ -639,59 +703,152 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 	}
 }
 
-func (h *ToolHandler) requestCommand(args map[string]interface{}) *CallToolResult {
-	command, _ := args["command"].(string)
-	reason, _ := args["reason"].(string)
-	if command == "" || reason == "" {
-		return errorResult("command and reason are required")
-	}
+// commandRequest is the validated input shared by the two explicit command
+// tools: same shape, different destination.
+type commandRequest struct {
+	command    string
+	args       []string
+	reason     string
+	workingDir string
+	shell      bool
+	timeout    int
+}
 
-	var cmdArgs []string
+func parseCommandRequest(args map[string]interface{}) (*commandRequest, *CallToolResult) {
+	cr := &commandRequest{}
+	cr.command, _ = args["command"].(string)
+	cr.reason, _ = args["reason"].(string)
+	if cr.command == "" || cr.reason == "" {
+		return nil, errorResult("command and reason are required")
+	}
 	if rawArgs, ok := args["args"].([]interface{}); ok {
 		for _, a := range rawArgs {
 			if s, ok := a.(string); ok {
-				cmdArgs = append(cmdArgs, s)
+				cr.args = append(cr.args, s)
 			}
 		}
 	}
-
-	workingDir, _ := args["working_dir"].(string)
-	shell, _ := args["shell"].(bool)
-
-	timeout := 0
+	cr.workingDir, _ = args["working_dir"].(string)
+	cr.shell, _ = args["shell"].(bool)
 	if t, ok := args["timeout"].(float64); ok {
-		timeout = int(t)
+		cr.timeout = int(t)
 	}
-
 	// Hard rejection for bash/sh -c arg-splitting (non-shell mode only;
 	// shell mode gets an advisory warning in detectWarnings).
-	if !shell {
-		if errMsg := checkBashCArgSplitting(command, cmdArgs); errMsg != "" {
-			return errorResult(errMsg)
+	if !cr.shell {
+		if errMsg := checkBashCArgSplitting(cr.command, cr.args); errMsg != "" {
+			return nil, errorResult(errMsg)
 		}
 	}
+	return cr, nil
+}
 
-	r := h.store.Add(command, cmdArgs, reason, workingDir, shell, timeout)
-
-	h.audit.Log("request_created", r.ID, map[string]interface{}{
-		"tool":        "request_command",
-		"command":     command,
-		"args":        cmdArgs,
-		"reason":      reason,
-		"working_dir": workingDir,
-		"shell":       shell,
-		"timeout":     timeout,
-	})
-
+func commandPendingResult(r *store.Request, cr *commandRequest) *CallToolResult {
 	result := map[string]interface{}{
 		"request_id": r.ID,
 		"status":     "pending",
 	}
-	if warnings := detectWarnings(command, cmdArgs, shell); len(warnings) > 0 {
+	if warnings := detectWarnings(cr.command, cr.args, cr.shell); len(warnings) > 0 {
 		result["warnings"] = warnings
 	}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))
+}
+
+// requestCommandRetired is the loud half of the 2026-09-14 split. The old name
+// ran in the relay container and said nothing about it, so the destination was
+// invisible at the call site: a command meant for the host came back `pct: not
+// found`, and a command meant for the relay got hand-wrapped in ssh, where a
+// pipe or `&&` can execute the second half in the relay's shell instead of on
+// the host. Rejecting it - rather than aliasing it - is deliberate: an alias
+// would keep the ambiguity, just under a longer name.
+func (h *ToolHandler) requestCommandRetired(args map[string]interface{}) *CallToolResult {
+	return errorResult("request_command is RETIRED (2026-09-14) and executes nothing. It ran inside the relay container (CTID 131) without saying so, so a caller could not tell where a command would land. Use request_command_for_relay (runs in the relay container - `pct`, `qm` and other Proxmox host binaries are NOT in PATH there) or request_command_for_host (runs on the Proxmox host, with the relay building the ssh invocation). THIS CALL, HAD IT RUN, WOULD HAVE EXECUTED INSIDE THE RELAY CONTAINER.")
+}
+
+// requestCommandForRelay is the old request_command with its destination made
+// explicit in the name.
+func (h *ToolHandler) requestCommandForRelay(args map[string]interface{}) *CallToolResult {
+	cr, errRes := parseCommandRequest(args)
+	if errRes != nil {
+		return errRes
+	}
+
+	r := h.store.Add(cr.command, cr.args, cr.reason, cr.workingDir, cr.shell, cr.timeout)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":        "request_command_for_relay",
+		"route":       "relay_container",
+		"command":     cr.command,
+		"args":        cr.args,
+		"reason":      cr.reason,
+		"working_dir": cr.workingDir,
+		"shell":       cr.shell,
+		"timeout":     cr.timeout,
+	})
+
+	return commandPendingResult(r, cr)
+}
+
+// requestCommandForHost runs the command on the Proxmox host. The relay builds
+// the ssh argv itself, which is the whole point: the caller does not hand-roll
+// `ssh root@host 'a && b'`, so there is no outer shell to re-split it and no
+// way for the second half of a chain to run in the relay container instead of
+// on the host (see the relay docs' gotcha on inline ssh). Every element is
+// shell-quoted because the remote side passes ssh's joined argv through a
+// shell, so an unquoted argument with a space would arrive as two arguments.
+func (h *ToolHandler) requestCommandForHost(args map[string]interface{}) *CallToolResult {
+	cr, errRes := parseCommandRequest(args)
+	if errRes != nil {
+		return errRes
+	}
+
+	host, _ := args["host"].(string)
+	if host == "" {
+		host = h.hostIP
+	}
+	if !validHostRe.MatchString(host) {
+		return errorResult("host must be an IP address or hostname (letters, digits, dot, dash, underscore)")
+	}
+
+	// working_dir is a relay-local concept. Over ssh it would set a directory on
+	// the relay's own filesystem, not the host's, which is not what any caller
+	// means - so reject it instead of quietly ignoring it.
+	if cr.workingDir != "" {
+		return errorResult("working_dir is not supported for host commands: it would set a directory on the RELAY's filesystem, not the host's. Use shell:true and `cd <dir> && <command>` to change directory on the host.")
+	}
+
+	sshArgs := h.sshPrefix()
+	sshArgs = append(sshArgs, fmt.Sprintf("root@%s", host), "--")
+	if cr.shell {
+		full := cr.command
+		if len(cr.args) > 0 {
+			full += " " + strings.Join(cr.args, " ")
+		}
+		sshArgs = append(sshArgs, "sh", "-c", shellQuote(full))
+	} else {
+		sshArgs = append(sshArgs, shellQuote(cr.command))
+		for _, a := range cr.args {
+			sshArgs = append(sshArgs, shellQuote(a))
+		}
+	}
+
+	// The reviewer decides on this line, so the destination has to be in it.
+	prefixedReason := fmt.Sprintf("[HOST %s - runs on the Proxmox host, NOT in the relay container] %s", host, cr.reason)
+	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, cr.timeout)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":    "request_command_for_host",
+		"route":   "proxmox_host",
+		"host":    host,
+		"command": cr.command,
+		"args":    cr.args,
+		"reason":  cr.reason,
+		"shell":   cr.shell,
+		"timeout": cr.timeout,
+	})
+
+	return commandPendingResult(r, cr)
 }
 
 func (h *ToolHandler) getResult(args map[string]interface{}) *CallToolResult {
@@ -741,25 +898,38 @@ func (h *ToolHandler) listRequests(args map[string]interface{}) *CallToolResult 
 	}
 
 	requests := h.store.List(filter)
+	// Gating is per-request, so it has to be applied per-request here too:
+	// marshaling the raw list would hand back every gated request's real
+	// stdout/stderr in one call and bypass the gate entirely.
+	for i, r := range requests {
+		requests[i] = redactIfGated(r)
+	}
 	data, _ := json.Marshal(requests)
 	return textResult(string(data))
 }
 
-func requestResult(r *store.Request) *CallToolResult {
-	if r.OutputGated && r.Result != nil {
-		gated := *r
-		gr := *r.Result
-		stdoutLen := len(gr.Stdout)
-		stderrLen := len(gr.Stderr)
-		gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
-		if stderrLen > 0 {
-			gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
-		}
-		gated.Result = &gr
-		data, _ := json.Marshal(gated)
-		return textResult(string(data))
+// redactIfGated returns r untouched when its output isn't gated, and a copy
+// with stdout/stderr replaced by placeholders when it is. Every agent-facing
+// path that marshals a store.Request must run it through this — get_result and
+// list_requests both do.
+func redactIfGated(r *store.Request) *store.Request {
+	if r == nil || !r.OutputGated || r.Result == nil {
+		return r
 	}
-	data, _ := json.Marshal(r)
+	gated := *r
+	gr := *r.Result
+	stdoutLen := len(gr.Stdout)
+	stderrLen := len(gr.Stderr)
+	gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
+	if stderrLen > 0 {
+		gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
+	}
+	gated.Result = &gr
+	return &gated
+}
+
+func requestResult(r *store.Request) *CallToolResult {
+	data, _ := json.Marshal(redactIfGated(r))
 	return textResult(string(data))
 }
 
@@ -798,12 +968,41 @@ func (h *ToolHandler) registerContainer(args map[string]interface{}) *CallToolRe
 		return errorResult("ssh_user must not begin with '-' (ssh would parse it as an option)")
 	}
 
-	c, err := h.containers.Register(ctid, ip, hostname, hasRelaySSH, sshUser)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to register container: %v", err))
+	regArgs := map[string]string{
+		"ctid":          strconv.Itoa(ctid),
+		"ip":            ip,
+		"hostname":      hostname,
+		"has_relay_ssh": strconv.FormatBool(hasRelaySSH),
+	}
+	if sshUser != "" {
+		regArgs["ssh_user"] = sshUser
 	}
 
-	data, _ := json.Marshal(c)
+	reason := fmt.Sprintf("register container CTID %d at %s (%s), has_relay_ssh=%t", ctid, ip, hostname, hasRelaySSH)
+	if sshUser != "" {
+		reason += fmt.Sprintf(", ssh_user=%s", sshUser)
+	}
+	return h.queueRegistryOp("register_container", regArgs, reason)
+}
+
+// queueRegistryOp files an already-validated registry mutation as a pending
+// request. The registry is only touched after a human approves — see
+// web.executeRegistryOp. Shared by the four register/delete tools.
+func (h *ToolHandler) queueRegistryOp(op string, regArgs map[string]string, reason string) *CallToolResult {
+	r := h.store.AddRegistryOp(op, regArgs, reason)
+	h.store.SetDisplayCommand(r.ID, reason)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":          op,
+		"registry_op":   op,
+		"registry_args": regArgs,
+		"reason":        reason,
+	})
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+	})
 	return textResult(string(data))
 }
 
@@ -824,12 +1023,11 @@ func (h *ToolHandler) deleteContainer(args map[string]interface{}) *CallToolResu
 	if ctid == 0 {
 		return errorResult("ctid is required and must be > 0")
 	}
-	if err := h.containers.Delete(ctid); err != nil {
-		return errorResult(fmt.Sprintf("failed to delete container: %v", err))
-	}
-	result := map[string]interface{}{"ctid": ctid, "deleted": true}
-	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return h.queueRegistryOp(
+		"delete_container",
+		map[string]string{"ctid": strconv.Itoa(ctid)},
+		fmt.Sprintf("delete container CTID %d from the relay registry", ctid),
+	)
 }
 
 func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult {
@@ -963,8 +1161,9 @@ var validMachineNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // Only the leading-dash shape is dangerous here — these sinks pass a single
 // argv token with no shell, so spaces and other chars in a username (e.g. the
 // legitimately-supported "Lara Duong") are harmless. See the 2026-07-31
-// security review. NOTE: the shell-form writeFileFromSource sink is a separate
-// (post-approval) concern tracked as its own finding, not addressed here.
+// security review. NOTE: this check is NOT a shell guard and must never be
+// relied on as one — the shell-form writeFileFromSource sink defends itself by
+// shellQuote'ing the user@ip token (finding #6).
 func sshUserInjectable(u string) bool {
 	return strings.HasPrefix(u, "-")
 }
@@ -1005,12 +1204,21 @@ func (h *ToolHandler) registerMachine(args map[string]interface{}) *CallToolResu
 		return errorResult("identity_file must be an absolute path")
 	}
 
-	m, err := h.machines.Register(name, host, sshUser, shell, identityFile)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to register machine: %v", err))
+	regArgs := map[string]string{
+		"name":     name,
+		"host":     host,
+		"ssh_user": sshUser,
 	}
-	data, _ := json.Marshal(m)
-	return textResult(string(data))
+	reason := fmt.Sprintf("register machine %s at %s as user %s", name, host, sshUser)
+	if shell != "" {
+		regArgs["shell"] = shell
+		reason += fmt.Sprintf(", shell=%s", shell)
+	}
+	if identityFile != "" {
+		regArgs["identity_file"] = identityFile
+		reason += fmt.Sprintf(", identity_file=%s", identityFile)
+	}
+	return h.queueRegistryOp("register_machine", regArgs, reason)
 }
 
 func (h *ToolHandler) listMachines(args map[string]interface{}) *CallToolResult {
@@ -1036,12 +1244,11 @@ func (h *ToolHandler) deleteMachine(args map[string]interface{}) *CallToolResult
 	if name == "" {
 		return errorResult("name is required")
 	}
-	if err := h.machines.Delete(name); err != nil {
-		return errorResult(fmt.Sprintf("failed to delete machine: %v", err))
-	}
-	result := map[string]interface{}{"name": name, "deleted": true}
-	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return h.queueRegistryOp(
+		"delete_machine",
+		map[string]string{"name": name},
+		fmt.Sprintf("delete machine %s from the relay registry", name),
+	)
 }
 
 // machineSSHBase returns the ssh arg prefix for a machine up to and including
@@ -1343,10 +1550,10 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 	}
 	prefixedReason := fmt.Sprintf("[SCRIPT %s%s %dB] %s\n---\n%s", name, ext, len(content), reason, preview)
 
-	r := h.store.AddScript(name, nil, prefixedReason, 0)
-	r.Type = "script_create"
-	// Store script content for execution (writing to disk)
-	h.store.SetStdin(r.ID, []byte(content))
+	// Script content rides in at construction (it is what gets written to disk,
+	// and what the whitelist keys on) — never assigned after the request is
+	// published into the store.
+	r := h.store.AddScriptTyped("script_create", name, nil, prefixedReason, 0, []byte(content))
 
 	displayCmd := fmt.Sprintf("create_script %s (%dB)", name, len(content))
 	h.store.SetDisplayCommand(r.ID, displayCmd)
@@ -1442,9 +1649,7 @@ func (h *ToolHandler) createThenRun(args map[string]interface{}) *CallToolResult
 	prefixedReason := fmt.Sprintf("[CREATE+RUN %s%s %dB]%s %s\n---\n%s",
 		targetName, ext, len(content), argsStr, reason, preview)
 
-	r := h.store.AddScript(targetName, scriptArgs, prefixedReason, timeout)
-	r.Type = "script_create_then_run"
-	h.store.SetStdin(r.ID, []byte(content))
+	r := h.store.AddScriptTyped("script_create_then_run", targetName, scriptArgs, prefixedReason, timeout, []byte(content))
 
 	displayCmd := fmt.Sprintf("create_then_run %s%s (%dB)", targetName, ext, len(content))
 	if len(scriptArgs) > 0 {
@@ -1621,8 +1826,12 @@ var bashCShellRe = regexp.MustCompile(`\b(?:bash|sh)\s+-c\s+([^\s'"` + "`" + `]+
 // writeFileFromSource handles write_file with source_path: the relay pulls the
 // file over SSH from the source and pipes it into the destination write as a
 // single shell pipeline. No bytes transit the agent context or the request
-// store. Both paths are validated by validPathRe and hosts by validHostRe, so
-// shell interpolation is safe.
+// store. Both paths are validated by validPathRe and hosts by validHostRe.
+//
+// The pipeline string is executed by "sh -c" (executor.Execute, shell mode), so
+// every registry-supplied value interpolated into it MUST be shellQuote'd — the
+// registry's ssh_user and ip fields are only checked for the leading-dash argv
+// shape (sshUserInjectable), never for shell metacharacters. See finding #6.
 func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, reason, sourcePath, sourceHost string, sourceCtid int) *CallToolResult {
 	mode := "0644"
 	if m, ok := args["mode"].(string); ok && m != "" {
@@ -1672,7 +1881,7 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 			if c.SSHUser != "" {
 				u = c.SSHUser
 			}
-			srcCmd = fmt.Sprintf("%s %s@%s -- cat %s", sshBin, u, c.IP, shellQuote(sourcePath))
+			srcCmd = fmt.Sprintf("%s %s -- cat %s", sshBin, shellQuote(u+"@"+c.IP), shellQuote(sourcePath))
 		} else {
 			srcCmd = fmt.Sprintf("%s root@%s -- pct exec %d -- cat %s", sshBin, h.hostIP, c.CTID, shellQuote(sourcePath))
 		}
@@ -1707,8 +1916,8 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 			if c.SSHUser != "" {
 				u = c.SSHUser
 			}
-			dstCmd = fmt.Sprintf(`%s %s@%s -- "cat > %s && chmod %s %s"`,
-				sshBin, u, c.IP, shellQuote(path), mode, shellQuote(path))
+			dstCmd = fmt.Sprintf(`%s %s -- "cat > %s && chmod %s %s"`,
+				sshBin, shellQuote(u+"@"+c.IP), shellQuote(path), mode, shellQuote(path))
 		} else {
 			route = "pct_push"
 			tmpFile := fmt.Sprintf("/tmp/mhr-%d", time.Now().UnixNano())
@@ -1766,8 +1975,13 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 
 	r := h.store.Add(full, nil, prefixedReason, "", true, timeout)
 
-	displayCmd := fmt.Sprintf("stream %s:%s -> %s:%s  [mode %s]",
-		srcTarget, sourcePath, dstTarget, path, mode)
+	// display_command REPLACES the raw command in the approval pane, so the
+	// friendly summary alone would hide the pipeline the relay is about to run
+	// under "sh -c". Show both: a malformed or hostile registry field (an
+	// ssh_user full of metacharacters, say) is then visible to the reviewer
+	// independent of the quoting above — defense in depth, not the fix.
+	displayCmd := fmt.Sprintf("stream %s:%s -> %s:%s  [mode %s]\n%s",
+		srcTarget, sourcePath, dstTarget, path, mode, truncateCommand(full, maxDisplayCommandBytes))
 	h.store.SetDisplayCommand(r.ID, displayCmd)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
@@ -1871,6 +2085,23 @@ func (h *ToolHandler) buildFormFile(raw map[string]interface{}) (*store.FormFile
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// maxDisplayCommandBytes caps how much of a constructed command is rendered in
+// the approval pane. Long enough that a realistic pipeline is shown whole.
+const maxDisplayCommandBytes = 800
+
+// truncateCommand renders a command string for a human reviewer, cutting it at
+// max bytes with a visible marker so a truncated tail can never be mistaken for
+// the end of the command.
+func truncateCommand(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	// ASCII-only marker: the non-ASCII request scan (finding #24) treats any
+	// non-ASCII rune in a request field as a homoglyph banner, and this text is
+	// the relay's own, not the agent's.
+	return s[:max] + fmt.Sprintf("... [truncated, %d bytes total]", len(s))
 }
 
 // shellMetachars are characters/sequences that only work when interpreted by a shell.
@@ -2059,8 +2290,14 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	}
 	machineName, _ := args["machine"].(string)
 	host, _ := args["host"].(string)
-	if host == "" {
-		host = h.hostIP
+	// 🔴 No default target (2026-09-14). `host` used to fall back to the Proxmox
+	// host, so a call that meant a container and forgot its target wrote to the
+	// hypervisor instead - and reported success with target 192.168.10.50, which
+	// reads as confirmation. The default cost at least one wrong-machine write.
+	// Require the target explicitly, and have the error name every way to give
+	// one; a caller that genuinely means the host says so.
+	if host == "" && ctid == 0 && machineName == "" {
+		return errorResult("no target: pass ctid=<n> (registered container), machine=<name> (registered machine), or host=<ip> (the Proxmox host). write_file no longer defaults to the host.")
 	}
 
 	timeout := 0

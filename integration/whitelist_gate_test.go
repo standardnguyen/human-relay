@@ -54,7 +54,7 @@ func TestWhitelistGateOutputAutoApprovesButGates(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"secret"},
@@ -125,7 +125,7 @@ func TestWhitelistGateOutputEmptyAutoReleases(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "true",
 			"args":    []string{},

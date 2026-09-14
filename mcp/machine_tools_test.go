@@ -29,17 +29,12 @@ func reqFromResult(t *testing.T, h *ToolHandler, result *CallToolResult) (string
 	return r.Reason, r.Args, r.Stdin
 }
 
+// registerWin seeds the machine registry directly — register_machine is
+// approval-gated (finding #23 part 2) and only queues a request, so tests that
+// need a registered Windows machine as a precondition bypass the tool.
 func registerWin(t *testing.T, h *ToolHandler) {
 	t.Helper()
-	res := h.Handle("register_machine", map[string]interface{}{
-		"name":     "corsair-win",
-		"host":     "100.106.181.59",
-		"ssh_user": "esthie",
-		"shell":    "powershell",
-	})
-	if res.IsError {
-		t.Fatalf("register_machine: %s", res.Content[0].Text)
-	}
+	seedMachine(t, h, "corsair-win", "100.106.181.59", "esthie", machines.ShellPowerShell)
 }
 
 func TestRegisterMachineValidation(t *testing.T) {
@@ -66,6 +61,28 @@ func TestRegisterMachineValidation(t *testing.T) {
 
 func TestRegisterListDeleteMachine(t *testing.T) {
 	h := setup(t)
+
+	// register_machine queues rather than writing the registry (finding #23 part 2).
+	regRes := h.Handle("register_machine", map[string]interface{}{
+		"name":     "corsair-win",
+		"host":     "100.106.181.59",
+		"ssh_user": "esthie",
+		"shell":    "powershell",
+	})
+	regReq := assertRegistryOpQueued(t, h, regRes, "register_machine")
+	for k, want := range map[string]string{
+		"name": "corsair-win", "host": "100.106.181.59",
+		"ssh_user": "esthie", "shell": "powershell",
+	} {
+		if got := regReq.RegistryArgs[k]; got != want {
+			t.Errorf("registry_args[%q]: expected %q, got %q", k, want, got)
+		}
+	}
+	if listRes := h.Handle("list_machines", map[string]interface{}{}); !strings.Contains(listRes.Content[0].Text, "[]") {
+		t.Fatalf("registry mutated before approval: %s", listRes.Content[0].Text)
+	}
+
+	// Seed directly so list + delete have something to work with.
 	registerWin(t, h)
 
 	listRes := h.Handle("list_machines", map[string]interface{}{})
@@ -78,12 +95,13 @@ func TestRegisterListDeleteMachine(t *testing.T) {
 	}
 
 	delRes := h.Handle("delete_machine", map[string]interface{}{"name": "corsair-win"})
-	if delRes.IsError {
-		t.Fatalf("delete: %s", delRes.Content[0].Text)
+	delReq := assertRegistryOpQueued(t, h, delRes, "delete_machine")
+	if delReq.RegistryArgs["name"] != "corsair-win" {
+		t.Fatalf("expected name corsair-win in registry_args, got %+v", delReq.RegistryArgs)
 	}
 	listRes = h.Handle("list_machines", map[string]interface{}{})
-	if !strings.Contains(listRes.Content[0].Text, "[]") {
-		t.Fatalf("expected empty list, got %s", listRes.Content[0].Text)
+	if strings.Contains(listRes.Content[0].Text, "[]") {
+		t.Fatalf("machine removed before approval: %s", listRes.Content[0].Text)
 	}
 }
 
@@ -123,9 +141,7 @@ func TestExecMachinePowerShell(t *testing.T) {
 
 func TestExecMachinePosixDirectArgs(t *testing.T) {
 	h := setup(t)
-	h.Handle("register_machine", map[string]interface{}{
-		"name": "wsl", "host": "100.106.181.59", "ssh_user": "gpu", "shell": "posix",
-	})
+	seedMachine(t, h, "wsl", "100.106.181.59", "gpu", machines.ShellPosix)
 	res := h.Handle("exec_machine", map[string]interface{}{
 		"machine": "wsl", "command": "nvidia-smi", "reason": "gpu check",
 	})
@@ -202,23 +218,22 @@ func TestInstallSSHKeyRequiresTarget(t *testing.T) {
 
 func TestDeleteContainer(t *testing.T) {
 	h := setup(t)
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(9104), "ip": "100.106.181.59", "hostname": "gpu-worker", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 9104, "100.106.181.59", "gpu-worker", true)
 
 	del := h.Handle("delete_container", map[string]interface{}{"ctid": float64(9104)})
-	if del.IsError || !strings.Contains(del.Content[0].Text, "\"deleted\":true") {
-		t.Fatalf("delete failed: %+v", del)
+	delReq := assertRegistryOpQueued(t, h, del, "delete_container")
+	if delReq.RegistryArgs["ctid"] != "9104" {
+		t.Fatalf("expected ctid 9104 in registry_args, got %+v", delReq.RegistryArgs)
 	}
 
+	// Still registered: the delete only lands once a human approves. Deleting an
+	// unregistered CTID likewise only fails at execution time — covered in the
+	// integration suite, which can drive the approval.
 	list := h.Handle("list_containers", map[string]interface{}{})
-	if strings.Contains(list.Content[0].Text, "9104") {
-		t.Fatalf("container still listed after delete: %s", list.Content[0].Text)
+	if !strings.Contains(list.Content[0].Text, "9104") {
+		t.Fatalf("container removed before approval: %s", list.Content[0].Text)
 	}
 
-	if again := h.Handle("delete_container", map[string]interface{}{"ctid": float64(9104)}); !again.IsError {
-		t.Fatal("expected error deleting nonexistent container")
-	}
 	if mc := h.Handle("delete_container", map[string]interface{}{}); !mc.IsError {
 		t.Fatal("expected error for missing ctid")
 	}

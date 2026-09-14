@@ -16,7 +16,7 @@ func TestExecOnEachNode(t *testing.T) {
 
 	// Register all 3 nodes
 	for i, n := range env.nodes {
-		registerNode(t, c, 9001+i, n.ip, "test-node-"+fmt.Sprintf("%d", i+1), 100+i)
+		registerNode(t, c, s, 9001+i, n.ip, "test-node-"+fmt.Sprintf("%d", i+1), 100+i)
 	}
 
 	// Execute hostname on each and verify
@@ -54,7 +54,7 @@ func TestExecShellPipe(t *testing.T) {
 	c := newMCPClient(t, s.mcpURL())
 	c.init(t)
 
-	registerNode(t, c, 9001, env.nodes[0].ip, "test-node-1", 100)
+	registerNode(t, c, s, 9001, env.nodes[0].ip, "test-node-1", 100)
 
 	resp := c.call(t, 200, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -85,7 +85,7 @@ func TestExecNonZeroExit(t *testing.T) {
 	c := newMCPClient(t, s.mcpURL())
 	c.init(t)
 
-	registerNode(t, c, 9001, env.nodes[0].ip, "test-node-1", 100)
+	registerNode(t, c, s, 9001, env.nodes[0].ip, "test-node-1", 100)
 
 	resp := c.call(t, 200, "tools/call", map[string]interface{}{
 		"name": "exec_container",
@@ -114,7 +114,7 @@ func TestExecFileRoundtrip(t *testing.T) {
 	c := newMCPClient(t, s.mcpURL())
 	c.init(t)
 
-	registerNode(t, c, 9001, env.nodes[0].ip, "test-node-1", 100)
+	registerNode(t, c, s, 9001, env.nodes[0].ip, "test-node-1", 100)
 
 	content := "the quick brown fox jumps over the lazy dog"
 
@@ -163,8 +163,8 @@ func TestExecIsolation(t *testing.T) {
 	c := newMCPClient(t, s.mcpURL())
 	c.init(t)
 
-	registerNode(t, c, 9001, env.nodes[0].ip, "test-node-1", 100)
-	registerNode(t, c, 9002, env.nodes[1].ip, "test-node-2", 101)
+	registerNode(t, c, s, 9001, env.nodes[0].ip, "test-node-1", 100)
+	registerNode(t, c, s, 9002, env.nodes[1].ip, "test-node-2", 101)
 
 	// Create a file on node1
 	resp := c.call(t, 200, "tools/call", map[string]interface{}{
@@ -221,7 +221,7 @@ func TestExecOnAllThreeNodes(t *testing.T) {
 	c.init(t)
 
 	for i, n := range env.nodes {
-		registerNode(t, c, 9001+i, n.ip, "test-node-"+fmt.Sprintf("%d", i+1), 100+i)
+		registerNode(t, c, s, 9001+i, n.ip, "test-node-"+fmt.Sprintf("%d", i+1), 100+i)
 	}
 
 	// Submit all 3 commands
@@ -258,7 +258,7 @@ func TestWhitelistAutoApprovesContainerExec(t *testing.T) {
 	c := newMCPClient(t, s.mcpURL())
 	c.init(t)
 
-	registerNode(t, c, 9001, env.nodes[0].ip, "test-node-1", 100)
+	registerNode(t, c, s, 9001, env.nodes[0].ip, "test-node-1", 100)
 
 	// The exec_container for "hostname" on node1 translates to:
 	//   ssh -F <config> root@<ip> -- hostname
@@ -316,7 +316,7 @@ func TestRequestCommandDirectSSH(t *testing.T) {
 	c.init(t)
 
 	resp := c.call(t, 200, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "ssh",
 			"args":    []string{"-F", s.sshConfigPath, fmt.Sprintf("root@%s", env.nodes[0].ip), "uname", "-s"},
@@ -346,7 +346,7 @@ func TestExecTimeout(t *testing.T) {
 	c := newMCPClient(t, s.mcpURL())
 	c.init(t)
 
-	registerNode(t, c, 9001, env.nodes[0].ip, "test-node-1", 100)
+	registerNode(t, c, s, 9001, env.nodes[0].ip, "test-node-1", 100)
 
 	resp := c.call(t, 200, "tools/call", map[string]interface{}{
 		"name": "exec_container",

@@ -14,7 +14,7 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 
 - **No shell by default** — commands run via `os/exec`, not `sh -c`, so shell injection does not apply.
 - **Shell mode is opt-in** — `sh -c` commands get a red warning banner in the dashboard.
-- **Token auth** — all mutating endpoints require a bearer token (constant-time comparison).
+- **Token auth** — the MCP port (`:8080`, both `/sse` and `/message`) requires a bearer token, as do all mutating endpoints on the dashboard port (constant-time comparison).
 - **CSRF protection** — `Origin` header validation on all POST endpoints.
 - **Path traversal blocked** — working directories validated against an allowlist.
 - **Output capped** — stdout/stderr limited to 1MB per command.
@@ -26,7 +26,7 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 - No TLS — terminate TLS at a reverse proxy.
 - No per-user auth — single shared bearer token.
 - Whitelist is exact-match only — no glob/regex patterns.
-- The SSE metadata endpoint is unauthenticated (EventSource cannot set headers).
+- The dashboard's `/events` metadata stream on `:8090` is unauthenticated (EventSource cannot set headers). It is read-only. This does not apply to the MCP `/sse` endpoint on `:8080`, which requires the bearer token.
 
 ## Reporting a vulnerability
 

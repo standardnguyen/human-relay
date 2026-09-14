@@ -31,7 +31,7 @@ func TestWhitelistAutoApprove(t *testing.T) {
 
 	// Submit a whitelisted command
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello"},
@@ -95,7 +95,7 @@ func TestWhitelistNoMatchRequiresApproval(t *testing.T) {
 
 	// Submit a NON-whitelisted command (different args)
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"goodbye"},
@@ -167,7 +167,7 @@ func TestWhitelistNoCooldown(t *testing.T) {
 	// Fire two whitelisted commands back-to-back
 	for i := 0; i < 2; i++ {
 		resp := c.Call(t, 2+i, "tools/call", map[string]interface{}{
-			"name": "request_command",
+			"name": "request_command_for_relay",
 			"arguments": map[string]interface{}{
 				"command": "echo",
 				"args":    []string{"fast"},
@@ -198,7 +198,7 @@ func TestWhitelistNoCooldown(t *testing.T) {
 	// Now submit a non-whitelisted command and manually approve it
 	// (verifying that the cooldown wasn't consumed by the whitelisted commands)
 	resp := c.Call(t, 20, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"manual"},
@@ -232,7 +232,7 @@ func TestWhitelistEmptyFile(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello"},
@@ -268,7 +268,7 @@ func TestWhitelistMissingFile(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello"},
@@ -355,7 +355,7 @@ func TestWhitelistAPIAdd(t *testing.T) {
 
 	// Now submit a command matching the new rule — should auto-approve
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello"},
@@ -422,7 +422,7 @@ func TestWhitelistAPIRemove(t *testing.T) {
 
 	// Submit a command that was previously whitelisted — should stay pending now
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello"},

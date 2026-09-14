@@ -476,7 +476,7 @@ func TestWriteFileEndToEnd(t *testing.T) {
 
 	// Submit a raw request_command that uses cat > (simulating what write_file does internally)
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": fmt.Sprintf("cat > %s", targetPath),
 			"reason":  "test stdin piping",

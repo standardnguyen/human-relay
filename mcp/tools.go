@@ -20,10 +20,50 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+// commandToolProps is the input schema shared by the two explicit command tools
+// (request_command_for_relay / request_command_for_host). They differ only in
+// whether they take a `host`, so one builder keeps the pair from drifting.
+func commandToolProps(withHost bool) map[string]Property {
+	props := map[string]Property{
+		"command": {
+			Type:        "string",
+			Description: "The command/binary to execute",
+		},
+		"args": {
+			Type:        "array",
+			Description: "Arguments to pass to the command. Each element is passed as its own argv entry (quoted for the remote shell on the host route), so spaces and shell metacharacters inside an argument are not re-split.",
+			Items:       &Items{Type: "string"},
+		},
+		"reason": {
+			Type:        "string",
+			Description: "Why this command needs to be run (shown to the human reviewer)",
+		},
+		"working_dir": {
+			Type:        "string",
+			Description: "Working directory for command execution (relay route only; the host route rejects it)",
+		},
+		"shell": {
+			Type:        "boolean",
+			Description: "If true, run via sh -c (allows pipes/redirects but less secure). Default false.",
+		},
+		"timeout": {
+			Type:        "integer",
+			Description: "Command timeout in seconds (default: server default, max: server max)",
+		},
+	}
+	if withHost {
+		props["host"] = Property{
+			Type:        "string",
+			Description: "Host to run the command on (IP or hostname). Defaults to the configured Proxmox host.",
+		}
+	}
+	return props
+}
+
 var ToolDefinitions = []Tool{
 	{
 		Name:        "request_command",
-		Description: "Submit a command for human approval. Returns a request ID that can be used to poll for the result.",
+		Description: "🔴 RETIRED 2026-09-14 — every call to this name is REJECTED with an explanation. It ran in the relay container but never said so, which is how a command meant for the host came back with `pct: not found` and a command meant for the relay got hand-wrapped in ssh. Use `request_command_for_relay` (runs in the relay container, CTID 131) or `request_command_for_host` (the relay builds the ssh itself).",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -58,6 +98,26 @@ var ToolDefinitions = []Tool{
 		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
 	},
 	{
+		Name:        "request_command_for_relay",
+		Description: "Submit a command for human approval that runs INSIDE THE RELAY CONTAINER (Docker, CTID 131). `pct`, `qm` and other Proxmox host binaries are NOT in PATH here, and it is a different filesystem from every host you write to. For a command that must run on the Proxmox host, use request_command_for_host. Returns a request ID for get_result.",
+		InputSchema: InputSchema{
+			Type:       "object",
+			Properties: commandToolProps(false),
+			Required:   []string{"command", "reason"},
+		},
+		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
+	},
+	{
+		Name:        "request_command_for_host",
+		Description: "Submit a command for human approval that runs ON THE PROXMOX HOST via ssh. The relay builds the ssh invocation itself (`ssh root@<host> -- <command> <args...>`), so arguments are passed as argv and a shell never re-splits them - you do not hand-roll the ssh wrapper, which is where `&&`/pipe/quote mangling used to silently run the wrong half of a command. `host` defaults to the configured Proxmox host. For a command that runs in the relay container, use request_command_for_relay.",
+		InputSchema: InputSchema{
+			Type:       "object",
+			Properties: commandToolProps(true),
+			Required:   []string{"command", "reason"},
+		},
+		Annotations: &ToolAnnotations{DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(true)},
+	},
+	{
 		Name:        "get_result",
 		Description: "Get the result of a previously submitted command request. Supports blocking poll — if timeout is set, the server will hold the connection until the request is decided or the timeout expires.",
 		InputSchema: InputSchema{
@@ -65,7 +125,7 @@ var ToolDefinitions = []Tool{
 			Properties: map[string]Property{
 				"request_id": {
 					Type:        "string",
-					Description: "The request ID returned by request_command",
+					Description: "The request ID returned by request_command_for_relay, request_command_for_host, write_file, exec_container, or any other approving tool.",
 				},
 				"timeout": {
 					Type:        "integer",
@@ -525,7 +585,7 @@ var ToolDefinitions = []Tool{
 			Properties: map[string]Property{
 				"request_id": {
 					Type:        "string",
-					Description: "The request ID returned by a previous tool call (request_command, write_file, http_request, run_script, etc.)",
+					Description: "The request ID returned by a previous tool call (request_command_for_relay, request_command_for_host, write_file, http_request, run_script, etc.)",
 				},
 				"reason": {
 					Type:        "string",
@@ -597,7 +657,11 @@ func (h *ToolHandler) sshPrefix() []string {
 func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallToolResult {
 	switch name {
 	case "request_command":
-		return h.requestCommand(args)
+		return h.requestCommandRetired(args)
+	case "request_command_for_relay":
+		return h.requestCommandForRelay(args)
+	case "request_command_for_host":
+		return h.requestCommandForHost(args)
 	case "get_result":
 		return h.getResult(args)
 	case "list_requests":
@@ -639,59 +703,152 @@ func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallTool
 	}
 }
 
-func (h *ToolHandler) requestCommand(args map[string]interface{}) *CallToolResult {
-	command, _ := args["command"].(string)
-	reason, _ := args["reason"].(string)
-	if command == "" || reason == "" {
-		return errorResult("command and reason are required")
-	}
+// commandRequest is the validated input shared by the two explicit command
+// tools: same shape, different destination.
+type commandRequest struct {
+	command    string
+	args       []string
+	reason     string
+	workingDir string
+	shell      bool
+	timeout    int
+}
 
-	var cmdArgs []string
+func parseCommandRequest(args map[string]interface{}) (*commandRequest, *CallToolResult) {
+	cr := &commandRequest{}
+	cr.command, _ = args["command"].(string)
+	cr.reason, _ = args["reason"].(string)
+	if cr.command == "" || cr.reason == "" {
+		return nil, errorResult("command and reason are required")
+	}
 	if rawArgs, ok := args["args"].([]interface{}); ok {
 		for _, a := range rawArgs {
 			if s, ok := a.(string); ok {
-				cmdArgs = append(cmdArgs, s)
+				cr.args = append(cr.args, s)
 			}
 		}
 	}
-
-	workingDir, _ := args["working_dir"].(string)
-	shell, _ := args["shell"].(bool)
-
-	timeout := 0
+	cr.workingDir, _ = args["working_dir"].(string)
+	cr.shell, _ = args["shell"].(bool)
 	if t, ok := args["timeout"].(float64); ok {
-		timeout = int(t)
+		cr.timeout = int(t)
 	}
-
 	// Hard rejection for bash/sh -c arg-splitting (non-shell mode only;
 	// shell mode gets an advisory warning in detectWarnings).
-	if !shell {
-		if errMsg := checkBashCArgSplitting(command, cmdArgs); errMsg != "" {
-			return errorResult(errMsg)
+	if !cr.shell {
+		if errMsg := checkBashCArgSplitting(cr.command, cr.args); errMsg != "" {
+			return nil, errorResult(errMsg)
 		}
 	}
+	return cr, nil
+}
 
-	r := h.store.Add(command, cmdArgs, reason, workingDir, shell, timeout)
-
-	h.audit.Log("request_created", r.ID, map[string]interface{}{
-		"tool":        "request_command",
-		"command":     command,
-		"args":        cmdArgs,
-		"reason":      reason,
-		"working_dir": workingDir,
-		"shell":       shell,
-		"timeout":     timeout,
-	})
-
+func commandPendingResult(r *store.Request, cr *commandRequest) *CallToolResult {
 	result := map[string]interface{}{
 		"request_id": r.ID,
 		"status":     "pending",
 	}
-	if warnings := detectWarnings(command, cmdArgs, shell); len(warnings) > 0 {
+	if warnings := detectWarnings(cr.command, cr.args, cr.shell); len(warnings) > 0 {
 		result["warnings"] = warnings
 	}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))
+}
+
+// requestCommandRetired is the loud half of the 2026-09-14 split. The old name
+// ran in the relay container and said nothing about it, so the destination was
+// invisible at the call site: a command meant for the host came back `pct: not
+// found`, and a command meant for the relay got hand-wrapped in ssh, where a
+// pipe or `&&` can execute the second half in the relay's shell instead of on
+// the host. Rejecting it - rather than aliasing it - is deliberate: an alias
+// would keep the ambiguity, just under a longer name.
+func (h *ToolHandler) requestCommandRetired(args map[string]interface{}) *CallToolResult {
+	return errorResult("request_command is RETIRED (2026-09-14) and executes nothing. It ran inside the relay container (CTID 131) without saying so, so a caller could not tell where a command would land. Use request_command_for_relay (runs in the relay container - `pct`, `qm` and other Proxmox host binaries are NOT in PATH there) or request_command_for_host (runs on the Proxmox host, with the relay building the ssh invocation). THIS CALL, HAD IT RUN, WOULD HAVE EXECUTED INSIDE THE RELAY CONTAINER.")
+}
+
+// requestCommandForRelay is the old request_command with its destination made
+// explicit in the name.
+func (h *ToolHandler) requestCommandForRelay(args map[string]interface{}) *CallToolResult {
+	cr, errRes := parseCommandRequest(args)
+	if errRes != nil {
+		return errRes
+	}
+
+	r := h.store.Add(cr.command, cr.args, cr.reason, cr.workingDir, cr.shell, cr.timeout)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":        "request_command_for_relay",
+		"route":       "relay_container",
+		"command":     cr.command,
+		"args":        cr.args,
+		"reason":      cr.reason,
+		"working_dir": cr.workingDir,
+		"shell":       cr.shell,
+		"timeout":     cr.timeout,
+	})
+
+	return commandPendingResult(r, cr)
+}
+
+// requestCommandForHost runs the command on the Proxmox host. The relay builds
+// the ssh argv itself, which is the whole point: the caller does not hand-roll
+// `ssh root@host 'a && b'`, so there is no outer shell to re-split it and no
+// way for the second half of a chain to run in the relay container instead of
+// on the host (see the relay docs' gotcha on inline ssh). Every element is
+// shell-quoted because the remote side passes ssh's joined argv through a
+// shell, so an unquoted argument with a space would arrive as two arguments.
+func (h *ToolHandler) requestCommandForHost(args map[string]interface{}) *CallToolResult {
+	cr, errRes := parseCommandRequest(args)
+	if errRes != nil {
+		return errRes
+	}
+
+	host, _ := args["host"].(string)
+	if host == "" {
+		host = h.hostIP
+	}
+	if !validHostRe.MatchString(host) {
+		return errorResult("host must be an IP address or hostname (letters, digits, dot, dash, underscore)")
+	}
+
+	// working_dir is a relay-local concept. Over ssh it would set a directory on
+	// the relay's own filesystem, not the host's, which is not what any caller
+	// means - so reject it instead of quietly ignoring it.
+	if cr.workingDir != "" {
+		return errorResult("working_dir is not supported for host commands: it would set a directory on the RELAY's filesystem, not the host's. Use shell:true and `cd <dir> && <command>` to change directory on the host.")
+	}
+
+	sshArgs := h.sshPrefix()
+	sshArgs = append(sshArgs, fmt.Sprintf("root@%s", host), "--")
+	if cr.shell {
+		full := cr.command
+		if len(cr.args) > 0 {
+			full += " " + strings.Join(cr.args, " ")
+		}
+		sshArgs = append(sshArgs, "sh", "-c", shellQuote(full))
+	} else {
+		sshArgs = append(sshArgs, shellQuote(cr.command))
+		for _, a := range cr.args {
+			sshArgs = append(sshArgs, shellQuote(a))
+		}
+	}
+
+	// The reviewer decides on this line, so the destination has to be in it.
+	prefixedReason := fmt.Sprintf("[HOST %s - runs on the Proxmox host, NOT in the relay container] %s", host, cr.reason)
+	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, cr.timeout)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":    "request_command_for_host",
+		"route":   "proxmox_host",
+		"host":    host,
+		"command": cr.command,
+		"args":    cr.args,
+		"reason":  cr.reason,
+		"shell":   cr.shell,
+		"timeout": cr.timeout,
+	})
+
+	return commandPendingResult(r, cr)
 }
 
 func (h *ToolHandler) getResult(args map[string]interface{}) *CallToolResult {

@@ -316,7 +316,7 @@ func TestRequestCommandDirectSSH(t *testing.T) {
 	c.init(t)
 
 	resp := c.call(t, 200, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "ssh",
 			"args":    []string{"-F", s.sshConfigPath, fmt.Sprintf("root@%s", env.nodes[0].ip), "uname", "-s"},

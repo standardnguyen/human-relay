@@ -26,7 +26,7 @@ func setupMCP(t *testing.T, s *TestServer) *MCPClient {
 func mkRequest(t *testing.T, c *MCPClient, callID int, reason string) string {
 	t.Helper()
 	resp := c.Call(t, callID, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"test"},

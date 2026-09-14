@@ -22,7 +22,7 @@ func TestCooldownBlocksSecondApproval(t *testing.T) {
 
 	// Create two requests
 	resp1 := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"first"},
@@ -32,7 +32,7 @@ func TestCooldownBlocksSecondApproval(t *testing.T) {
 	id1 := extractRequestID(t, resp1)
 
 	resp2 := c.Call(t, 3, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"second"},
@@ -80,7 +80,7 @@ func TestCooldownAllowsAfterExpiry(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp1 := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"first"},
@@ -102,7 +102,7 @@ func TestCooldownAllowsAfterExpiry(t *testing.T) {
 
 	// Second approval should now succeed
 	resp2 := c.Call(t, 3, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"second"},
@@ -131,7 +131,7 @@ func TestCooldownDoesNotBlockDeny(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp1 := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"first"},
@@ -141,7 +141,7 @@ func TestCooldownDoesNotBlockDeny(t *testing.T) {
 	id1 := extractRequestID(t, resp1)
 
 	resp2 := c.Call(t, 3, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"second"},
@@ -194,7 +194,7 @@ func TestListCooldownHeader(t *testing.T) {
 
 	// Approve a request
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello"},
@@ -234,7 +234,7 @@ func TestListCooldownHeaderZeroAfterExpiry(t *testing.T) {
 
 	// Approve a request
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"hello"},

@@ -899,7 +899,7 @@ func TestExistingToolsUnchanged(t *testing.T) {
 	h := setup(t)
 
 	// request_command still works
-	result := h.Handle("request_command", map[string]interface{}{
+	result := h.Handle("request_command_for_relay", map[string]interface{}{
 		"command": "echo",
 		"reason":  "test",
 	})
@@ -964,7 +964,7 @@ func TestWarningShellMetacharsInNonShellMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("request_command", map[string]interface{}{
+			result := h.Handle("request_command_for_relay", map[string]interface{}{
 				"command": "ssh",
 				"args":    tt.args,
 				"reason":  "test metachar warning",
@@ -986,7 +986,7 @@ func TestWarningShellMetacharsInNonShellMode(t *testing.T) {
 func TestNoWarningShellMetacharsInShellMode(t *testing.T) {
 	h := setup(t)
 
-	result := h.Handle("request_command", map[string]interface{}{
+	result := h.Handle("request_command_for_relay", map[string]interface{}{
 		"command": "ssh",
 		"args":    []interface{}{"root@host", "echo hi >> /tmp/file"},
 		"reason":  "test no false positive",
@@ -1035,7 +1035,7 @@ func TestBashCArgSplittingHardReject(t *testing.T) {
 			if tt.name == "command is bash directly" {
 				cmd = "bash"
 			}
-			result := h.Handle("request_command", map[string]interface{}{
+			result := h.Handle("request_command_for_relay", map[string]interface{}{
 				"command": cmd,
 				"args":    tt.args,
 				"reason":  "test bash -c rejection",
@@ -1085,7 +1085,7 @@ func TestBashCArgSplittingAllowsSafePatterns(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("request_command", map[string]interface{}{
+			result := h.Handle("request_command_for_relay", map[string]interface{}{
 				"command": tt.cmd,
 				"args":    tt.args,
 				"reason":  "test no false positive",
@@ -1101,7 +1101,7 @@ func TestBashCArgSplittingShellModeWarning(t *testing.T) {
 	h := setup(t)
 
 	// In shell mode, bash -c word word triggers a warning (not hard reject)
-	result := h.Handle("request_command", map[string]interface{}{
+	result := h.Handle("request_command_for_relay", map[string]interface{}{
 		"command": "ssh",
 		"args":    []interface{}{"root@host", "bash -c crontab -l | wc -l"},
 		"reason":  "test shell mode warning",
@@ -1127,7 +1127,7 @@ func TestBashCArgSplittingShellModeNoFalsePositive(t *testing.T) {
 	h := setup(t)
 
 	// Properly quoted: bash -c 'crontab -l' — no warning
-	result := h.Handle("request_command", map[string]interface{}{
+	result := h.Handle("request_command_for_relay", map[string]interface{}{
 		"command": "ssh",
 		"args":    []interface{}{"root@host", "bash -c 'crontab -l' | wc -l"},
 		"reason":  "test no false positive in shell mode",
@@ -1147,7 +1147,7 @@ func TestBashCArgSplittingShellModeNoFalsePositive(t *testing.T) {
 func TestWarningShellTrueSSHRedirect(t *testing.T) {
 	h := setup(t)
 
-	result := h.Handle("request_command", map[string]interface{}{
+	result := h.Handle("request_command_for_relay", map[string]interface{}{
 		"command": "ssh",
 		"args":    []interface{}{"root@192.168.10.50", "echo 'key' >> /root/.ssh/authorized_keys"},
 		"reason":  "test shell+redirect warning",
@@ -1418,7 +1418,7 @@ func TestHTTPRequestHTTPSchemeAccepted(t *testing.T) {
 func TestNoWarningsForCleanCommand(t *testing.T) {
 	h := setup(t)
 
-	result := h.Handle("request_command", map[string]interface{}{
+	result := h.Handle("request_command_for_relay", map[string]interface{}{
 		"command": "ssh",
 		"args":    []interface{}{"root@192.168.10.50", "hostname"},
 		"reason":  "simple clean command",
@@ -2380,3 +2380,152 @@ func TestWriteFileStillRoutesToHostWhenNamedExplicitly(t *testing.T) {
 		t.Fatalf("an explicitly named host must still work, got: %s", result.Content[0].Text)
 	}
 }
+
+// --- request_command split (2026-09-14) --------------------------------
+// The old name ran in the relay container without saying so, which is how a
+// command meant for the host came back `pct: not found`. These tests pin the
+// three-way contract that replaces it.
+
+// TestRequestCommandRetiredIsRejected: the ambiguous name is rejected outright,
+// and the rejection names both replacements and where the call would have run.
+func TestRequestCommandRetiredIsRejected(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command", map[string]interface{}{
+		"command": "hostname",
+		"reason":  "where am I",
+	})
+	if !result.IsError {
+		t.Fatalf("request_command must be rejected, got: %s", result.Content[0].Text)
+	}
+	msg := result.Content[0].Text
+	for _, want := range []string{"request_command_for_relay", "request_command_for_host", "RELAY CONTAINER"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("rejection must mention %q; got: %s", want, msg)
+		}
+	}
+}
+
+// TestRequestCommandForRelayStoresTheRawCommand: the relay route stores the
+// caller's own command - it runs locally, so it must NOT be wrapped in ssh.
+func TestRequestCommandForRelayStoresTheRawCommand(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command_for_relay", map[string]interface{}{
+		"command": "pct",
+		"args":    []interface{}{"list"},
+		"reason":  "probe the relay container",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+	if req.Command != "pct" {
+		t.Errorf("relay route must store the raw command, got %q", req.Command)
+	}
+	if len(req.Args) != 1 || req.Args[0] != "list" {
+		t.Errorf("relay route must store the args verbatim, got %v", req.Args)
+	}
+}
+
+// TestRequestCommandForHostWrapsInSSHWithArgsIntact: the host route's whole
+// point. The relay builds `ssh root@<host> -- <quoted argv...>`, so (a) no
+// caller hand-rolls the ssh wrapper, and (b) an argument containing a space
+// stays ONE argument instead of being re-split by the remote shell.
+func TestRequestCommandForHostWrapsInSSHWithArgsIntact(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command_for_host", map[string]interface{}{
+		"command": "zfs",
+		"args":    []interface{}{"list", "-o", "name used"},
+		"reason":  "read the pool",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	if req.Command != "ssh" {
+		t.Fatalf("host route must store an ssh command, got %q", req.Command)
+	}
+	got := strings.Join(req.Args, " ")
+	want := "root@192.168.10.50 -- 'zfs' 'list' '-o' 'name used'"
+	if !strings.HasSuffix(got, want) {
+		t.Errorf("host route argv must end with %q, got %q", want, got)
+	}
+	if !strings.Contains(req.Reason, "HOST 192.168.10.50") {
+		t.Errorf("approval reason must name the destination, got %q", req.Reason)
+	}
+}
+
+// TestRequestCommandForHostShellModeQuotesTheWholeCommand: shell mode sends the
+// full command as ONE quoted argv element, so the remote shell receives it
+// intact rather than re-splitting a pipe or `&&` chain.
+func TestRequestCommandForHostShellModeQuotesTheWholeCommand(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command_for_host", map[string]interface{}{
+		"command": "systemctl is-active kapsrh-daemon && df -h /",
+		"shell":   true,
+		"reason":  "probe the host",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	req := h.store.Get(resp["request_id"].(string))
+
+	got := strings.Join(req.Args, " ")
+	want := "root@192.168.10.50 -- sh -c 'systemctl is-active kapsrh-daemon && df -h /'"
+	if !strings.HasSuffix(got, want) {
+		t.Errorf("host shell-mode argv must end with %q, got %q", want, got)
+	}
+}
+
+// TestRequestCommandForHostRejectsWorkingDir: working_dir means a directory on
+// the RELAY's filesystem, never the host's - rejected rather than ignored.
+func TestRequestCommandForHostRejectsWorkingDir(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command_for_host", map[string]interface{}{
+		"command":     "ls",
+		"working_dir": "/root",
+		"reason":      "list",
+	})
+	if !result.IsError {
+		t.Fatalf("working_dir on the host route must be rejected, got: %s", result.Content[0].Text)
+	}
+	if !strings.Contains(result.Content[0].Text, "RELAY") {
+		t.Errorf("rejection must explain whose filesystem working_dir would touch; got: %s", result.Content[0].Text)
+	}
+}
+
+// TestRequestCommandForHostRejectsBadHost: the host is interpolated into an ssh
+// argv, so it is validated rather than passed through.
+func TestRequestCommandForHostRejectsBadHost(t *testing.T) {
+	h := setup(t)
+
+	result := h.Handle("request_command_for_host", map[string]interface{}{
+		"command": "ls",
+		"host":    "root@192.168.10.50; rm -rf /",
+		"reason":  "list",
+	})
+	if !result.IsError {
+		t.Fatalf("a shell-metachar host must be rejected, got: %s", result.Content[0].Text)
+	}
+	// Assert the VALIDATION fired, not merely that something errored: "unknown
+	// tool" is also an error, so an IsError-only check passes on a build where
+	// this tool does not exist at all - a sentinel that never fires.
+	if !strings.Contains(result.Content[0].Text, "host must be an IP address or hostname") {
+		t.Errorf("rejection must come from host validation; got: %s", result.Content[0].Text)
+	}
+}
+

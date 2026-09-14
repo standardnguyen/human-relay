@@ -101,7 +101,7 @@ func TestRegisterContainer(t *testing.T) {
 		"ip":            "192.168.10.90",
 		"hostname":      "archivebox",
 		"has_relay_ssh": true,
-	})
+	}, "")
 
 	r := assertRegistryOpQueued(t, h, result, "register_container")
 	for k, want := range map[string]string{
@@ -119,7 +119,7 @@ func TestRegisterContainer(t *testing.T) {
 	}
 
 	// The registry must not be touched until the human approves.
-	list := h.Handle("list_containers", map[string]interface{}{})
+	list := h.Handle("list_containers", map[string]interface{}{}, "")
 	var got []containers.Container
 	if err := json.Unmarshal([]byte(list.Content[0].Text), &got); err != nil {
 		t.Fatalf("unmarshal list: %v", err)
@@ -143,7 +143,7 @@ func TestRegisterContainerMissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("register_container", tt.args)
+			result := h.Handle("register_container", tt.args, "")
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}
@@ -173,7 +173,7 @@ func TestRegisterRejectsSSHUserInjection(t *testing.T) {
 			res := h.Handle("register_container", map[string]interface{}{
 				"ctid": float64(200), "ip": "192.168.10.90", "hostname": "t",
 				"has_relay_ssh": true, "ssh_user": u,
-			})
+			}, "")
 			if !res.IsError {
 				t.Fatalf("register_container accepted malicious ssh_user %q", u)
 			}
@@ -185,7 +185,7 @@ func TestRegisterRejectsSSHUserInjection(t *testing.T) {
 			h := setup(t)
 			res := h.Handle("register_machine", map[string]interface{}{
 				"name": "m", "host": "1.2.3.4", "ssh_user": u,
-			})
+			}, "")
 			if !res.IsError {
 				t.Fatalf("register_machine accepted malicious ssh_user %q", u)
 			}
@@ -199,7 +199,7 @@ func TestRegisterRejectsSSHUserInjection(t *testing.T) {
 		res := h.Handle("register_container", map[string]interface{}{
 			"ctid": float64(201), "ip": "192.168.10.90", "hostname": "t",
 			"has_relay_ssh": true, "ssh_user": u,
-		})
+		}, "")
 		if res.IsError {
 			t.Fatalf("register_container rejected valid ssh_user %q: %s", u, res.Content[0].Text)
 		}
@@ -209,7 +209,7 @@ func TestRegisterRejectsSSHUserInjection(t *testing.T) {
 	h := setup(t)
 	if res := h.Handle("register_container", map[string]interface{}{
 		"ctid": float64(202), "ip": "192.168.10.90", "hostname": "t", "has_relay_ssh": true,
-	}); res.IsError {
+	}, ""); res.IsError {
 		t.Fatalf("register_container rejected empty ssh_user: %s", res.Content[0].Text)
 	}
 }
@@ -217,7 +217,7 @@ func TestRegisterRejectsSSHUserInjection(t *testing.T) {
 func TestListContainersEmpty(t *testing.T) {
 	h := setup(t)
 
-	result := h.Handle("list_containers", map[string]interface{}{})
+	result := h.Handle("list_containers", map[string]interface{}{}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -237,7 +237,7 @@ func TestListContainersAfterRegister(t *testing.T) {
 	seedContainer(t, h, 100, "192.168.10.52", "ingress", false)
 	seedContainer(t, h, 133, "192.168.10.90", "archivebox", false)
 
-	result := h.Handle("list_containers", map[string]interface{}{})
+	result := h.Handle("list_containers", map[string]interface{}{}, "")
 	var list []containers.Container
 	json.Unmarshal([]byte(result.Content[0].Text), &list)
 
@@ -253,7 +253,7 @@ func TestExecContainerNotFound(t *testing.T) {
 		"ctid":    float64(999),
 		"command": "hostname",
 		"reason":  "test",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error for unregistered container")
@@ -274,7 +274,7 @@ func TestExecContainerDirectSSH(t *testing.T) {
 		"command": "docker",
 		"args":    []interface{}{"compose", "ps"},
 		"reason":  "Check services",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -321,7 +321,7 @@ func TestExecContainerPctExecFallback(t *testing.T) {
 		"ctid":    float64(133),
 		"command": "hostname",
 		"reason":  "test",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -358,7 +358,7 @@ func TestExecContainerShellMode(t *testing.T) {
 		"command": "cat /etc/hostname | head -1",
 		"reason":  "test shell mode",
 		"shell":   true,
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -391,7 +391,7 @@ func TestExecContainerReasonPrefix(t *testing.T) {
 		"ctid":    float64(133),
 		"command": "hostname",
 		"reason":  "Check identity",
-	})
+	}, "")
 
 	var resp map[string]interface{}
 	json.Unmarshal([]byte(result.Content[0].Text), &resp)
@@ -417,7 +417,7 @@ func TestExecContainerMissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("exec_container", tt.args)
+			result := h.Handle("exec_container", tt.args, "")
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}
@@ -445,7 +445,7 @@ func TestInstallRelaySSHBasic(t *testing.T) {
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
 		"reason": "Enable direct SSH for future commands",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -519,7 +519,7 @@ func TestInstallRelaySSHAlwaysRoutesThroughHost(t *testing.T) {
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
 		"reason": "Re-install relay key",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -541,7 +541,7 @@ func TestInstallRelaySSHUnregisteredContainer(t *testing.T) {
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
 		"reason": "Bootstrap new container",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -562,7 +562,7 @@ func TestInstallRelaySSHNoPubkeyConfigured(t *testing.T) {
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
 		"reason": "test",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error when relay pubkey file not configured")
@@ -579,7 +579,7 @@ func TestInstallRelaySSHBadPubkeyFile(t *testing.T) {
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
 		"reason": "test",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error when pubkey file doesn't exist")
@@ -599,7 +599,7 @@ func TestInstallRelaySSHInvalidPubkeyContent(t *testing.T) {
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
 		"reason": "test",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error for invalid pubkey content")
@@ -623,7 +623,7 @@ func TestInstallRelaySSHMissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("install_relay_ssh", tt.args)
+			result := h.Handle("install_relay_ssh", tt.args, "")
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}
@@ -640,7 +640,7 @@ func TestInstallRelaySSHDisplayCommand(t *testing.T) {
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
 		"reason": "test display",
-	})
+	}, "")
 
 	var resp map[string]interface{}
 	json.Unmarshal([]byte(result.Content[0].Text), &resp)
@@ -665,7 +665,7 @@ func TestInstallRelaySSHWithSSHConfig(t *testing.T) {
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
 		"reason": "test ssh config",
-	})
+	}, "")
 
 	var resp map[string]interface{}
 	json.Unmarshal([]byte(result.Content[0].Text), &resp)
@@ -691,7 +691,7 @@ func TestInstallSSHKeyDirectSSH(t *testing.T) {
 		"ctid":       float64(133),
 		"public_key": key,
 		"reason":     "Grant access to claude-115",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -744,7 +744,7 @@ func TestInstallSSHKeyPctPushFallback(t *testing.T) {
 		"ctid":       float64(133),
 		"public_key": key,
 		"reason":     "Grant access",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -780,7 +780,7 @@ func TestInstallSSHKeyContainerNotFound(t *testing.T) {
 		"ctid":       float64(999),
 		"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyData12345678901234567890123456 user@host",
 		"reason":     "test",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error for unregistered container")
@@ -811,7 +811,7 @@ func TestInstallSSHKeyInvalidKey(t *testing.T) {
 				"ctid":       float64(133),
 				"public_key": tt.key,
 				"reason":     "test",
-			})
+			}, "")
 			if !result.IsError {
 				t.Fatalf("expected error for invalid key %q", tt.key)
 			}
@@ -835,7 +835,7 @@ func TestInstallSSHKeyMissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("install_ssh_key", tt.args)
+			result := h.Handle("install_ssh_key", tt.args, "")
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}
@@ -853,7 +853,7 @@ func TestInstallSSHKeyReasonPrefix(t *testing.T) {
 		"ctid":       float64(133),
 		"public_key": key,
 		"reason":     "Grant access to claude-115",
-	})
+	}, "")
 
 	var resp map[string]interface{}
 	json.Unmarshal([]byte(result.Content[0].Text), &resp)
@@ -877,7 +877,7 @@ func TestInstallSSHKeyDisplayCommand(t *testing.T) {
 		"ctid":       float64(133),
 		"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyData12345678901234567890123456 user@host",
 		"reason":     "test",
-	})
+	}, "")
 
 	var resp map[string]interface{}
 	json.Unmarshal([]byte(result.Content[0].Text), &resp)
@@ -899,7 +899,7 @@ func TestInstallSSHKeyWithSSHConfig(t *testing.T) {
 		"ctid":       float64(133),
 		"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyData12345678901234567890123456 user@host",
 		"reason":     "test",
-	})
+	}, "")
 
 	var resp map[string]interface{}
 	json.Unmarshal([]byte(result.Content[0].Text), &resp)
@@ -922,7 +922,7 @@ func TestInstallSSHKeyRSAKey(t *testing.T) {
 		"ctid":       float64(133),
 		"public_key": key,
 		"reason":     "test RSA key",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("RSA key should be accepted: %s", result.Content[0].Text)
@@ -936,7 +936,7 @@ func TestExistingToolsUnchanged(t *testing.T) {
 	result := h.Handle("request_command_for_relay", map[string]interface{}{
 		"command": "echo",
 		"reason":  "test",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("request_command failed: %s", result.Content[0].Text)
 	}
@@ -949,13 +949,13 @@ func TestExistingToolsUnchanged(t *testing.T) {
 	// get_result still works
 	result = h.Handle("get_result", map[string]interface{}{
 		"request_id": reqID,
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("get_result failed: %s", result.Content[0].Text)
 	}
 
 	// list_requests still works
-	result = h.Handle("list_requests", map[string]interface{}{})
+	result = h.Handle("list_requests", map[string]interface{}{}, "")
 	if result.IsError {
 		t.Fatalf("list_requests failed: %s", result.Content[0].Text)
 	}
@@ -1002,7 +1002,7 @@ func TestWarningShellMetacharsInNonShellMode(t *testing.T) {
 				"command": "ssh",
 				"args":    tt.args,
 				"reason":  "test metachar warning",
-			})
+			}, "")
 			if result.IsError {
 				t.Fatalf("unexpected error: %s", result.Content[0].Text)
 			}
@@ -1025,7 +1025,7 @@ func TestNoWarningShellMetacharsInShellMode(t *testing.T) {
 		"args":    []interface{}{"root@host", "echo hi >> /tmp/file"},
 		"reason":  "test no false positive",
 		"shell":   true,
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1073,7 +1073,7 @@ func TestBashCArgSplittingHardReject(t *testing.T) {
 				"command": cmd,
 				"args":    tt.args,
 				"reason":  "test bash -c rejection",
-			})
+			}, "")
 			if !result.IsError {
 				t.Fatal("expected hard rejection for bash -c arg-splitting")
 			}
@@ -1123,7 +1123,7 @@ func TestBashCArgSplittingAllowsSafePatterns(t *testing.T) {
 				"command": tt.cmd,
 				"args":    tt.args,
 				"reason":  "test no false positive",
-			})
+			}, "")
 			if result.IsError {
 				t.Fatalf("expected safe command to be accepted, got error: %s", result.Content[0].Text)
 			}
@@ -1140,7 +1140,7 @@ func TestBashCArgSplittingShellModeWarning(t *testing.T) {
 		"args":    []interface{}{"root@host", "bash -c crontab -l | wc -l"},
 		"reason":  "test shell mode warning",
 		"shell":   true,
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("shell mode should warn, not reject: %s", result.Content[0].Text)
 	}
@@ -1166,7 +1166,7 @@ func TestBashCArgSplittingShellModeNoFalsePositive(t *testing.T) {
 		"args":    []interface{}{"root@host", "bash -c 'crontab -l' | wc -l"},
 		"reason":  "test no false positive in shell mode",
 		"shell":   true,
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1186,7 +1186,7 @@ func TestWarningShellTrueSSHRedirect(t *testing.T) {
 		"args":    []interface{}{"root@192.168.10.50", "echo 'key' >> /root/.ssh/authorized_keys"},
 		"reason":  "test shell+redirect warning",
 		"shell":   true,
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1212,7 +1212,7 @@ func TestHTTPRequestBasic(t *testing.T) {
 		"method": "GET",
 		"url":    "https://api.trello.com/1/members/me?key=abc&token=xyz",
 		"reason": "List boards",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -1260,7 +1260,7 @@ func TestHTTPRequestWithHeadersAndBody(t *testing.T) {
 		},
 		"body":   `{"idList":"abc123","name":"New card"}`,
 		"reason": "Create card",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -1292,7 +1292,7 @@ func TestHTTPRequestDisplayCommand(t *testing.T) {
 		"method": "DELETE",
 		"url":    "https://api.trello.com/1/cards/abc123",
 		"reason": "Delete card",
-	})
+	}, "")
 
 	var resp map[string]interface{}
 	json.Unmarshal([]byte(result.Content[0].Text), &resp)
@@ -1314,7 +1314,7 @@ func TestHTTPRequestAllMethods(t *testing.T) {
 				"method": method,
 				"url":    "https://example.com/test",
 				"reason": "test " + method,
-			})
+			}, "")
 			if result.IsError {
 				t.Fatalf("%s should be accepted, got: %s", method, result.Content[0].Text)
 			}
@@ -1329,7 +1329,7 @@ func TestHTTPRequestInvalidMethod(t *testing.T) {
 		"method": "TRACE",
 		"url":    "https://example.com/test",
 		"reason": "test",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error for unsupported method")
@@ -1357,7 +1357,7 @@ func TestHTTPRequestInvalidURL(t *testing.T) {
 				"method": "GET",
 				"url":    tt.url,
 				"reason": "test",
-			})
+			}, "")
 			if !result.IsError {
 				t.Fatalf("expected error for URL %q", tt.url)
 			}
@@ -1379,7 +1379,7 @@ func TestHTTPRequestMissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("http_request", tt.args)
+			result := h.Handle("http_request", tt.args, "")
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}
@@ -1395,7 +1395,7 @@ func TestHTTPRequestWithTimeout(t *testing.T) {
 		"url":     "https://example.com/slow",
 		"reason":  "test timeout",
 		"timeout": float64(60),
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -1418,7 +1418,7 @@ func TestHTTPRequestCommandFieldsEmpty(t *testing.T) {
 		"method": "GET",
 		"url":    "https://example.com",
 		"reason": "test",
-	})
+	}, "")
 
 	var resp map[string]interface{}
 	json.Unmarshal([]byte(result.Content[0].Text), &resp)
@@ -1442,7 +1442,7 @@ func TestHTTPRequestHTTPSchemeAccepted(t *testing.T) {
 		"method": "GET",
 		"url":    "http://192.168.10.59:3000/api/pages",
 		"reason": "Query internal wiki API",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("http:// should be accepted: %s", result.Content[0].Text)
@@ -1456,7 +1456,7 @@ func TestNoWarningsForCleanCommand(t *testing.T) {
 		"command": "ssh",
 		"args":    []interface{}{"root@192.168.10.50", "hostname"},
 		"reason":  "simple clean command",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1483,7 +1483,7 @@ func TestRunScriptBasic(t *testing.T) {
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "queue-to-doing",
 		"reason": "Move top queue card to doing",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -1516,7 +1516,7 @@ func TestRunScriptDisplayCommand(t *testing.T) {
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "test",
 		"reason": "Test",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1535,7 +1535,7 @@ func TestRunScriptNotFound(t *testing.T) {
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "nonexistent",
 		"reason": "Test",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error for missing script")
@@ -1552,7 +1552,7 @@ func TestRunScriptFindsPython(t *testing.T) {
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "my-py",
 		"reason": "Test python detection",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1576,7 +1576,7 @@ func TestRunScriptInvalidName(t *testing.T) {
 			result := h.Handle("run_script", map[string]interface{}{
 				"name":   tt.val,
 				"reason": "Test",
-			})
+			}, "")
 			if !result.IsError {
 				t.Fatalf("expected error for invalid name %q", tt.val)
 			}
@@ -1597,7 +1597,7 @@ func TestRunScriptValidNames(t *testing.T) {
 			result := h.Handle("run_script", map[string]interface{}{
 				"name":   name,
 				"reason": "Test",
-			})
+			}, "")
 			if result.IsError {
 				t.Fatalf("unexpected error for valid name %q: %s", name, result.Content[0].Text)
 			}
@@ -1620,7 +1620,7 @@ func TestRunScriptMissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("run_script", tt.args)
+			result := h.Handle("run_script", tt.args, "")
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}
@@ -1636,7 +1636,7 @@ func TestRunScriptWithTimeout(t *testing.T) {
 		"name":    "slow",
 		"reason":  "Test timeout",
 		"timeout": float64(5),
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -1658,7 +1658,7 @@ func TestRunScriptWithArgs(t *testing.T) {
 		"name":   "deploy",
 		"reason": "Deploy to staging",
 		"args":   []interface{}{"staging", "v1.2.3"},
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1683,7 +1683,7 @@ func TestRunScriptArgsDisplayCommand(t *testing.T) {
 		"name":   "deploy",
 		"reason": "Deploy",
 		"args":   []interface{}{"staging", "v1.2.3"},
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1703,7 +1703,7 @@ func TestRunScriptNoArgsSetsNil(t *testing.T) {
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "simple",
 		"reason": "Test",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1726,7 +1726,7 @@ func TestCreateScriptBasic(t *testing.T) {
 		"name":    "my-script",
 		"content": content,
 		"reason":  "Create a test script",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -1761,7 +1761,7 @@ func TestCreateScriptDisplayCommand(t *testing.T) {
 		"name":    "foo",
 		"content": "#!/bin/bash\necho foo\n",
 		"reason":  "Test",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1782,7 +1782,7 @@ func TestCreateScriptReasonContainsContent(t *testing.T) {
 		"name":    "review-me",
 		"content": content,
 		"reason":  "Test visibility",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1817,7 +1817,7 @@ func TestCreateScriptInvalidName(t *testing.T) {
 				"name":    tt.val,
 				"content": "#!/bin/bash\n",
 				"reason":  "Test",
-			})
+			}, "")
 			if !result.IsError {
 				t.Fatalf("expected error for invalid name %q", tt.val)
 			}
@@ -1839,7 +1839,7 @@ func TestCreateScriptMissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("create_script", tt.args)
+			result := h.Handle("create_script", tt.args, "")
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}
@@ -1865,7 +1865,7 @@ func TestRunScriptSubpathResolves(t *testing.T) {
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "oneshot/foo",
 		"reason": "Re-run a previously-created oneshot",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1888,7 +1888,7 @@ func TestRunScriptSubpathDisplayCommand(t *testing.T) {
 	result := h.Handle("run_script", map[string]interface{}{
 		"name":   "oneshot/foo",
 		"reason": "Test",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -1921,7 +1921,7 @@ func TestRunScriptSubpathTraversalRejected(t *testing.T) {
 			result := h.Handle("run_script", map[string]interface{}{
 				"name":   tt.val,
 				"reason": "Test",
-			})
+			}, "")
 			if !result.IsError {
 				t.Fatalf("expected error for invalid name %q", tt.val)
 			}
@@ -1939,7 +1939,7 @@ func TestCreateThenRunBasic(t *testing.T) {
 		"name":    "my-oneshot",
 		"content": content,
 		"reason":  "Fire a oneshot",
-	})
+	}, "")
 
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
@@ -1985,7 +1985,7 @@ func TestCreateThenRunCollisionRefused(t *testing.T) {
 		"name":    "taken",
 		"content": "print('new')",
 		"reason":  "Try to overwrite",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error for name collision in oneshot/")
@@ -2010,7 +2010,7 @@ func TestCreateThenRunCollisionCrossExtension(t *testing.T) {
 		"name":    "foo",
 		"content": "#!/bin/bash\necho new\n",
 		"reason":  "Try to shadow with .sh",
-	})
+	}, "")
 
 	if !result.IsError {
 		t.Fatal("expected error for cross-extension collision")
@@ -2024,7 +2024,7 @@ func TestCreateThenRunCustomSubpath(t *testing.T) {
 		"name":    "experiments/foo",
 		"content": "print('experimental')",
 		"reason":  "Caller override for non-oneshot subdir",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2062,7 +2062,7 @@ func TestCreateThenRunInvalidName(t *testing.T) {
 				"name":    tt.val,
 				"content": "print('x')",
 				"reason":  "Test",
-			})
+			}, "")
 			if !result.IsError {
 				t.Fatalf("expected error for invalid name %q", tt.val)
 			}
@@ -2078,7 +2078,7 @@ func TestCreateThenRunJSONPipelineDetected(t *testing.T) {
 		"name":    "json-oneshot",
 		"content": content,
 		"reason":  "Test JSON auto-detection",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2100,7 +2100,7 @@ func TestCreateThenRunShellScriptDetected(t *testing.T) {
 		"name":    "sh-oneshot",
 		"content": content,
 		"reason":  "Test shell auto-detection",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2122,7 +2122,7 @@ func TestCreateThenRunPythonDefault(t *testing.T) {
 		"name":    "py-oneshot",
 		"content": content,
 		"reason":  "Test Python default",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2145,7 +2145,7 @@ func TestCreateThenRunReasonContainsContent(t *testing.T) {
 		"name":    "review-me",
 		"content": content,
 		"reason":  "Test visibility",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2170,7 +2170,7 @@ func TestCreateThenRunWithArgs(t *testing.T) {
 		"content": "import sys\nprint(sys.argv[1:])\n",
 		"args":    []interface{}{"alpha", "bravo"},
 		"reason":  "Pass args to the run",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2197,7 +2197,7 @@ func TestCreateThenRunMissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.Handle("create_then_run", tt.args)
+			result := h.Handle("create_then_run", tt.args, "")
 			if !result.IsError {
 				t.Fatal("expected error for missing field")
 			}
@@ -2224,7 +2224,7 @@ func TestWriteFileNoOverwriteWarningWhenFileMissing(t *testing.T) {
 		"content": "fresh content",
 		"host":    "192.168.10.99",
 		"reason":  "Deploy new config",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2253,7 +2253,7 @@ func TestWriteFileOverwriteWarning(t *testing.T) {
 		"content": "replacement content",
 		"host":    "192.168.10.99",
 		"reason":  "Update config",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2291,7 +2291,7 @@ func TestWriteFileFailsOpenOnCheckError(t *testing.T) {
 		"content": "whatever",
 		"host":    "192.168.10.99",
 		"reason":  "Deploy config despite probe failure",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("write should proceed despite check error, got: %s", result.Content[0].Text)
 	}
@@ -2322,7 +2322,7 @@ func TestWriteFileOverwriteCheckTimeoutFailsOpen(t *testing.T) {
 		"content": "deploy",
 		"host":    "192.168.10.99",
 		"reason":  "Probe times out; write should still proceed",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("write should proceed on probe timeout, got: %s", result.Content[0].Text)
 	}
@@ -2357,7 +2357,7 @@ func TestWriteFileCheckerReceivesCorrectArgs(t *testing.T) {
 		"content": "data",
 		"host":    "192.168.10.42",
 		"reason":  "Sanity-check routing",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2384,7 +2384,7 @@ func TestWriteFileRequiresExplicitTarget(t *testing.T) {
 		"path":    "/opt/whatever.conf",
 		"content": "x",
 		"reason":  "no target given",
-	})
+	}, "")
 	if !result.IsError {
 		t.Fatalf("expected an error when no ctid/machine/host is given, got: %s", result.Content[0].Text)
 	}
@@ -2409,7 +2409,7 @@ func TestWriteFileStillRoutesToHostWhenNamedExplicitly(t *testing.T) {
 		"content": "content",
 		"host":    "192.168.10.99",
 		"reason":  "explicit host target",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("an explicitly named host must still work, got: %s", result.Content[0].Text)
 	}
@@ -2428,7 +2428,7 @@ func TestRequestCommandRetiredIsRejected(t *testing.T) {
 	result := h.Handle("request_command", map[string]interface{}{
 		"command": "hostname",
 		"reason":  "where am I",
-	})
+	}, "")
 	if !result.IsError {
 		t.Fatalf("request_command must be rejected, got: %s", result.Content[0].Text)
 	}
@@ -2449,7 +2449,7 @@ func TestRequestCommandForRelayStoresTheRawCommand(t *testing.T) {
 		"command": "pct",
 		"args":    []interface{}{"list"},
 		"reason":  "probe the relay container",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2476,7 +2476,7 @@ func TestRequestCommandForHostWrapsInSSHWithArgsIntact(t *testing.T) {
 		"command": "zfs",
 		"args":    []interface{}{"list", "-o", "name used"},
 		"reason":  "read the pool",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2508,7 +2508,7 @@ func TestRequestCommandForHostShellModeQuotesTheWholeCommand(t *testing.T) {
 		"command": "systemctl is-active kapsrh-daemon && df -h /",
 		"shell":   true,
 		"reason":  "probe the host",
-	})
+	}, "")
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -2533,7 +2533,7 @@ func TestRequestCommandForHostRejectsWorkingDir(t *testing.T) {
 		"command":     "ls",
 		"working_dir": "/root",
 		"reason":      "list",
-	})
+	}, "")
 	if !result.IsError {
 		t.Fatalf("working_dir on the host route must be rejected, got: %s", result.Content[0].Text)
 	}
@@ -2551,7 +2551,7 @@ func TestRequestCommandForHostRejectsBadHost(t *testing.T) {
 		"command": "ls",
 		"host":    "root@192.168.10.50; rm -rf /",
 		"reason":  "list",
-	})
+	}, "")
 	if !result.IsError {
 		t.Fatalf("a shell-metachar host must be rejected, got: %s", result.Content[0].Text)
 	}
@@ -2612,12 +2612,12 @@ func TestCreateScriptTypeNotMutatedAfterPublish(t *testing.T) {
 				"name":    fmt.Sprintf("race_create_%d", i),
 				"content": "#!/bin/bash\necho hi\n",
 				"reason":  "finding 26 race test",
-			})
+			}, "")
 			ctr := h.Handle("create_then_run", map[string]interface{}{
 				"name":    fmt.Sprintf("race_ctr_%d", i),
 				"content": "#!/bin/bash\necho hi\n",
 				"reason":  "finding 26 race test",
-			})
+			}, "")
 			mu.Lock()
 			defer mu.Unlock()
 			for _, res := range []*CallToolResult{cs, ctr} {

@@ -144,6 +144,7 @@ type MCPClient struct {
 	eventCh   chan SSEEvent
 	client    *http.Client
 	cancel    func()
+	token     string
 }
 
 type SSEEvent struct {
@@ -151,12 +152,20 @@ type SSEEvent struct {
 	Data  string
 }
 
+// NewMCPClient speaks MCP as the master token.
 func NewMCPClient(t *testing.T, mcpURL string) *MCPClient {
+	return NewMCPClientWithToken(t, mcpURL, testToken)
+}
+
+// NewMCPClientWithToken speaks MCP with an explicit bearer token, so a test
+// can drive the relay as a per-client credential.
+func NewMCPClientWithToken(t *testing.T, mcpURL, token string) *MCPClient {
 	t.Helper()
 	c := &MCPClient{
 		mcpURL:  mcpURL,
 		eventCh: make(chan SSEEvent, 100),
 		client:  &http.Client{Timeout: 30 * time.Second},
+		token:   token,
 	}
 
 	// Connect to SSE endpoint. The MCP port requires the same bearer token as
@@ -167,7 +176,7 @@ func NewMCPClient(t *testing.T, mcpURL string) *MCPClient {
 	if err != nil {
 		t.Fatalf("failed to build SSE request: %v", err)
 	}
-	sseReq.Header.Set("Authorization", "Bearer "+testToken)
+	sseReq.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := http.DefaultClient.Do(sseReq)
 	if err != nil {
 		t.Fatalf("failed to connect to SSE: %v", err)
@@ -288,7 +297,7 @@ func (c *MCPClient) messageRequest(t *testing.T, body []byte) *http.Request {
 		t.Fatalf("failed to build MCP message request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Authorization", "Bearer "+c.token)
 	return req
 }
 

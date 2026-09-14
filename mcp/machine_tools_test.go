@@ -52,7 +52,7 @@ func TestRegisterMachineValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if res := h.Handle("register_machine", tc.args); !res.IsError {
+			if res := h.Handle("register_machine", tc.args, ""); !res.IsError {
 				t.Fatalf("expected error for %s", tc.name)
 			}
 		})
@@ -68,7 +68,7 @@ func TestRegisterListDeleteMachine(t *testing.T) {
 		"host":     "100.106.181.59",
 		"ssh_user": "esthie",
 		"shell":    "powershell",
-	})
+	}, "")
 	regReq := assertRegistryOpQueued(t, h, regRes, "register_machine")
 	for k, want := range map[string]string{
 		"name": "corsair-win", "host": "100.106.181.59",
@@ -78,14 +78,14 @@ func TestRegisterListDeleteMachine(t *testing.T) {
 			t.Errorf("registry_args[%q]: expected %q, got %q", k, want, got)
 		}
 	}
-	if listRes := h.Handle("list_machines", map[string]interface{}{}); !strings.Contains(listRes.Content[0].Text, "[]") {
+	if listRes := h.Handle("list_machines", map[string]interface{}{}, ""); !strings.Contains(listRes.Content[0].Text, "[]") {
 		t.Fatalf("registry mutated before approval: %s", listRes.Content[0].Text)
 	}
 
 	// Seed directly so list + delete have something to work with.
 	registerWin(t, h)
 
-	listRes := h.Handle("list_machines", map[string]interface{}{})
+	listRes := h.Handle("list_machines", map[string]interface{}{}, "")
 	var list []machines.Machine
 	if err := json.Unmarshal([]byte(listRes.Content[0].Text), &list); err != nil {
 		t.Fatalf("unmarshal list: %v", err)
@@ -94,12 +94,12 @@ func TestRegisterListDeleteMachine(t *testing.T) {
 		t.Fatalf("unexpected list: %+v", list)
 	}
 
-	delRes := h.Handle("delete_machine", map[string]interface{}{"name": "corsair-win"})
+	delRes := h.Handle("delete_machine", map[string]interface{}{"name": "corsair-win"}, "")
 	delReq := assertRegistryOpQueued(t, h, delRes, "delete_machine")
 	if delReq.RegistryArgs["name"] != "corsair-win" {
 		t.Fatalf("expected name corsair-win in registry_args, got %+v", delReq.RegistryArgs)
 	}
-	listRes = h.Handle("list_machines", map[string]interface{}{})
+	listRes = h.Handle("list_machines", map[string]interface{}{}, "")
 	if strings.Contains(listRes.Content[0].Text, "[]") {
 		t.Fatalf("machine removed before approval: %s", listRes.Content[0].Text)
 	}
@@ -109,7 +109,7 @@ func TestExecMachineNotFound(t *testing.T) {
 	h := setup(t)
 	res := h.Handle("exec_machine", map[string]interface{}{
 		"machine": "ghost", "command": "ls", "reason": "x",
-	})
+	}, "")
 	if !res.IsError || !strings.Contains(res.Content[0].Text, "not found") {
 		t.Fatalf("expected not-found error, got %+v", res)
 	}
@@ -125,7 +125,7 @@ func TestExecMachinePowerShell(t *testing.T) {
 		"command": "Get-Process",
 		"reason":  "check procs",
 		"shell":   true,
-	})
+	}, "")
 	reason, args, _ := reqFromResult(t, h, res)
 	if !strings.Contains(reason, "[MACHINE corsair-win (powershell)]") {
 		t.Fatalf("reason prefix wrong: %s", reason)
@@ -144,7 +144,7 @@ func TestExecMachinePosixDirectArgs(t *testing.T) {
 	seedMachine(t, h, "wsl", "100.106.181.59", "gpu", machines.ShellPosix)
 	res := h.Handle("exec_machine", map[string]interface{}{
 		"machine": "wsl", "command": "nvidia-smi", "reason": "gpu check",
-	})
+	}, "")
 	_, args, _ := reqFromResult(t, h, res)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "gpu@100.106.181.59 -- nvidia-smi") {
@@ -162,7 +162,7 @@ func TestWriteFileMachinePowerShell(t *testing.T) {
 		"path":    `C:\Users\esthie\note.txt`,
 		"content": content,
 		"reason":  "deploy note",
-	})
+	}, "")
 	_, args, stdin := reqFromResult(t, h, res)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "esthie@100.106.181.59") || !strings.Contains(joined, "-EncodedCommand") {
@@ -178,7 +178,7 @@ func TestWriteFileMachineNotFound(t *testing.T) {
 	h := setup(t)
 	res := h.Handle("write_file", map[string]interface{}{
 		"machine": "ghost", "path": "/tmp/x", "content": "y", "reason": "z",
-	})
+	}, "")
 	if !res.IsError || !strings.Contains(res.Content[0].Text, "not found") {
 		t.Fatalf("expected not-found, got %+v", res)
 	}
@@ -192,7 +192,7 @@ func TestInstallSSHKeyMachine(t *testing.T) {
 		"machine":    "corsair-win",
 		"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyData12345678901234567890123456 relay@host",
 		"reason":     "grant relay access",
-	})
+	}, "")
 	reason, args, stdin := reqFromResult(t, h, res)
 	if !strings.Contains(reason, "machine corsair-win") {
 		t.Fatalf("reason wrong: %s", reason)
@@ -210,7 +210,7 @@ func TestInstallSSHKeyRequiresTarget(t *testing.T) {
 	res := h.Handle("install_ssh_key", map[string]interface{}{
 		"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyData12345678901234567890123456 relay@host",
 		"reason":     "x",
-	})
+	}, "")
 	if !res.IsError || !strings.Contains(res.Content[0].Text, "ctid or machine") {
 		t.Fatalf("expected ctid-or-machine error, got %+v", res)
 	}
@@ -220,7 +220,7 @@ func TestDeleteContainer(t *testing.T) {
 	h := setup(t)
 	seedContainer(t, h, 9104, "100.106.181.59", "gpu-worker", true)
 
-	del := h.Handle("delete_container", map[string]interface{}{"ctid": float64(9104)})
+	del := h.Handle("delete_container", map[string]interface{}{"ctid": float64(9104)}, "")
 	delReq := assertRegistryOpQueued(t, h, del, "delete_container")
 	if delReq.RegistryArgs["ctid"] != "9104" {
 		t.Fatalf("expected ctid 9104 in registry_args, got %+v", delReq.RegistryArgs)
@@ -229,12 +229,12 @@ func TestDeleteContainer(t *testing.T) {
 	// Still registered: the delete only lands once a human approves. Deleting an
 	// unregistered CTID likewise only fails at execution time — covered in the
 	// integration suite, which can drive the approval.
-	list := h.Handle("list_containers", map[string]interface{}{})
+	list := h.Handle("list_containers", map[string]interface{}{}, "")
 	if !strings.Contains(list.Content[0].Text, "9104") {
 		t.Fatalf("container removed before approval: %s", list.Content[0].Text)
 	}
 
-	if mc := h.Handle("delete_container", map[string]interface{}{}); !mc.IsError {
+	if mc := h.Handle("delete_container", map[string]interface{}{}, ""); !mc.IsError {
 		t.Fatal("expected error for missing ctid")
 	}
 }

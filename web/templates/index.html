@@ -934,6 +934,7 @@ function render() {
     // hand-written check used to miss, so HTTP cards need the badge too.
     const nonAsciiBadge = requestHasNonAscii(r) ? '<span class="nonascii-badge">NON-ASCII</span>' : '';
     const wdInfo = r.working_dir ? '<div class="meta">cwd: ' + sanitize(r.working_dir) + '</div>' : '';
+    const clientInfo = r.client ? '<div class="meta">client: ' + sanitize(r.client) + '</div>' : '';
 
     // Line count badge for long commands
     const cmdText = r.shell
@@ -1074,6 +1075,7 @@ function render() {
       ${b64Display}
       <div class="reason">${truncateWithToggle(r.reason, 200, 'reason-' + r.id)}</div>
       ${wdInfo}
+      ${clientInfo}
       <div class="meta">${formatTime(r.created_at)}</div>
       ${actions}
       ${output}

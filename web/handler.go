@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/standardnguyen/human-relay/audit"
+	"github.com/standardnguyen/human-relay/auth"
 	"github.com/standardnguyen/human-relay/containers"
 	"github.com/standardnguyen/human-relay/executor"
 	"github.com/standardnguyen/human-relay/machines"
@@ -819,7 +820,7 @@ func (h *Handler) handlePermissionCheck(w http.ResponseWriter, r *http.Request) 
 		if body.Client != "" {
 			display = "[" + body.Client + "] " + display
 		}
-		req := h.store.AddPermission(display, body.Reason, 300)
+		req := h.store.AddPermission(display, body.Reason, 300, auth.ClientFrom(r.Context()))
 		resp["request_id"] = req.ID
 	}
 

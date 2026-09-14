@@ -654,48 +654,48 @@ func (h *ToolHandler) sshPrefix() []string {
 	return nil
 }
 
-func (h *ToolHandler) Handle(name string, args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) Handle(name string, args map[string]interface{}, client string) *CallToolResult {
 	switch name {
 	case "request_command":
 		return h.requestCommandRetired(args)
 	case "request_command_for_relay":
-		return h.requestCommandForRelay(args)
+		return h.requestCommandForRelay(args, client)
 	case "request_command_for_host":
-		return h.requestCommandForHost(args)
+		return h.requestCommandForHost(args, client)
 	case "get_result":
 		return h.getResult(args)
 	case "list_requests":
 		return h.listRequests(args)
 	case "register_container":
-		return h.registerContainer(args)
+		return h.registerContainer(args, client)
 	case "list_containers":
 		return h.listContainers(args)
 	case "delete_container":
-		return h.deleteContainer(args)
+		return h.deleteContainer(args, client)
 	case "exec_container":
-		return h.execContainer(args)
+		return h.execContainer(args, client)
 	case "register_machine":
-		return h.registerMachine(args)
+		return h.registerMachine(args, client)
 	case "list_machines":
 		return h.listMachines(args)
 	case "delete_machine":
-		return h.deleteMachine(args)
+		return h.deleteMachine(args, client)
 	case "exec_machine":
-		return h.execMachine(args)
+		return h.execMachine(args, client)
 	case "write_file":
-		return h.writeFile(args)
+		return h.writeFile(args, client)
 	case "http_request":
-		return h.httpRequest(args)
+		return h.httpRequest(args, client)
 	case "run_script":
-		return h.runScript(args)
+		return h.runScript(args, client)
 	case "create_script":
-		return h.createScript(args)
+		return h.createScript(args, client)
 	case "create_then_run":
-		return h.createThenRun(args)
+		return h.createThenRun(args, client)
 	case "install_relay_ssh":
-		return h.installRelaySSH(args)
+		return h.installRelaySSH(args, client)
 	case "install_ssh_key":
-		return h.installSSHKey(args)
+		return h.installSSHKey(args, client)
 	case "withdraw_request":
 		return h.withdrawRequest(args)
 	default:
@@ -768,13 +768,13 @@ func (h *ToolHandler) requestCommandRetired(args map[string]interface{}) *CallTo
 
 // requestCommandForRelay is the old request_command with its destination made
 // explicit in the name.
-func (h *ToolHandler) requestCommandForRelay(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) requestCommandForRelay(args map[string]interface{}, client string) *CallToolResult {
 	cr, errRes := parseCommandRequest(args)
 	if errRes != nil {
 		return errRes
 	}
 
-	r := h.store.Add(cr.command, cr.args, cr.reason, cr.workingDir, cr.shell, cr.timeout)
+	r := h.store.Add(cr.command, cr.args, cr.reason, cr.workingDir, cr.shell, cr.timeout, client)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
 		"tool":        "request_command_for_relay",
@@ -797,7 +797,7 @@ func (h *ToolHandler) requestCommandForRelay(args map[string]interface{}) *CallT
 // on the host (see the relay docs' gotcha on inline ssh). Every element is
 // shell-quoted because the remote side passes ssh's joined argv through a
 // shell, so an unquoted argument with a space would arrive as two arguments.
-func (h *ToolHandler) requestCommandForHost(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) requestCommandForHost(args map[string]interface{}, client string) *CallToolResult {
 	cr, errRes := parseCommandRequest(args)
 	if errRes != nil {
 		return errRes
@@ -835,7 +835,7 @@ func (h *ToolHandler) requestCommandForHost(args map[string]interface{}) *CallTo
 
 	// The reviewer decides on this line, so the destination has to be in it.
 	prefixedReason := fmt.Sprintf("[HOST %s - runs on the Proxmox host, NOT in the relay container] %s", host, cr.reason)
-	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, cr.timeout)
+	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, cr.timeout, client)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
 		"tool":    "request_command_for_host",
@@ -946,7 +946,7 @@ func errorResult(msg string) *CallToolResult {
 	}
 }
 
-func (h *ToolHandler) registerContainer(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) registerContainer(args map[string]interface{}, client string) *CallToolResult {
 	ctid := intArg(args, "ctid")
 	if ctid == 0 {
 		return errorResult("ctid is required and must be > 0")
@@ -982,14 +982,14 @@ func (h *ToolHandler) registerContainer(args map[string]interface{}) *CallToolRe
 	if sshUser != "" {
 		reason += fmt.Sprintf(", ssh_user=%s", sshUser)
 	}
-	return h.queueRegistryOp("register_container", regArgs, reason)
+	return h.queueRegistryOp("register_container", regArgs, reason, client)
 }
 
 // queueRegistryOp files an already-validated registry mutation as a pending
 // request. The registry is only touched after a human approves — see
 // web.executeRegistryOp. Shared by the four register/delete tools.
-func (h *ToolHandler) queueRegistryOp(op string, regArgs map[string]string, reason string) *CallToolResult {
-	r := h.store.AddRegistryOp(op, regArgs, reason)
+func (h *ToolHandler) queueRegistryOp(op string, regArgs map[string]string, reason string, client string) *CallToolResult {
+	r := h.store.AddRegistryOp(op, regArgs, reason, client)
 	h.store.SetDisplayCommand(r.ID, reason)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
@@ -1018,7 +1018,7 @@ func (h *ToolHandler) listContainers(args map[string]interface{}) *CallToolResul
 	return textResult(string(data))
 }
 
-func (h *ToolHandler) deleteContainer(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) deleteContainer(args map[string]interface{}, client string) *CallToolResult {
 	ctid := intArg(args, "ctid")
 	if ctid == 0 {
 		return errorResult("ctid is required and must be > 0")
@@ -1027,10 +1027,11 @@ func (h *ToolHandler) deleteContainer(args map[string]interface{}) *CallToolResu
 		"delete_container",
 		map[string]string{"ctid": strconv.Itoa(ctid)},
 		fmt.Sprintf("delete container CTID %d from the relay registry", ctid),
+		client,
 	)
 }
 
-func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) execContainer(args map[string]interface{}, client string) *CallToolResult {
 	ctid := intArg(args, "ctid")
 	if ctid == 0 {
 		return errorResult("ctid is required and must be > 0")
@@ -1121,7 +1122,7 @@ func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult
 	prefixedReason := fmt.Sprintf("[CTID %d %s] %s", c.CTID, c.Hostname, reason)
 
 	// Create a regular approval request through the store
-	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, timeout)
+	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, timeout, client)
 
 	route := "direct_ssh"
 	if !c.HasRelaySSH {
@@ -1168,7 +1169,7 @@ func sshUserInjectable(u string) bool {
 	return strings.HasPrefix(u, "-")
 }
 
-func (h *ToolHandler) registerMachine(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) registerMachine(args map[string]interface{}, client string) *CallToolResult {
 	if h.machines == nil {
 		return errorResult("machine registry not configured")
 	}
@@ -1218,7 +1219,7 @@ func (h *ToolHandler) registerMachine(args map[string]interface{}) *CallToolResu
 		regArgs["identity_file"] = identityFile
 		reason += fmt.Sprintf(", identity_file=%s", identityFile)
 	}
-	return h.queueRegistryOp("register_machine", regArgs, reason)
+	return h.queueRegistryOp("register_machine", regArgs, reason, client)
 }
 
 func (h *ToolHandler) listMachines(args map[string]interface{}) *CallToolResult {
@@ -1236,7 +1237,7 @@ func (h *ToolHandler) listMachines(args map[string]interface{}) *CallToolResult 
 	return textResult(string(data))
 }
 
-func (h *ToolHandler) deleteMachine(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) deleteMachine(args map[string]interface{}, client string) *CallToolResult {
 	if h.machines == nil {
 		return errorResult("machine registry not configured")
 	}
@@ -1248,6 +1249,7 @@ func (h *ToolHandler) deleteMachine(args map[string]interface{}) *CallToolResult
 		"delete_machine",
 		map[string]string{"name": name},
 		fmt.Sprintf("delete machine %s from the relay registry", name),
+		client,
 	)
 }
 
@@ -1264,7 +1266,7 @@ func (h *ToolHandler) machineSSHBase(m *machines.Machine) []string {
 	return args
 }
 
-func (h *ToolHandler) execMachine(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) execMachine(args map[string]interface{}, client string) *CallToolResult {
 	if h.machines == nil {
 		return errorResult("machine registry not configured")
 	}
@@ -1315,7 +1317,7 @@ func (h *ToolHandler) execMachine(args map[string]interface{}) *CallToolResult {
 	sshArgs := append(h.machineSSHBase(m), machineExecRemote(m, command, cmdArgs, shell)...)
 	prefixedReason := fmt.Sprintf("[MACHINE %s (%s)] %s", m.Name, m.Shell, reason)
 
-	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, timeout)
+	r := h.store.Add("ssh", sshArgs, prefixedReason, "", false, timeout, client)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
 		"tool":    "exec_machine",
@@ -1338,7 +1340,7 @@ func (h *ToolHandler) execMachine(args map[string]interface{}) *CallToolResult {
 	return textResult(string(data))
 }
 
-func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) httpRequest(args map[string]interface{}, client string) *CallToolResult {
 	method, _ := args["method"].(string)
 	url, _ := args["url"].(string)
 	reason, _ := args["reason"].(string)
@@ -1417,7 +1419,7 @@ func (h *ToolHandler) httpRequest(args map[string]interface{}) *CallToolResult {
 		timeout = int(t)
 	}
 
-	r := h.store.AddHTTPForm(method, url, headers, body, formFile, formFields, reason, timeout)
+	r := h.store.AddHTTPForm(method, url, headers, body, formFile, formFields, reason, timeout, client)
 
 	// Build a friendly display command
 	displayCmd := fmt.Sprintf("%s %s", method, url)
@@ -1459,7 +1461,7 @@ var validScriptNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // paths, anything with spaces or dots. Used by run_script and create_then_run.
 var validScriptPathRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*(/[a-zA-Z0-9][a-zA-Z0-9_-]*)*$`)
 
-func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) runScript(args map[string]interface{}, client string) *CallToolResult {
 	name, _ := args["name"].(string)
 	reason, _ := args["reason"].(string)
 
@@ -1496,7 +1498,7 @@ func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
 		timeout = int(t)
 	}
 
-	r := h.store.AddScript(name, scriptArgs, reason, timeout)
+	r := h.store.AddScript(name, scriptArgs, reason, timeout, client)
 
 	displayCmd := fmt.Sprintf("run_script %s", name)
 	if len(scriptArgs) > 0 {
@@ -1520,7 +1522,7 @@ func (h *ToolHandler) runScript(args map[string]interface{}) *CallToolResult {
 	return textResult(string(data))
 }
 
-func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) createScript(args map[string]interface{}, client string) *CallToolResult {
 	name, _ := args["name"].(string)
 	content, _ := args["content"].(string)
 	reason, _ := args["reason"].(string)
@@ -1553,7 +1555,7 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 	// Script content rides in at construction (it is what gets written to disk,
 	// and what the whitelist keys on) — never assigned after the request is
 	// published into the store.
-	r := h.store.AddScriptTyped("script_create", name, nil, prefixedReason, 0, []byte(content))
+	r := h.store.AddScriptTyped("script_create", name, nil, prefixedReason, 0, []byte(content), client)
 
 	displayCmd := fmt.Sprintf("create_script %s (%dB)", name, len(content))
 	h.store.SetDisplayCommand(r.ID, displayCmd)
@@ -1590,7 +1592,7 @@ func detectScriptExt(content string) string {
 	return ".py"
 }
 
-func (h *ToolHandler) createThenRun(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) createThenRun(args map[string]interface{}, client string) *CallToolResult {
 	name, _ := args["name"].(string)
 	content, _ := args["content"].(string)
 	reason, _ := args["reason"].(string)
@@ -1649,7 +1651,7 @@ func (h *ToolHandler) createThenRun(args map[string]interface{}) *CallToolResult
 	prefixedReason := fmt.Sprintf("[CREATE+RUN %s%s %dB]%s %s\n---\n%s",
 		targetName, ext, len(content), argsStr, reason, preview)
 
-	r := h.store.AddScriptTyped("script_create_then_run", targetName, scriptArgs, prefixedReason, timeout, []byte(content))
+	r := h.store.AddScriptTyped("script_create_then_run", targetName, scriptArgs, prefixedReason, timeout, []byte(content), client)
 
 	displayCmd := fmt.Sprintf("create_then_run %s%s (%dB)", targetName, ext, len(content))
 	if len(scriptArgs) > 0 {
@@ -1832,7 +1834,7 @@ var bashCShellRe = regexp.MustCompile(`\b(?:bash|sh)\s+-c\s+([^\s'"` + "`" + `]+
 // every registry-supplied value interpolated into it MUST be shellQuote'd — the
 // registry's ssh_user and ip fields are only checked for the leading-dash argv
 // shape (sshUserInjectable), never for shell metacharacters. See finding #6.
-func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, reason, sourcePath, sourceHost string, sourceCtid int) *CallToolResult {
+func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, reason, sourcePath, sourceHost string, sourceCtid int, client string) *CallToolResult {
 	mode := "0644"
 	if m, ok := args["mode"].(string); ok && m != "" {
 		mode = m
@@ -1973,7 +1975,7 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 	prefixedReason := fmt.Sprintf("[FILE from %s:%s -> %s:%s] %s\n%s%s",
 		srcTarget, sourcePath, dstTarget, path, reason, sourceLine, overwriteLine)
 
-	r := h.store.Add(full, nil, prefixedReason, "", true, timeout)
+	r := h.store.Add(full, nil, prefixedReason, "", true, timeout, client)
 
 	// display_command REPLACES the raw command in the approval pane, so the
 	// friendly summary alone would hide the pipeline the relay is about to run
@@ -2208,7 +2210,7 @@ doneMetachar:
 	return warnings
 }
 
-func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) writeFile(args map[string]interface{}, client string) *CallToolResult {
 	path, _ := args["path"].(string)
 	reason, _ := args["reason"].(string)
 
@@ -2251,7 +2253,7 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 		if !validPathRe.MatchString(sourcePath) {
 			return errorResult("source_path must be absolute with only alphanumeric, dot, dash, underscore, and slash characters")
 		}
-		return h.writeFileFromSource(args, path, reason, sourcePath, sourceHost, sourceCtid)
+		return h.writeFileFromSource(args, path, reason, sourcePath, sourceHost, sourceCtid, client)
 	}
 
 	if hasPlain && plaintext != "" && hasB64 && contentB64 != "" {
@@ -2393,7 +2395,7 @@ func (h *ToolHandler) writeFile(args map[string]interface{}) *CallToolResult {
 	prefixedReason := fmt.Sprintf("[FILE %dB -> %s:%s] %s\n%s---\n%s",
 		len(content), target, path, reason, overwriteLine, preview)
 
-	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, stdinBytes)
+	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, stdinBytes, client)
 
 	displayCmd := fmt.Sprintf("write -> %s:%s  [%dB, mode %s]", target, path, len(content), mode)
 	h.store.SetDisplayCommand(r.ID, displayCmd)
@@ -2429,7 +2431,7 @@ func sshKeyLine(key string) string {
 // validSSHKeyRe matches common SSH public key formats.
 var validSSHKeyRe = regexp.MustCompile(`^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+ ?\S*$`)
 
-func (h *ToolHandler) installRelaySSH(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) installRelaySSH(args map[string]interface{}, client string) *CallToolResult {
 	ctid := intArg(args, "ctid")
 	if ctid == 0 {
 		return errorResult("ctid is required and must be > 0")
@@ -2485,7 +2487,7 @@ func (h *ToolHandler) installRelaySSH(args map[string]interface{}) *CallToolResu
 	}
 	prefixedReason := fmt.Sprintf("[SSH KEY -> CTID %d %s] %s\n---\nInstalling relay's own public key for direct SSH access.\nKey: %s", ctid, hostname, reason, pubkey)
 
-	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, content)
+	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, content, client)
 
 	displayCmd := fmt.Sprintf("install relay SSH key -> CTID %d (%s)", ctid, hostname)
 	h.store.SetDisplayCommand(r.ID, displayCmd)
@@ -2517,7 +2519,7 @@ func (h *ToolHandler) installRelaySSH(args map[string]interface{}) *CallToolResu
 	return textResult(string(data))
 }
 
-func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult {
+func (h *ToolHandler) installSSHKey(args map[string]interface{}, client string) *CallToolResult {
 	ctid := intArg(args, "ctid")
 	machineName, _ := args["machine"].(string)
 	publicKey, _ := args["public_key"].(string)
@@ -2540,7 +2542,7 @@ func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult
 	}
 
 	if machineName != "" {
-		return h.installSSHKeyMachine(machineName, pubkey, reason, timeout)
+		return h.installSSHKeyMachine(machineName, pubkey, reason, timeout, client)
 	}
 	if ctid == 0 {
 		return errorResult("ctid or machine is required")
@@ -2584,7 +2586,7 @@ func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult
 
 	prefixedReason := fmt.Sprintf("[SSH KEY -> CTID %d %s] %s\n---\nKey: %s", ctid, c.Hostname, reason, pubkey)
 
-	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, content)
+	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, content, client)
 
 	displayCmd := fmt.Sprintf("install SSH key -> CTID %d (%s)", ctid, c.Hostname)
 	h.store.SetDisplayCommand(r.ID, displayCmd)
@@ -2612,7 +2614,7 @@ func (h *ToolHandler) installSSHKey(args map[string]interface{}) *CallToolResult
 // installSSHKeyMachine appends an arbitrary public key to a machine's
 // authorized_keys over direct SSH (the relay must already have access). The key
 // flows via stdin; the remote target path is the login user's profile.
-func (h *ToolHandler) installSSHKeyMachine(name, pubkey, reason string, timeout int) *CallToolResult {
+func (h *ToolHandler) installSSHKeyMachine(name, pubkey, reason string, timeout int, client string) *CallToolResult {
 	if h.machines == nil {
 		return errorResult("machine registry not configured")
 	}
@@ -2628,7 +2630,7 @@ func (h *ToolHandler) installSSHKeyMachine(name, pubkey, reason string, timeout 
 	sshArgs := append(h.machineSSHBase(m), remote...)
 
 	prefixedReason := fmt.Sprintf("[SSH KEY -> machine %s (%s)] %s\n---\nKey: %s", m.Name, m.Shell, reason, pubkey)
-	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, stdin)
+	r := h.store.AddWithStdin("ssh", sshArgs, prefixedReason, "", false, timeout, stdin, client)
 
 	displayCmd := fmt.Sprintf("install SSH key -> machine %s", m.Name)
 	h.store.SetDisplayCommand(r.ID, displayCmd)

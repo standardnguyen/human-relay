@@ -10,7 +10,7 @@ import (
 // one ok=true, because each ok=true spawns an execution in the web handler.
 func TestApproveIsAtomicUnderContention(t *testing.T) {
 	s := New()
-	req := s.Add("echo", []string{"hi"}, "atomic approve test", "", false, 5)
+	req := s.Add("echo", []string{"hi"}, "atomic approve test", "", false, 5, "")
 
 	const callers = 32
 	start := make(chan struct{})
@@ -57,7 +57,7 @@ func TestApproveIsAtomicUnderContention(t *testing.T) {
 
 func TestApproveGatesOutput(t *testing.T) {
 	s := New()
-	req := s.Add("echo", []string{"hi"}, "gated approve test", "", false, 5)
+	req := s.Add("echo", []string{"hi"}, "gated approve test", "", false, 5, "")
 
 	ok, approved := s.Approve(req.ID, true)
 	if !ok {
@@ -78,7 +78,7 @@ func TestApproveRejectsNonPending(t *testing.T) {
 		t.Errorf("Approve on unknown id = (%v, %v), want (false, nil)", ok, r)
 	}
 
-	denied := s.Add("echo", []string{"hi"}, "denied", "", false, 5)
+	denied := s.Add("echo", []string{"hi"}, "denied", "", false, 5, "")
 	s.Deny(denied.ID, "nope")
 	if ok, r := s.Approve(denied.ID, false); ok || r != nil {
 		t.Errorf("Approve on denied request = (%v, %v), want (false, nil)", ok, r)
@@ -87,7 +87,7 @@ func TestApproveRejectsNonPending(t *testing.T) {
 		t.Errorf("denied request status = %s, want %s", got.Status, StatusDenied)
 	}
 
-	withdrawn := s.Add("echo", []string{"hi"}, "withdrawn", "", false, 5)
+	withdrawn := s.Add("echo", []string{"hi"}, "withdrawn", "", false, 5, "")
 	s.Withdraw(withdrawn.ID, "agent gave up")
 	if ok, r := s.Approve(withdrawn.ID, false); ok || r != nil {
 		t.Errorf("Approve on withdrawn request = (%v, %v), want (false, nil)", ok, r)
@@ -98,7 +98,7 @@ func TestApproveRejectsNonPending(t *testing.T) {
 // not be handed a live pointer it could mutate under the store's lock.
 func TestApproveReturnsCopy(t *testing.T) {
 	s := New()
-	req := s.Add("echo", []string{"hi"}, "copy test", "", false, 5)
+	req := s.Add("echo", []string{"hi"}, "copy test", "", false, 5, "")
 
 	ok, approved := s.Approve(req.ID, false)
 	if !ok {
@@ -151,7 +151,7 @@ func TestAddScriptTypedRaceWithReaders(t *testing.T) {
 		writers.Add(1)
 		go func(i int) {
 			defer writers.Done()
-			r := s.AddScriptTyped("script_create", "racy", nil, "finding 26 store race test", 0, []byte("#!/bin/sh\necho racy\n"))
+			r := s.AddScriptTyped("script_create", "racy", nil, "finding 26 store race test", 0, []byte("#!/bin/sh\necho racy\n"), "")
 			ids[i] = r.ID
 		}(i)
 	}
@@ -180,7 +180,7 @@ func TestAddScriptTypedPublishesStdinAtConstruction(t *testing.T) {
 	s := New()
 	body := []byte("#!/bin/sh\necho hi\n")
 
-	r := s.AddScriptTyped("script_create", "constructed", nil, "stdin at construction", 0, body)
+	r := s.AddScriptTyped("script_create", "constructed", nil, "stdin at construction", 0, body, "")
 	if r.StdinSHA256 != StdinDigest(body) {
 		t.Errorf("returned request digest = %q, want %q", r.StdinSHA256, StdinDigest(body))
 	}
@@ -224,12 +224,26 @@ func TestStdinDigestDistinguishesBodies(t *testing.T) {
 // the untyped Type after the AddScriptTyped refactor.
 func TestAddScriptDefaultsToScriptType(t *testing.T) {
 	s := New()
-	r := s.AddScript("some-script", []string{"a"}, "type default test", 0)
+	r := s.AddScript("some-script", []string{"a"}, "type default test", 0, "")
 	got := s.Get(r.ID)
 	if got == nil {
 		t.Fatal("request missing from store")
 	}
 	if got.Type != "script" {
 		t.Errorf("Type = %q, want %q", got.Type, "script")
+	}
+}
+
+// TestAddRecordsClient pins the attribution contract: the client is a
+// construction argument, so it is set before the request is published into the
+// store's map — never filled in afterwards (the finding #26 race).
+func TestAddRecordsClient(t *testing.T) {
+	s := New()
+	req := s.Add("echo", []string{"hi"}, "attribution", "", false, 5, "cc-115")
+	if req.Client != "cc-115" {
+		t.Errorf("returned request Client = %q, want cc-115", req.Client)
+	}
+	if got := s.Get(req.ID); got.Client != "cc-115" {
+		t.Errorf("stored request Client = %q, want cc-115", got.Client)
 	}
 }

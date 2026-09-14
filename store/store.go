@@ -27,6 +27,7 @@ type Request struct {
 	Command    string    `json:"command"`
 	Args       []string  `json:"args"`
 	Reason     string    `json:"reason"`
+	Client     string    `json:"client,omitempty"`
 	WorkingDir string    `json:"working_dir,omitempty"`
 	Shell      bool      `json:"shell"`
 	Timeout    int       `json:"timeout"`
@@ -104,13 +105,14 @@ func New() *Store {
 	}
 }
 
-func (s *Store) Add(cmd string, args []string, reason, workingDir string, shell bool, timeout int) *Request {
+func (s *Store) Add(cmd string, args []string, reason, workingDir string, shell bool, timeout int, client string) *Request {
 	id := generateID()
 	r := &Request{
 		ID:         id,
 		Command:    cmd,
 		Args:       args,
 		Reason:     reason,
+		Client:     client,
 		WorkingDir: workingDir,
 		Shell:      shell,
 		Timeout:    timeout,
@@ -131,11 +133,11 @@ func (s *Store) Add(cmd string, args []string, reason, workingDir string, shell 
 	return r
 }
 
-func (s *Store) AddHTTP(method, url string, headers map[string]string, body, reason string, timeout int) *Request {
-	return s.AddHTTPForm(method, url, headers, body, nil, nil, reason, timeout)
+func (s *Store) AddHTTP(method, url string, headers map[string]string, body, reason string, timeout int, client string) *Request {
+	return s.AddHTTPForm(method, url, headers, body, nil, nil, reason, timeout, client)
 }
 
-func (s *Store) AddHTTPForm(method, url string, headers map[string]string, body string, formFile *FormFile, formFields map[string]string, reason string, timeout int) *Request {
+func (s *Store) AddHTTPForm(method, url string, headers map[string]string, body string, formFile *FormFile, formFields map[string]string, reason string, timeout int, client string) *Request {
 	id := generateID()
 	r := &Request{
 		ID:             id,
@@ -147,6 +149,7 @@ func (s *Store) AddHTTPForm(method, url string, headers map[string]string, body 
 		HTTPFormFile:   formFile,
 		HTTPFormFields: formFields,
 		Reason:         reason,
+		Client:         client,
 		Timeout:        timeout,
 		Status:         StatusPending,
 		CreatedAt:      time.Now(),
@@ -168,13 +171,14 @@ func (s *Store) AddHTTPForm(method, url string, headers map[string]string, body 
 // that requires human approval. displayCommand is what the dashboard shows
 // (e.g. `Bash(rm -rf /tmp/x)`). On approve/deny the relay does not execute
 // anything — callers poll the request status to learn the verdict.
-func (s *Store) AddPermission(displayCommand, reason string, timeout int) *Request {
+func (s *Store) AddPermission(displayCommand, reason string, timeout int, client string) *Request {
 	id := generateID()
 	r := &Request{
 		ID:             id,
 		Type:           "permission",
 		DisplayCommand: displayCommand,
 		Reason:         reason,
+		Client:         client,
 		Timeout:        timeout,
 		Status:         StatusPending,
 		CreatedAt:      time.Now(),
@@ -193,8 +197,8 @@ func (s *Store) AddPermission(displayCommand, reason string, timeout int) *Reque
 }
 
 // AddScript queues a plain run_script request (Type "script").
-func (s *Store) AddScript(name string, args []string, reason string, timeout int) *Request {
-	return s.AddScriptTyped("script", name, args, reason, timeout, nil)
+func (s *Store) AddScript(name string, args []string, reason string, timeout int, client string) *Request {
+	return s.AddScriptTyped("script", name, args, reason, timeout, nil, client)
 }
 
 // AddScriptTyped queues a script-family request with an explicit Type
@@ -207,7 +211,7 @@ func (s *Store) AddScript(name string, args []string, reason string, timeout int
 // the same reason plus one more: publishing the request wakes the whitelist
 // matcher, which keys script creates on a hash of this body. Filling it in
 // after the fact would let the matcher see an empty body and mis-key the rule.
-func (s *Store) AddScriptTyped(typ, name string, args []string, reason string, timeout int, stdin []byte) *Request {
+func (s *Store) AddScriptTyped(typ, name string, args []string, reason string, timeout int, stdin []byte, client string) *Request {
 	id := generateID()
 	r := &Request{
 		ID:          id,
@@ -215,6 +219,7 @@ func (s *Store) AddScriptTyped(typ, name string, args []string, reason string, t
 		ScriptName:  name,
 		ScriptArgs:  args,
 		Reason:      reason,
+		Client:      client,
 		Timeout:     timeout,
 		Status:      StatusPending,
 		CreatedAt:   time.Now(),
@@ -240,7 +245,7 @@ func (s *Store) AddScriptTyped(typ, name string, args []string, reason string, t
 // delete_machine). The MCP tools validate the arguments and queue the request;
 // the registry is only touched once a human approves in the dashboard, at
 // which point the web handler applies the op.
-func (s *Store) AddRegistryOp(op string, args map[string]string, reason string) *Request {
+func (s *Store) AddRegistryOp(op string, args map[string]string, reason string, client string) *Request {
 	id := generateID()
 	r := &Request{
 		ID:           id,
@@ -248,6 +253,7 @@ func (s *Store) AddRegistryOp(op string, args map[string]string, reason string) 
 		RegistryOp:   op,
 		RegistryArgs: args,
 		Reason:       reason,
+		Client:       client,
 		Status:       StatusPending,
 		CreatedAt:    time.Now(),
 	}
@@ -264,13 +270,14 @@ func (s *Store) AddRegistryOp(op string, args map[string]string, reason string) 
 	return r
 }
 
-func (s *Store) AddWithStdin(cmd string, args []string, reason, workingDir string, shell bool, timeout int, stdin []byte) *Request {
+func (s *Store) AddWithStdin(cmd string, args []string, reason, workingDir string, shell bool, timeout int, stdin []byte, client string) *Request {
 	id := generateID()
 	r := &Request{
 		ID:         id,
 		Command:    cmd,
 		Args:       args,
 		Reason:     reason,
+		Client:     client,
 		WorkingDir: workingDir,
 		Shell:      shell,
 		Timeout:    timeout,

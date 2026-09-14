@@ -51,7 +51,7 @@ func TestListRequestsRedactsGatedOutput(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"topsecret"},
@@ -61,7 +61,7 @@ func TestListRequestsRedactsGatedOutput(t *testing.T) {
 	gatedID := extractRequestID(t, resp)
 
 	resp = c.Call(t, 3, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"publicvalue"},
@@ -147,7 +147,7 @@ func TestListRequestsRedactsGatedStderr(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "sh",
 			"args":    []string{"-c", "echo secretdiagnostic >&2; exit 3"},

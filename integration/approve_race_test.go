@@ -78,7 +78,7 @@ func TestConcurrentApproveExecutesOnce(t *testing.T) {
 	ids := make([]string, rounds)
 	for i := 0; i < rounds; i++ {
 		resp := c.Call(t, 2+i, "tools/call", map[string]interface{}{
-			"name": "request_command",
+			"name": "request_command_for_relay",
 			"arguments": map[string]interface{}{
 				"command": "echo",
 				"args":    []string{fmt.Sprintf("approve-race-%d", i)},
@@ -173,7 +173,7 @@ func TestApproveAfterDenyConflicts(t *testing.T) {
 	c.Notify(t, "notifications/initialized", nil)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
-		"name": "request_command",
+		"name": "request_command_for_relay",
 		"arguments": map[string]interface{}{
 			"command": "echo",
 			"args":    []string{"already-denied"},

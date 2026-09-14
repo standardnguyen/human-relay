@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/standardnguyen/human-relay/audit"
+	"github.com/standardnguyen/human-relay/auth"
 	"github.com/standardnguyen/human-relay/containers"
 	"github.com/standardnguyen/human-relay/executor"
 	"github.com/standardnguyen/human-relay/machines"
@@ -22,6 +23,19 @@ import (
 )
 
 func main() {
+	dataDir := envString("MHR_DATA_DIR", "/opt/human-relay/data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		log.Fatalf("create data dir: %v", err)
+	}
+
+	// Client-token management runs before the server starts, so it needs
+	// neither a store nor an auth token. -client-add prints the minted token
+	// once and exits.
+	clientsPath := envString("MHR_CLIENTS_FILE", filepath.Join(dataDir, "clients.json"))
+	if handled, code := handleClientCommand(os.Args[1:], clientsPath); handled {
+		os.Exit(code)
+	}
+
 	authToken := os.Getenv("MHR_AUTH_TOKEN")
 	if authToken == "" {
 		log.Fatal("MHR_AUTH_TOKEN is required")
@@ -32,7 +46,6 @@ func main() {
 	defaultTimeout := envInt("MHR_DEFAULT_TIMEOUT", 30)
 	maxTimeout := envInt("MHR_MAX_TIMEOUT", 300)
 
-	dataDir := envString("MHR_DATA_DIR", "/opt/human-relay/data")
 	hostIP := envString("MHR_HOST_IP", "")
 
 	var allowedDirs []string
@@ -45,10 +58,13 @@ func main() {
 		}
 	}
 
-	// Ensure data directory exists
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("create data dir: %v", err)
+	// Client registry (per-client bearer tokens, JSON file)
+	clientRegistry, err := auth.NewRegistry(clientsPath)
+	if err != nil {
+		log.Fatalf("init client registry: %v", err)
 	}
+	verifier := auth.NewVerifier(clientRegistry, authToken)
+	log.Printf("Client registry: %s", clientsPath)
 
 	s := store.New()
 	exec := executor.New(executor.Config{
@@ -144,7 +160,7 @@ func main() {
 			return
 		}
 		// Everything else goes through auth + CSRF
-		web.AuthMiddleware(authToken,
+		web.AuthMiddleware(verifier,
 			web.CSRFMiddleware(webMux),
 		).ServeHTTP(w, r)
 	})
@@ -163,7 +179,7 @@ func main() {
 	// exec_container, ...), so it requires the same bearer token as the web API.
 	// No CSRF middleware here: nothing on this port is browser-originated.
 	go func() {
-		errCh <- http.ListenAndServe(fmt.Sprintf(":%d", mcpPort), web.AuthMiddleware(authToken, mcpServer))
+		errCh <- http.ListenAndServe(fmt.Sprintf(":%d", mcpPort), web.AuthMiddleware(verifier, mcpServer))
 	}()
 
 	go func() {
@@ -171,6 +187,74 @@ func main() {
 	}()
 
 	log.Fatal(<-errCh)
+}
+
+// handleClientCommand implements the -client-add / -client-list /
+// -client-revoke subcommands. It returns (handled, exitCode); when handled is
+// true the caller exits with exitCode. The token minted by -client-add is
+// printed to stdout exactly once — there is no way to recover it later.
+func handleClientCommand(args []string, clientsPath string) (bool, int) {
+	if len(args) == 0 {
+		return false, 0
+	}
+
+	switch args[0] {
+	case "-client-add":
+		if len(args) < 2 || args[1] == "" {
+			fmt.Fprintln(os.Stderr, "usage: human-relay -client-add <name>")
+			return true, 2
+		}
+		reg, err := auth.NewRegistry(clientsPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load client registry: %v\n", err)
+			return true, 1
+		}
+		token, err := reg.Add(args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return true, 1
+		}
+		fmt.Println(token)
+		fmt.Fprintln(os.Stderr, "Store this token now: it is shown once and cannot be recovered.")
+		return true, 0
+
+	case "-client-list":
+		reg, err := auth.NewRegistry(clientsPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load client registry: %v\n", err)
+			return true, 1
+		}
+		for _, c := range reg.List() {
+			lastSeen := "never"
+			if c.LastSeenAt != nil {
+				lastSeen = c.LastSeenAt.Format(time.RFC3339)
+			}
+			status := "active"
+			if c.Revoked() {
+				status = "revoked"
+			}
+			fmt.Printf("%s\t%s\t%s\t%s\n", c.Name, c.CreatedAt.Format(time.RFC3339), lastSeen, status)
+		}
+		return true, 0
+
+	case "-client-revoke":
+		if len(args) < 2 || args[1] == "" {
+			fmt.Fprintln(os.Stderr, "usage: human-relay -client-revoke <name>")
+			return true, 2
+		}
+		reg, err := auth.NewRegistry(clientsPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load client registry: %v\n", err)
+			return true, 1
+		}
+		if err := reg.Revoke(args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return true, 1
+		}
+		return true, 0
+	}
+
+	return false, 0
 }
 
 func envInt(key string, def int) int {

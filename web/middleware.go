@@ -1,24 +1,36 @@
 package web
 
 import (
-	"crypto/subtle"
 	"net/http"
 	"strings"
+
+	"github.com/standardnguyen/human-relay/auth"
 )
 
-func AuthMiddleware(token string, next http.Handler) http.Handler {
+// Verifier authenticates a presented bearer token and returns the name of the
+// client it belongs to. auth.Verifier implements it.
+type Verifier interface {
+	Verify(token string) (client string, ok bool)
+}
+
+// AuthMiddleware gates next behind the verifier. On success the client name is
+// attached to the request context; on failure the response is a bare 401
+// "unauthorized" — identical whether the token is unknown, malformed, or
+// belongs to a revoked client.
+func AuthMiddleware(v Verifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
+		header := r.Header.Get("Authorization")
+		if !strings.HasPrefix(header, "Bearer ") {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		provided := strings.TrimPrefix(auth, "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+		provided := strings.TrimPrefix(header, "Bearer ")
+		client, ok := v.Verify(provided)
+		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(auth.WithClient(r.Context(), client)))
 	})
 }
 

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/standardnguyen/human-relay/auth"
 )
 
 type Server struct {
@@ -101,7 +103,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := s.dispatch(req)
+	resp := s.dispatch(req, auth.ClientFrom(r.Context()))
 	if resp == nil {
 		// Notification — no response needed
 		w.WriteHeader(http.StatusAccepted)
@@ -118,7 +120,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Server) dispatch(req JSONRPCRequest) *JSONRPCResponse {
+func (s *Server) dispatch(req JSONRPCRequest, client string) *JSONRPCResponse {
 	switch req.Method {
 	case "initialize":
 		return &JSONRPCResponse{
@@ -152,7 +154,7 @@ func (s *Server) dispatch(req JSONRPCRequest) *JSONRPCResponse {
 		var callParams CallToolParams
 		json.Unmarshal(params, &callParams)
 
-		result := s.handler.Handle(callParams.Name, callParams.Arguments)
+		result := s.handler.Handle(callParams.Name, callParams.Arguments, client)
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,

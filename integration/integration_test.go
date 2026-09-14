@@ -1042,6 +1042,7 @@ type RequestResult struct {
 	Command        string      `json:"command"`
 	Args           []string    `json:"args"`
 	Reason         string      `json:"reason"`
+	Client         string      `json:"client,omitempty"`
 	Status         string      `json:"status"`
 	CreatedAt      time.Time   `json:"created_at"`
 	DenyReason     string      `json:"deny_reason"`

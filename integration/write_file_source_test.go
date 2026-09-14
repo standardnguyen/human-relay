@@ -3,6 +3,9 @@ package integration
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,8 +18,8 @@ import (
 func TestWriteFileSourceCtidToCtidDirectSSH(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 115, "192.168.10.66", "claude-personal", true)
-	registerContainer(t, c, 3, 131, "192.168.10.90", "human-relay", true)
+	registerContainer(t, s, c, 2, 115, "192.168.10.66", "claude-personal", true)
+	registerContainer(t, s, c, 3, 131, "192.168.10.90", "human-relay", true)
 
 	resp := c.Call(t, 4, "tools/call", map[string]interface{}{
 		"name": "write_file",
@@ -130,7 +133,7 @@ func TestWriteFileSourceCtidPctExecFallback(t *testing.T) {
 	s, c := initClient(t)
 
 	// Source container without relay SSH: pull via pct exec cat on the Proxmox host.
-	registerContainer(t, c, 2, 153, "192.168.10.113", "habit-isekai", false)
+	registerContainer(t, s, c, 2, 153, "192.168.10.113", "habit-isekai", false)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "write_file",
@@ -296,8 +299,8 @@ func TestWriteFileSourceUnregisteredCtid(t *testing.T) {
 func TestWriteFileSourcePctPushDest(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 115, "192.168.10.66", "claude-personal", true)
-	registerContainer(t, c, 3, 108, "192.168.10.59", "wikijs", false)
+	registerContainer(t, s, c, 2, 115, "192.168.10.66", "claude-personal", true)
+	registerContainer(t, s, c, 3, 108, "192.168.10.59", "wikijs", false)
 
 	resp := c.Call(t, 4, "tools/call", map[string]interface{}{
 		"name": "write_file",
@@ -328,6 +331,203 @@ func TestWriteFileSourcePctPushDest(t *testing.T) {
 	}
 	if !strings.Contains(full, "pct push 108") {
 		t.Errorf("expected pct push to dest, got %s", full)
+	}
+
+	WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), wfr.RequestID),
+		s.token, map[string]string{"reason": "test only"})
+}
+
+// --- finding #6: ssh_user shell injection into the source-streaming pipeline ---
+//
+// write_file's source-streaming mode builds `srcCmd | dstCmd` as a shell string
+// and stores it with shell=true, which executor.Execute hands to `sh -c`. The
+// registry's ssh_user is only screened for a leading '-' (sshUserInjectable,
+// which guards argv sinks like exec_container) — nothing there rejects shell
+// metacharacters. Unquoted, an ssh_user of "foo; touch /tmp/pwned" would append
+// a second command to the pipeline the relay itself runs.
+
+// pipelineOf reassembles the shell string the executor would run for a request.
+func pipelineOf(r *RequestResult) string {
+	full := r.Command
+	if len(r.Args) > 0 {
+		full += " " + strings.Join(r.Args, " ")
+	}
+	return full
+}
+
+// runPipelineSandboxed executes a constructed pipeline exactly the way
+// executor.Execute does (`sh -c <full>`), with a stub `ssh` on PATH so nothing
+// leaves the machine. Any injected command would still run — which is the point.
+// Proven against an unquoted control pipeline: both payload shapes used below
+// do create their marker when the ssh_user is interpolated raw, so a clean Stat
+// here is evidence of the quoting and not of a blind probe.
+func runPipelineSandboxed(t *testing.T, full string) {
+	t.Helper()
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "ssh")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ncat >/dev/null 2>&1\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write ssh stub: %v", err)
+	}
+	cmd := exec.Command("sh", "-c", full)
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":/usr/bin:/bin")
+	// Exit status is irrelevant: the stub makes the ssh legs no-ops. Only the
+	// side effects on disk matter.
+	_ = cmd.Run()
+}
+
+func TestWriteFileSourceSSHUserShellInjectionSourceSide(t *testing.T) {
+	s, c := initClient(t)
+
+	marker := filepath.Join(t.TempDir(), "mhr-pwned-marker")
+	// No leading '-', so registration's sshUserInjectable check lets it through.
+	// The trailing ';' is load-bearing: unquoted, the pipeline reads
+	// "ssh foo; touch <marker>@<ip> -- ...", so without it the injected touch
+	// creates "<marker>@192.168.10.104" and a Stat on <marker> reads clean in
+	// BOTH the vulnerable and fixed cases — i.e. no test at all. Verified
+	// against an unquoted control before trusting this assertion.
+	payload := "foo; touch " + marker + " ;"
+
+	registerContainerArgs(t, s, c, 2, map[string]interface{}{
+		"ctid":          float64(9999),
+		"ip":            "192.168.10.104",
+		"hostname":      "corsair",
+		"has_relay_ssh": true,
+		"ssh_user":      payload,
+	})
+
+	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
+		"name": "write_file",
+		"arguments": map[string]interface{}{
+			"path":        "/tmp/dest.bin",
+			"host":        "10.0.0.2",
+			"source_ctid": float64(9999),
+			"source_path": "/tmp/src.bin",
+			"reason":      "source-side ssh_user injection",
+		},
+	})
+	if isErrorResponse(resp) {
+		t.Fatal("unexpected error")
+	}
+
+	wfr := extractWriteFileResponse(t, resp)
+	found := findRequestByID(t, c, 4, wfr.RequestID)
+	full := pipelineOf(found)
+
+	// The whole user@ip token must be one single-quoted shell word.
+	want := "'" + payload + "@192.168.10.104'"
+	if !strings.Contains(full, want) {
+		t.Errorf("expected ssh target quoted as %q, got pipeline %q", want, full)
+	}
+
+	runPipelineSandboxed(t, full)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("SHELL INJECTION: ssh_user payload executed, %s was created", marker)
+	}
+
+	WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), wfr.RequestID),
+		s.token, map[string]string{"reason": "test only"})
+}
+
+func TestWriteFileSourceSSHUserShellInjectionDestSide(t *testing.T) {
+	s, c := initClient(t)
+
+	marker := filepath.Join(t.TempDir(), "mhr-pwned-marker")
+	// Command-substitution form rather than ';' — same sink, different metachar.
+	// $(...) closes itself, so the "@<ip>" the pipeline appends lands outside
+	// the injected command and the marker path stays exact (see the source-side
+	// test's note on why that matters).
+	payload := "foo$(touch " + marker + ")"
+
+	registerContainerArgs(t, s, c, 2, map[string]interface{}{
+		"ctid":          float64(9998),
+		"ip":            "192.168.10.105",
+		"hostname":      "victim",
+		"has_relay_ssh": true,
+		"ssh_user":      payload,
+	})
+
+	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
+		"name": "write_file",
+		"arguments": map[string]interface{}{
+			"path":        "/tmp/dest.bin",
+			"ctid":        float64(9998),
+			"source_host": "10.0.0.1",
+			"source_path": "/tmp/src.bin",
+			"reason":      "dest-side ssh_user injection",
+		},
+	})
+	if isErrorResponse(resp) {
+		t.Fatal("unexpected error")
+	}
+
+	wfr := extractWriteFileResponse(t, resp)
+	found := findRequestByID(t, c, 4, wfr.RequestID)
+	full := pipelineOf(found)
+
+	want := "'" + payload + "@192.168.10.105'"
+	if !strings.Contains(full, want) {
+		t.Errorf("expected ssh target quoted as %q, got pipeline %q", want, full)
+	}
+
+	runPipelineSandboxed(t, full)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("SHELL INJECTION: ssh_user payload executed, %s was created", marker)
+	}
+
+	WebPost(t,
+		fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), wfr.RequestID),
+		s.token, map[string]string{"reason": "test only"})
+}
+
+// The reviewer must be able to see the pipeline they are approving: display_command
+// REPLACES the raw command in the dashboard, so a summary-only rendering hid a
+// hostile ssh_user entirely.
+func TestWriteFileSourceDisplayCommandShowsPipeline(t *testing.T) {
+	s, c := initClient(t)
+
+	payload := "foo; touch /tmp/mhr-pwned-marker"
+	registerContainerArgs(t, s, c, 2, map[string]interface{}{
+		"ctid":          float64(9999),
+		"ip":            "192.168.10.104",
+		"hostname":      "corsair",
+		"has_relay_ssh": true,
+		"ssh_user":      payload,
+	})
+
+	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
+		"name": "write_file",
+		"arguments": map[string]interface{}{
+			"path":        "/tmp/dest.bin",
+			"host":        "10.0.0.2",
+			"source_ctid": float64(9999),
+			"source_path": "/tmp/src.bin",
+			"reason":      "display command must expose the pipeline",
+		},
+	})
+	if isErrorResponse(resp) {
+		t.Fatal("unexpected error")
+	}
+
+	wfr := extractWriteFileResponse(t, resp)
+	found := findRequestByID(t, c, 4, wfr.RequestID)
+
+	// Friendly summary still present...
+	if !strings.Contains(found.DisplayCommand, "stream") ||
+		!strings.Contains(found.DisplayCommand, "/tmp/src.bin") {
+		t.Errorf("expected display_command to keep the stream summary, got %q", found.DisplayCommand)
+	}
+	// ...and the real pipeline alongside it, payload included.
+	if !strings.Contains(found.DisplayCommand, " | ") {
+		t.Errorf("expected display_command to show the pipeline, got %q", found.DisplayCommand)
+	}
+	if !strings.Contains(found.DisplayCommand, payload) {
+		t.Errorf("expected display_command to expose the hostile ssh_user, got %q", found.DisplayCommand)
+	}
+	if !strings.Contains(found.DisplayCommand, pipelineOf(found)) {
+		t.Errorf("expected display_command to contain the exact command to be run\n  display: %q\n  command: %q",
+			found.DisplayCommand, pipelineOf(found))
 	}
 
 	WebPost(t,

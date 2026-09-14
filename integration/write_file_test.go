@@ -259,7 +259,7 @@ func TestWriteFileHostTarget(t *testing.T) {
 func TestWriteFileContainerDirectSSH(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 134, "192.168.10.91", "grafana", true)
+	registerContainer(t, s, c, 2, 134, "192.168.10.91", "grafana", true)
 
 	content := "{\"dashboard\": \"test\"}"
 	b64 := base64.StdEncoding.EncodeToString([]byte(content))
@@ -300,7 +300,7 @@ func TestWriteFileContainerDirectSSH(t *testing.T) {
 func TestWriteFileContainerPctPush(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 134, "192.168.10.91", "grafana", false)
+	registerContainer(t, s, c, 2, 134, "192.168.10.91", "grafana", false)
 
 	content := "test content"
 	b64 := base64.StdEncoding.EncodeToString([]byte(content))
@@ -674,7 +674,7 @@ func TestWriteFileEmptyContentFields(t *testing.T) {
 func TestWriteFileDisplayCommand(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 129, "192.168.10.86", "patreon-dl", true)
+	registerContainer(t, s, c, 2, 129, "192.168.10.86", "patreon-dl", true)
 
 	content := "#!/bin/bash\necho hello"
 	b64 := base64.StdEncoding.EncodeToString([]byte(content))

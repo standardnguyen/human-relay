@@ -153,7 +153,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "register_container",
-		Description: "Register or update a container in the relay's container registry. Instant — no human approval needed.",
+		Description: "Register or update a container in the relay's container registry. Requires human approval — returns a request ID that can be used to poll for the result; the registry is only written once the human approves.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -195,7 +195,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "delete_container",
-		Description: "Remove a container from the relay's container registry. Use this to retire stale or recycled CTID registrations (e.g. a deprecated pseudo-CTID now migrated to the machine registry). Does NOT touch the actual container — only the registry entry. Instant — no human approval needed.",
+		Description: "Remove a container from the relay's container registry. Use this to retire stale or recycled CTID registrations (e.g. a deprecated pseudo-CTID now migrated to the machine registry). Does NOT touch the actual container — only the registry entry. Requires human approval — returns a request ID that can be used to poll for the result.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -246,7 +246,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "register_machine",
-		Description: "Register or update a non-LXC SSH target (Windows workstation, bare-metal host, VM, WSL instance) in the relay's machine registry, keyed by a string name. This is the first-class home for SSH targets that aren't Proxmox containers — use it instead of registering a fake 'pseudo-CTID' in the container registry. Instant — no human approval needed.",
+		Description: "Register or update a non-LXC SSH target (Windows workstation, bare-metal host, VM, WSL instance) in the relay's machine registry, keyed by a string name. This is the first-class home for SSH targets that aren't Proxmox containers — use it instead of registering a fake 'pseudo-CTID' in the container registry. Requires human approval — returns a request ID that can be used to poll for the result; the registry is only written once the human approves.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -288,7 +288,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "delete_machine",
-		Description: "Remove a machine from the relay's machine registry. Instant — no human approval needed.",
+		Description: "Remove a machine from the relay's machine registry. Requires human approval — returns a request ID that can be used to poll for the result.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -898,25 +898,38 @@ func (h *ToolHandler) listRequests(args map[string]interface{}) *CallToolResult 
 	}
 
 	requests := h.store.List(filter)
+	// Gating is per-request, so it has to be applied per-request here too:
+	// marshaling the raw list would hand back every gated request's real
+	// stdout/stderr in one call and bypass the gate entirely.
+	for i, r := range requests {
+		requests[i] = redactIfGated(r)
+	}
 	data, _ := json.Marshal(requests)
 	return textResult(string(data))
 }
 
-func requestResult(r *store.Request) *CallToolResult {
-	if r.OutputGated && r.Result != nil {
-		gated := *r
-		gr := *r.Result
-		stdoutLen := len(gr.Stdout)
-		stderrLen := len(gr.Stderr)
-		gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
-		if stderrLen > 0 {
-			gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
-		}
-		gated.Result = &gr
-		data, _ := json.Marshal(gated)
-		return textResult(string(data))
+// redactIfGated returns r untouched when its output isn't gated, and a copy
+// with stdout/stderr replaced by placeholders when it is. Every agent-facing
+// path that marshals a store.Request must run it through this — get_result and
+// list_requests both do.
+func redactIfGated(r *store.Request) *store.Request {
+	if r == nil || !r.OutputGated || r.Result == nil {
+		return r
 	}
-	data, _ := json.Marshal(r)
+	gated := *r
+	gr := *r.Result
+	stdoutLen := len(gr.Stdout)
+	stderrLen := len(gr.Stderr)
+	gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
+	if stderrLen > 0 {
+		gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
+	}
+	gated.Result = &gr
+	return &gated
+}
+
+func requestResult(r *store.Request) *CallToolResult {
+	data, _ := json.Marshal(redactIfGated(r))
 	return textResult(string(data))
 }
 
@@ -955,12 +968,41 @@ func (h *ToolHandler) registerContainer(args map[string]interface{}) *CallToolRe
 		return errorResult("ssh_user must not begin with '-' (ssh would parse it as an option)")
 	}
 
-	c, err := h.containers.Register(ctid, ip, hostname, hasRelaySSH, sshUser)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to register container: %v", err))
+	regArgs := map[string]string{
+		"ctid":          strconv.Itoa(ctid),
+		"ip":            ip,
+		"hostname":      hostname,
+		"has_relay_ssh": strconv.FormatBool(hasRelaySSH),
+	}
+	if sshUser != "" {
+		regArgs["ssh_user"] = sshUser
 	}
 
-	data, _ := json.Marshal(c)
+	reason := fmt.Sprintf("register container CTID %d at %s (%s), has_relay_ssh=%t", ctid, ip, hostname, hasRelaySSH)
+	if sshUser != "" {
+		reason += fmt.Sprintf(", ssh_user=%s", sshUser)
+	}
+	return h.queueRegistryOp("register_container", regArgs, reason)
+}
+
+// queueRegistryOp files an already-validated registry mutation as a pending
+// request. The registry is only touched after a human approves — see
+// web.executeRegistryOp. Shared by the four register/delete tools.
+func (h *ToolHandler) queueRegistryOp(op string, regArgs map[string]string, reason string) *CallToolResult {
+	r := h.store.AddRegistryOp(op, regArgs, reason)
+	h.store.SetDisplayCommand(r.ID, reason)
+
+	h.audit.Log("request_created", r.ID, map[string]interface{}{
+		"tool":          op,
+		"registry_op":   op,
+		"registry_args": regArgs,
+		"reason":        reason,
+	})
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"request_id": r.ID,
+		"status":     "pending",
+	})
 	return textResult(string(data))
 }
 
@@ -981,12 +1023,11 @@ func (h *ToolHandler) deleteContainer(args map[string]interface{}) *CallToolResu
 	if ctid == 0 {
 		return errorResult("ctid is required and must be > 0")
 	}
-	if err := h.containers.Delete(ctid); err != nil {
-		return errorResult(fmt.Sprintf("failed to delete container: %v", err))
-	}
-	result := map[string]interface{}{"ctid": ctid, "deleted": true}
-	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return h.queueRegistryOp(
+		"delete_container",
+		map[string]string{"ctid": strconv.Itoa(ctid)},
+		fmt.Sprintf("delete container CTID %d from the relay registry", ctid),
+	)
 }
 
 func (h *ToolHandler) execContainer(args map[string]interface{}) *CallToolResult {
@@ -1120,8 +1161,9 @@ var validMachineNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // Only the leading-dash shape is dangerous here — these sinks pass a single
 // argv token with no shell, so spaces and other chars in a username (e.g. the
 // legitimately-supported "Lara Duong") are harmless. See the 2026-07-31
-// security review. NOTE: the shell-form writeFileFromSource sink is a separate
-// (post-approval) concern tracked as its own finding, not addressed here.
+// security review. NOTE: this check is NOT a shell guard and must never be
+// relied on as one — the shell-form writeFileFromSource sink defends itself by
+// shellQuote'ing the user@ip token (finding #6).
 func sshUserInjectable(u string) bool {
 	return strings.HasPrefix(u, "-")
 }
@@ -1162,12 +1204,21 @@ func (h *ToolHandler) registerMachine(args map[string]interface{}) *CallToolResu
 		return errorResult("identity_file must be an absolute path")
 	}
 
-	m, err := h.machines.Register(name, host, sshUser, shell, identityFile)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to register machine: %v", err))
+	regArgs := map[string]string{
+		"name":     name,
+		"host":     host,
+		"ssh_user": sshUser,
 	}
-	data, _ := json.Marshal(m)
-	return textResult(string(data))
+	reason := fmt.Sprintf("register machine %s at %s as user %s", name, host, sshUser)
+	if shell != "" {
+		regArgs["shell"] = shell
+		reason += fmt.Sprintf(", shell=%s", shell)
+	}
+	if identityFile != "" {
+		regArgs["identity_file"] = identityFile
+		reason += fmt.Sprintf(", identity_file=%s", identityFile)
+	}
+	return h.queueRegistryOp("register_machine", regArgs, reason)
 }
 
 func (h *ToolHandler) listMachines(args map[string]interface{}) *CallToolResult {
@@ -1193,12 +1244,11 @@ func (h *ToolHandler) deleteMachine(args map[string]interface{}) *CallToolResult
 	if name == "" {
 		return errorResult("name is required")
 	}
-	if err := h.machines.Delete(name); err != nil {
-		return errorResult(fmt.Sprintf("failed to delete machine: %v", err))
-	}
-	result := map[string]interface{}{"name": name, "deleted": true}
-	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return h.queueRegistryOp(
+		"delete_machine",
+		map[string]string{"name": name},
+		fmt.Sprintf("delete machine %s from the relay registry", name),
+	)
 }
 
 // machineSSHBase returns the ssh arg prefix for a machine up to and including
@@ -1500,10 +1550,10 @@ func (h *ToolHandler) createScript(args map[string]interface{}) *CallToolResult 
 	}
 	prefixedReason := fmt.Sprintf("[SCRIPT %s%s %dB] %s\n---\n%s", name, ext, len(content), reason, preview)
 
-	r := h.store.AddScript(name, nil, prefixedReason, 0)
-	r.Type = "script_create"
-	// Store script content for execution (writing to disk)
-	h.store.SetStdin(r.ID, []byte(content))
+	// Script content rides in at construction (it is what gets written to disk,
+	// and what the whitelist keys on) — never assigned after the request is
+	// published into the store.
+	r := h.store.AddScriptTyped("script_create", name, nil, prefixedReason, 0, []byte(content))
 
 	displayCmd := fmt.Sprintf("create_script %s (%dB)", name, len(content))
 	h.store.SetDisplayCommand(r.ID, displayCmd)
@@ -1599,9 +1649,7 @@ func (h *ToolHandler) createThenRun(args map[string]interface{}) *CallToolResult
 	prefixedReason := fmt.Sprintf("[CREATE+RUN %s%s %dB]%s %s\n---\n%s",
 		targetName, ext, len(content), argsStr, reason, preview)
 
-	r := h.store.AddScript(targetName, scriptArgs, prefixedReason, timeout)
-	r.Type = "script_create_then_run"
-	h.store.SetStdin(r.ID, []byte(content))
+	r := h.store.AddScriptTyped("script_create_then_run", targetName, scriptArgs, prefixedReason, timeout, []byte(content))
 
 	displayCmd := fmt.Sprintf("create_then_run %s%s (%dB)", targetName, ext, len(content))
 	if len(scriptArgs) > 0 {
@@ -1778,8 +1826,12 @@ var bashCShellRe = regexp.MustCompile(`\b(?:bash|sh)\s+-c\s+([^\s'"` + "`" + `]+
 // writeFileFromSource handles write_file with source_path: the relay pulls the
 // file over SSH from the source and pipes it into the destination write as a
 // single shell pipeline. No bytes transit the agent context or the request
-// store. Both paths are validated by validPathRe and hosts by validHostRe, so
-// shell interpolation is safe.
+// store. Both paths are validated by validPathRe and hosts by validHostRe.
+//
+// The pipeline string is executed by "sh -c" (executor.Execute, shell mode), so
+// every registry-supplied value interpolated into it MUST be shellQuote'd — the
+// registry's ssh_user and ip fields are only checked for the leading-dash argv
+// shape (sshUserInjectable), never for shell metacharacters. See finding #6.
 func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, reason, sourcePath, sourceHost string, sourceCtid int) *CallToolResult {
 	mode := "0644"
 	if m, ok := args["mode"].(string); ok && m != "" {
@@ -1829,7 +1881,7 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 			if c.SSHUser != "" {
 				u = c.SSHUser
 			}
-			srcCmd = fmt.Sprintf("%s %s@%s -- cat %s", sshBin, u, c.IP, shellQuote(sourcePath))
+			srcCmd = fmt.Sprintf("%s %s -- cat %s", sshBin, shellQuote(u+"@"+c.IP), shellQuote(sourcePath))
 		} else {
 			srcCmd = fmt.Sprintf("%s root@%s -- pct exec %d -- cat %s", sshBin, h.hostIP, c.CTID, shellQuote(sourcePath))
 		}
@@ -1864,8 +1916,8 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 			if c.SSHUser != "" {
 				u = c.SSHUser
 			}
-			dstCmd = fmt.Sprintf(`%s %s@%s -- "cat > %s && chmod %s %s"`,
-				sshBin, u, c.IP, shellQuote(path), mode, shellQuote(path))
+			dstCmd = fmt.Sprintf(`%s %s -- "cat > %s && chmod %s %s"`,
+				sshBin, shellQuote(u+"@"+c.IP), shellQuote(path), mode, shellQuote(path))
 		} else {
 			route = "pct_push"
 			tmpFile := fmt.Sprintf("/tmp/mhr-%d", time.Now().UnixNano())
@@ -1923,8 +1975,13 @@ func (h *ToolHandler) writeFileFromSource(args map[string]interface{}, path, rea
 
 	r := h.store.Add(full, nil, prefixedReason, "", true, timeout)
 
-	displayCmd := fmt.Sprintf("stream %s:%s -> %s:%s  [mode %s]",
-		srcTarget, sourcePath, dstTarget, path, mode)
+	// display_command REPLACES the raw command in the approval pane, so the
+	// friendly summary alone would hide the pipeline the relay is about to run
+	// under "sh -c". Show both: a malformed or hostile registry field (an
+	// ssh_user full of metacharacters, say) is then visible to the reviewer
+	// independent of the quoting above — defense in depth, not the fix.
+	displayCmd := fmt.Sprintf("stream %s:%s -> %s:%s  [mode %s]\n%s",
+		srcTarget, sourcePath, dstTarget, path, mode, truncateCommand(full, maxDisplayCommandBytes))
 	h.store.SetDisplayCommand(r.ID, displayCmd)
 
 	h.audit.Log("request_created", r.ID, map[string]interface{}{
@@ -2028,6 +2085,23 @@ func (h *ToolHandler) buildFormFile(raw map[string]interface{}) (*store.FormFile
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// maxDisplayCommandBytes caps how much of a constructed command is rendered in
+// the approval pane. Long enough that a realistic pipeline is shown whole.
+const maxDisplayCommandBytes = 800
+
+// truncateCommand renders a command string for a human reviewer, cutting it at
+// max bytes with a visible marker so a truncated tail can never be mistaken for
+// the end of the command.
+func truncateCommand(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	// ASCII-only marker: the non-ASCII request scan (finding #24) treats any
+	// non-ASCII rune in a request field as a homoglyph banner, and this text is
+	// the relay's own, not the agent's.
+	return s[:max] + fmt.Sprintf("... [truncated, %d bytes total]", len(s))
 }
 
 // shellMetachars are characters/sequences that only work when interpreted by a shell.

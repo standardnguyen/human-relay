@@ -78,13 +78,22 @@ From wherever your agent runs (a different machine, container, or VM), add to yo
   "mcpServers": {
     "human-relay": {
       "command": "npx",
-      "args": ["mcp-remote", "http://RELAY_HOST:8080/sse", "--allow-http"]
+      "args": [
+        "mcp-remote", "http://RELAY_HOST:8080/sse", "--allow-http",
+        "--header", "Authorization: Bearer YOUR_MHR_AUTH_TOKEN"
+      ]
     }
   }
 }
 ```
 
-Replace `RELAY_HOST` with the IP or hostname of the machine running the relay.
+Replace `RELAY_HOST` with the IP or hostname of the machine running the relay, and
+`YOUR_MHR_AUTH_TOKEN` with the value of `MHR_AUTH_TOKEN` from the relay's `.env`.
+
+**The MCP port requires the bearer token.** Both `/sse` and `/message` on `:8080`
+reject requests without `Authorization: Bearer $MHR_AUTH_TOKEN` — the same token the
+dashboard API uses. If your MCP client sets custom headers some other way, use that;
+the only requirement is that the header reaches the relay.
 
 Human Relay works with any MCP client that supports remote SSE transport via `mcp-remote` — Claude Code, Cursor, Windsurf, Continue, Cline, Zed, Goose. Primary development and testing is against Claude Code; client-specific quirks are tracked in GitHub issues.
 
@@ -111,7 +120,7 @@ This runs the relay and executes approved commands directly on your machine with
 | `request_command` | Submit a command for human approval | Yes |
 | `get_result` | Poll for command result (supports blocking with timeout) | No |
 | `list_requests` | List requests, optionally filtered by status | No |
-| `register_container` | Register a remote host in the container registry | No |
+| `register_container` | Register a remote host in the container registry | Yes |
 | `list_containers` | List registered containers | No |
 | `exec_container` | Execute a command on a registered remote host via SSH | Yes |
 | `write_file` | Deploy a file to a remote host; accepts plaintext `content` or base64 `content_base64` (binary-safe) | Yes |
@@ -137,6 +146,11 @@ For managing remote hosts, register them once and `exec_container` handles SSH r
 
 ```
 Agent: register_container(ctid=133, ip="10.0.0.50", hostname="webserver", has_relay_ssh=true)
+  → { "request_id": "e5f6a7b8", "status": "pending" }
+
+  [You review and approve in the dashboard — the registry decides where
+   exec_container's SSH lands, so writing it is gated like any other mutation]
+
 Agent: exec_container(ctid=133, command="docker", args=["compose","ps"], reason="Check services")
   → routes to: ssh root@10.0.0.50 -- docker compose ps
 ```

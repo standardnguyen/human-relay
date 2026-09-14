@@ -598,11 +598,51 @@ function hasNonAscii(s) {
   return /[^\x20-\x7E\n\r\t–—‘’“”…]/.test(s);
 }
 
+// Fields on the request JSON that are structural metadata rather than
+// human/agent-authored content. Everything NOT listed here is walked
+// generically, so a field added to store.Request in the future is covered
+// automatically. This is deliberately a DENY-list, not an allow-list: naming
+// the checked fields by hand has already silently missed newly-added fields
+// twice (http_url/http_body/display_command/script_args, then registry_op/
+// registry_args). Under-coverage is a security hole; over-coverage is only
+// noise, so the default has to be "check it".
+//   id / created_at / decided_at — server-generated, agent can't influence
+//   type / status               — server-set enums from a fixed vocabulary
+//   result                      — command OUTPUT (stdout/stderr/headers), not
+//                                 part of the approval decision; it doesn't
+//                                 even exist yet while a request is pending,
+//                                 and flagging every UTF-8 byte a completed
+//                                 command printed is pure alert fatigue.
+const NONASCII_SKIP_FIELDS = new Set([
+  'id', 'type', 'status', 'created_at', 'decided_at', 'result',
+]);
+
+// Recursively check a JSON value for non-ASCII. Handles strings, arrays of
+// strings (args, script_args, fetch_cmd), and nested objects/maps
+// (http_headers, http_form_fields, registry_args, http_form_file) — map KEYS
+// are agent-supplied too, so they get checked alongside their values.
+// Non-string scalars (numbers, booleans, null) can't carry homoglyphs.
+function valueHasNonAscii(v, depth) {
+  if (depth > 8) return false;
+  if (typeof v === 'string') return hasNonAscii(v);
+  if (Array.isArray(v)) {
+    return v.some(el => valueHasNonAscii(el, depth + 1));
+  }
+  if (v && typeof v === 'object') {
+    for (const [k, val] of Object.entries(v)) {
+      if (hasNonAscii(k)) return true;
+      if (valueHasNonAscii(val, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
 function requestHasNonAscii(r) {
-  if (hasNonAscii(r.command)) return true;
-  if (hasNonAscii(r.reason)) return true;
-  if (hasNonAscii(r.working_dir)) return true;
-  if (r.args && r.args.some(hasNonAscii)) return true;
+  if (!r || typeof r !== 'object') return false;
+  for (const [k, v] of Object.entries(r)) {
+    if (NONASCII_SKIP_FIELDS.has(k)) continue;
+    if (valueHasNonAscii(v, 0)) return true;
+  }
   return false;
 }
 
@@ -890,7 +930,9 @@ function render() {
     const b64Display = isHTTP ? '' : buildBase64Display(r);
     const shellBadge = (!isHTTP && r.shell) ? '<span class="shell-badge">SHELL</span>' : '';
     const fileBadge = (!isHTTP && r.stdin_len > 0) ? '<span class="file-badge">FILE ' + formatSize(r.stdin_len) + '</span>' : '';
-    const nonAsciiBadge = (!isHTTP && requestHasNonAscii(r)) ? '<span class="nonascii-badge">NON-ASCII</span>' : '';
+    // Not gated on !isHTTP: http_url / http_body are exactly the fields the
+    // hand-written check used to miss, so HTTP cards need the badge too.
+    const nonAsciiBadge = requestHasNonAscii(r) ? '<span class="nonascii-badge">NON-ASCII</span>' : '';
     const wdInfo = r.working_dir ? '<div class="meta">cwd: ' + sanitize(r.working_dir) + '</div>' : '';
 
     // Line count badge for long commands
@@ -921,8 +963,12 @@ function render() {
       : isScriptCreate ? 'create_script'
       : isScriptCreateThenRun ? 'create_then_run'
       : r.command;
+    // Script creates key on name + body hash (see whitelistKey in handler.go):
+    // whitelisting one create by name alone would auto-approve any later
+    // content submitted under that name.
     const wlArgsKey = isHTTP ? [r.http_url]
-      : (isScript || isScriptCreate || isScriptCreateThenRun) ? [r.script_name]
+      : (isScriptCreate || isScriptCreateThenRun) ? [r.script_name, r.stdin_sha256 || '']
+      : isScript ? [r.script_name]
       : (r.args || []);
     const wlRule = whitelistRuleFor(wlCmdKey, wlArgsKey);
     const wlCmdEsc = escapeHtml(wlCmdKey).replace(/'/g, "\\'");
@@ -932,8 +978,8 @@ function render() {
         ? (wlRule.gate_output
           ? '<button class="btn-whitelist active gated" disabled title="Auto-approves, but output stays gated until you release it">Whitelisted 🔒</button>'
           : '<button class="btn-whitelist active" disabled>Whitelisted</button>')
-        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + wlCmdEsc + '\',' + wlArgsEsc + ',false)">Whitelist</button>' +
-          '<button class="btn-whitelist gate-add" title="Auto-approve future runs, but keep their output gated until you release it" onclick="addWhitelist(\'' + wlCmdEsc + '\',' + wlArgsEsc + ',true)">Whitelist 🔒</button>')
+        : '<button class="btn-whitelist" onclick="addWhitelist(\'' + r.id + '\',\'' + wlCmdEsc + '\',' + wlArgsEsc + ',false)">Whitelist</button>' +
+          '<button class="btn-whitelist gate-add" title="Auto-approve future runs, but keep their output gated until you release it" onclick="addWhitelist(\'' + r.id + '\',\'' + wlCmdEsc + '\',' + wlArgsEsc + ',true)">Whitelist 🔒</button>')
       : '';
 
     let actions = '';
@@ -1103,16 +1149,18 @@ function renderWhitelistView(el) {
   }).join('');
 }
 
-async function addWhitelist(command, args, gateOutput) {
+async function addWhitelist(requestId, command, args, gateOutput) {
   const argsStr = (args || []).length ? ' ' + (args || []).join(' ') : '';
   const prompt = gateOutput
     ? 'Whitelist this command for auto-approval WITH gated output?\n\nIt will run without approval, but you must release each result before the agent sees it.\n\n'
     : 'Whitelist this command for auto-approval?\n\n';
   if (!confirm(prompt + command + argsStr)) return;
+  // request_id lets the server derive the rule key itself — for script creates
+  // that key includes a hash of the body, which the browser never receives.
   const resp = await fetch('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, args: args || [], gate_output: !!gateOutput })
+    body: JSON.stringify({ request_id: requestId, command, args: args || [], gate_output: !!gateOutput })
   });
   if (resp.ok) {
     await fetchWhitelist();
@@ -1193,7 +1241,7 @@ async function approveAndWhitelist(id, command, args) {
   await fetch('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, args: args || [] })
+    body: JSON.stringify({ request_id: id, command, args: args || [] })
   });
   await fetchWhitelist();
   fetchRequests();

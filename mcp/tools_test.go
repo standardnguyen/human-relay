@@ -3,9 +3,11 @@ package mcp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +38,61 @@ func setup(t *testing.T) *ToolHandler {
 	return NewToolHandler(s, cs, ms, "192.168.10.50", al)
 }
 
+// seedContainer writes a container into the registry directly. register_container
+// is approval-gated as of finding #23 part 2 — the tool only queues a pending
+// request — so tests that need a *registered* container as a precondition seed
+// the registry rather than going through the tool. The queue-then-approve path
+// itself is covered by TestRegisterContainer below and by the integration suite.
+func seedContainer(t *testing.T, h *ToolHandler, ctid int, ip, hostname string, hasRelaySSH bool) {
+	t.Helper()
+	if _, err := h.containers.Register(ctid, ip, hostname, hasRelaySSH, ""); err != nil {
+		t.Fatalf("seed container %d: %v", ctid, err)
+	}
+}
+
+// seedMachine is seedContainer's counterpart for the machine registry.
+func seedMachine(t *testing.T, h *ToolHandler, name, host, sshUser, shell string) {
+	t.Helper()
+	if _, err := h.machines.Register(name, host, sshUser, shell, ""); err != nil {
+		t.Fatalf("seed machine %q: %v", name, err)
+	}
+}
+
+// assertRegistryOpQueued checks that a registry tool returned the
+// {"request_id":..., "status":"pending"} envelope every other mutating tool
+// returns, and hands back the queued request for argument inspection.
+func assertRegistryOpQueued(t *testing.T, h *ToolHandler, result *CallToolResult, wantOp string) *store.Request {
+	t.Helper()
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	}
+	var resp struct {
+		RequestID string `json:"request_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Status != "pending" {
+		t.Fatalf("expected status pending, got %q", resp.Status)
+	}
+	r := h.store.Get(resp.RequestID)
+	if r == nil {
+		t.Fatalf("request %s not found in store", resp.RequestID)
+	}
+	if r.Type != "registry_op" {
+		t.Fatalf("expected request type registry_op, got %q", r.Type)
+	}
+	if r.RegistryOp != wantOp {
+		t.Fatalf("expected registry_op %q, got %q", wantOp, r.RegistryOp)
+	}
+	return r
+}
+
+// TestRegisterContainer pins finding #23 part 2: registering a container is a
+// mutation, so it now goes through the same pending → human approval path as
+// every other mutating tool instead of writing the registry synchronously from
+// the MCP port.
 func TestRegisterContainer(t *testing.T) {
 	h := setup(t)
 
@@ -46,16 +103,29 @@ func TestRegisterContainer(t *testing.T) {
 		"has_relay_ssh": true,
 	})
 
-	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+	r := assertRegistryOpQueued(t, h, result, "register_container")
+	for k, want := range map[string]string{
+		"ctid":          "133",
+		"ip":            "192.168.10.90",
+		"hostname":      "archivebox",
+		"has_relay_ssh": "true",
+	} {
+		if got := r.RegistryArgs[k]; got != want {
+			t.Errorf("registry_args[%q]: expected %q, got %q", k, want, got)
+		}
+	}
+	if r.DisplayCommand == "" {
+		t.Error("expected a display_command so the approval pane shows what is being registered")
 	}
 
-	var c containers.Container
-	if err := json.Unmarshal([]byte(result.Content[0].Text), &c); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	// The registry must not be touched until the human approves.
+	list := h.Handle("list_containers", map[string]interface{}{})
+	var got []containers.Container
+	if err := json.Unmarshal([]byte(list.Content[0].Text), &got); err != nil {
+		t.Fatalf("unmarshal list: %v", err)
 	}
-	if c.CTID != 133 || c.IP != "192.168.10.90" || !c.HasRelaySSH {
-		t.Fatalf("unexpected container: %+v", c)
+	if len(got) != 0 {
+		t.Fatalf("registry mutated before approval: %+v", got)
 	}
 }
 
@@ -164,12 +234,8 @@ func TestListContainersEmpty(t *testing.T) {
 func TestListContainersAfterRegister(t *testing.T) {
 	h := setup(t)
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(100), "ip": "192.168.10.52", "hostname": "ingress",
-	})
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox",
-	})
+	seedContainer(t, h, 100, "192.168.10.52", "ingress", false)
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", false)
 
 	result := h.Handle("list_containers", map[string]interface{}{})
 	var list []containers.Container
@@ -201,9 +267,7 @@ func TestExecContainerDirectSSH(t *testing.T) {
 	h := setup(t)
 
 	// Register with direct SSH
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", true)
 
 	result := h.Handle("exec_container", map[string]interface{}{
 		"ctid":    float64(133),
@@ -251,9 +315,7 @@ func TestExecContainerPctExecFallback(t *testing.T) {
 	h := setup(t)
 
 	// Register without direct SSH
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": false,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", false)
 
 	result := h.Handle("exec_container", map[string]interface{}{
 		"ctid":    float64(133),
@@ -289,9 +351,7 @@ func TestExecContainerPctExecFallback(t *testing.T) {
 func TestExecContainerShellMode(t *testing.T) {
 	h := setup(t)
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", true)
 
 	result := h.Handle("exec_container", map[string]interface{}{
 		"ctid":    float64(133),
@@ -325,9 +385,7 @@ func TestExecContainerShellMode(t *testing.T) {
 func TestExecContainerReasonPrefix(t *testing.T) {
 	h := setup(t)
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", true)
 
 	result := h.Handle("exec_container", map[string]interface{}{
 		"ctid":    float64(133),
@@ -382,9 +440,7 @@ func TestInstallRelaySSHBasic(t *testing.T) {
 	h.SetRelayPubkeyFile(writeTempPubkey(t))
 
 	// Register the container first (without relay SSH)
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(125), "ip": "192.168.10.102", "hostname": "recovery-check", "has_relay_ssh": false,
-	})
+	seedContainer(t, h, 125, "192.168.10.102", "recovery-check", false)
 
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
@@ -458,9 +514,7 @@ func TestInstallRelaySSHAlwaysRoutesThroughHost(t *testing.T) {
 
 	// Register WITH relay SSH already — install_relay_ssh should still use pct_push
 	// (the whole point is bootstrapping, so we always go through host)
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(125), "ip": "192.168.10.102", "hostname": "recovery-check", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 125, "192.168.10.102", "recovery-check", true)
 
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
@@ -581,9 +635,7 @@ func TestInstallRelaySSHDisplayCommand(t *testing.T) {
 	h := setup(t)
 	h.SetRelayPubkeyFile(writeTempPubkey(t))
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(125), "ip": "192.168.10.102", "hostname": "recovery-check",
-	})
+	seedContainer(t, h, 125, "192.168.10.102", "recovery-check", false)
 
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
@@ -608,9 +660,7 @@ func TestInstallRelaySSHWithSSHConfig(t *testing.T) {
 	h.SetRelayPubkeyFile(writeTempPubkey(t))
 	h.SetSSHConfig("/etc/ssh/custom_config")
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(125), "ip": "192.168.10.102", "hostname": "recovery-check",
-	})
+	seedContainer(t, h, 125, "192.168.10.102", "recovery-check", false)
 
 	result := h.Handle("install_relay_ssh", map[string]interface{}{
 		"ctid":   float64(125),
@@ -634,9 +684,7 @@ func TestInstallSSHKeyDirectSSH(t *testing.T) {
 	h := setup(t)
 
 	// Register with relay SSH access
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", true)
 
 	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyData12345678901234567890123456 user@host"
 	result := h.Handle("install_ssh_key", map[string]interface{}{
@@ -689,9 +737,7 @@ func TestInstallSSHKeyPctPushFallback(t *testing.T) {
 	h := setup(t)
 
 	// Register WITHOUT relay SSH access
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": false,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", false)
 
 	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyData12345678901234567890123456 user@host"
 	result := h.Handle("install_ssh_key", map[string]interface{}{
@@ -747,9 +793,7 @@ func TestInstallSSHKeyContainerNotFound(t *testing.T) {
 func TestInstallSSHKeyInvalidKey(t *testing.T) {
 	h := setup(t)
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox",
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", false)
 
 	tests := []struct {
 		name string
@@ -778,9 +822,7 @@ func TestInstallSSHKeyInvalidKey(t *testing.T) {
 func TestInstallSSHKeyMissingFields(t *testing.T) {
 	h := setup(t)
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox",
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", false)
 
 	tests := []struct {
 		name string
@@ -804,9 +846,7 @@ func TestInstallSSHKeyMissingFields(t *testing.T) {
 func TestInstallSSHKeyReasonPrefix(t *testing.T) {
 	h := setup(t)
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", true)
 
 	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyData12345678901234567890123456 user@host"
 	result := h.Handle("install_ssh_key", map[string]interface{}{
@@ -831,9 +871,7 @@ func TestInstallSSHKeyReasonPrefix(t *testing.T) {
 func TestInstallSSHKeyDisplayCommand(t *testing.T) {
 	h := setup(t)
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", true)
 
 	result := h.Handle("install_ssh_key", map[string]interface{}{
 		"ctid":       float64(133),
@@ -855,9 +893,7 @@ func TestInstallSSHKeyWithSSHConfig(t *testing.T) {
 	h := setup(t)
 	h.SetSSHConfig("/etc/ssh/custom_config")
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", true)
 
 	result := h.Handle("install_ssh_key", map[string]interface{}{
 		"ctid":       float64(133),
@@ -878,9 +914,7 @@ func TestInstallSSHKeyWithSSHConfig(t *testing.T) {
 func TestInstallSSHKeyRSAKey(t *testing.T) {
 	h := setup(t)
 
-	h.Handle("register_container", map[string]interface{}{
-		"ctid": float64(133), "ip": "192.168.10.90", "hostname": "archivebox", "has_relay_ssh": true,
-	})
+	seedContainer(t, h, 133, "192.168.10.90", "archivebox", true)
 
 	// RSA key format should also be accepted
 	key := "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC1234567890abcdef user@host"
@@ -2529,3 +2563,96 @@ func TestRequestCommandForHostRejectsBadHost(t *testing.T) {
 	}
 }
 
+// --- finding #26: script Type must be set at construction, not mutated after
+// the request is published into the store ---
+
+// TestCreateScriptTypeNotMutatedAfterPublish drives create_script and
+// create_then_run concurrently with readers hammering store.Get/List. Before
+// finding #26 was fixed, the handlers did `r := store.AddScript(...)` followed
+// by an unlocked `r.Type = "script_create"` on a pointer that AddScript had
+// already published into the store's map — so the write raced every reader
+// that copies the struct under RLock. This test is deliberately concurrent:
+// a sequential call would not reproduce the race even with the bug present,
+// so `go test -race` needs the reader goroutines to flag a regression.
+func TestCreateScriptTypeNotMutatedAfterPublish(t *testing.T) {
+	h := setup(t)
+	h.SetScriptsDir(t.TempDir())
+
+	const creates = 60
+	done := make(chan struct{})
+	var readers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				for _, r := range h.store.List("") {
+					_ = r.Type
+					if got := h.store.Get(r.ID); got != nil {
+						_ = got.Type
+					}
+				}
+			}
+		}()
+	}
+
+	ids := make([]string, 0, creates*2)
+	var mu sync.Mutex
+	var writers sync.WaitGroup
+	for i := 0; i < creates; i++ {
+		writers.Add(1)
+		go func(i int) {
+			defer writers.Done()
+			cs := h.Handle("create_script", map[string]interface{}{
+				"name":    fmt.Sprintf("race_create_%d", i),
+				"content": "#!/bin/bash\necho hi\n",
+				"reason":  "finding 26 race test",
+			})
+			ctr := h.Handle("create_then_run", map[string]interface{}{
+				"name":    fmt.Sprintf("race_ctr_%d", i),
+				"content": "#!/bin/bash\necho hi\n",
+				"reason":  "finding 26 race test",
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			for _, res := range []*CallToolResult{cs, ctr} {
+				if res.IsError {
+					t.Errorf("unexpected error result: %v", res.Content)
+					continue
+				}
+				var out map[string]interface{}
+				if err := json.Unmarshal([]byte(res.Content[0].Text), &out); err != nil {
+					t.Errorf("unmarshal: %v", err)
+					continue
+				}
+				ids = append(ids, out["request_id"].(string))
+			}
+		}(i)
+	}
+	writers.Wait()
+	close(done)
+	readers.Wait()
+
+	if len(ids) != creates*2 {
+		t.Fatalf("got %d request ids, want %d", len(ids), creates*2)
+	}
+	counts := map[string]int{}
+	for _, id := range ids {
+		r := h.store.Get(id)
+		if r == nil {
+			t.Fatalf("request %s missing from store", id)
+		}
+		counts[r.Type]++
+	}
+	if counts["script_create"] != creates {
+		t.Errorf("script_create count = %d, want %d (types seen: %v)", counts["script_create"], creates, counts)
+	}
+	if counts["script_create_then_run"] != creates {
+		t.Errorf("script_create_then_run count = %d, want %d (types seen: %v)", counts["script_create_then_run"], creates, counts)
+	}
+}

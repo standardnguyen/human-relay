@@ -1049,6 +1049,8 @@ type RequestResult struct {
 	Result         *ExecResult `json:"result"`
 	OutputGated    bool        `json:"output_gated"`
 	StdinLen       int         `json:"stdin_len"`
+	StdinSHA256    string      `json:"stdin_sha256"`
+	ScriptName     string      `json:"script_name"`
 	DisplayCommand string      `json:"display_command"`
 	Shell          bool        `json:"shell"`
 	HTTPFormFile   *FormFile   `json:"http_form_file"`

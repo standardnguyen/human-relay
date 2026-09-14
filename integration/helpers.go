@@ -57,6 +57,12 @@ func WithWhitelistFile(path string) ServerOption {
 	}
 }
 
+func WithScriptsDir(dir string) ServerOption {
+	return func(s *TestServer) {
+		s.env = append(s.env, "MHR_SCRIPTS_DIR="+dir)
+	}
+}
+
 func WithPermissionsFile(path string) ServerOption {
 	return func(s *TestServer) {
 		s.env = append(s.env, "MHR_PERMISSIONS_FILE="+path)
@@ -153,10 +159,22 @@ func NewMCPClient(t *testing.T, mcpURL string) *MCPClient {
 		client:  &http.Client{Timeout: 30 * time.Second},
 	}
 
-	// Connect to SSE endpoint
-	resp, err := http.Get(mcpURL + "/sse")
+	// Connect to SSE endpoint. The MCP port requires the same bearer token as
+	// the web port, so every request on it carries an Authorization header.
+	// http.DefaultClient (not c.client) because the SSE stream must outlive
+	// c.client's request timeout.
+	sseReq, err := http.NewRequest(http.MethodGet, mcpURL+"/sse", nil)
+	if err != nil {
+		t.Fatalf("failed to build SSE request: %v", err)
+	}
+	sseReq.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(sseReq)
 	if err != nil {
 		t.Fatalf("failed to connect to SSE: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("SSE connect: got status %d, want 200", resp.StatusCode)
 	}
 
 	// Read the endpoint event to get session ID
@@ -226,8 +244,7 @@ func (c *MCPClient) Call(t *testing.T, id int, method string, params interface{}
 	}
 	body, _ := json.Marshal(req)
 
-	url := c.mcpURL + c.sessionID
-	resp, err := c.client.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := c.client.Do(c.messageRequest(t, body))
 	if err != nil {
 		t.Fatalf("MCP call failed: %v", err)
 	}
@@ -256,12 +273,23 @@ func (c *MCPClient) Notify(t *testing.T, method string, params interface{}) {
 	}
 	body, _ := json.Marshal(req)
 
-	url := c.mcpURL + c.sessionID
-	resp, err := c.client.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := c.client.Do(c.messageRequest(t, body))
 	if err != nil {
 		t.Fatalf("MCP notify failed: %v", err)
 	}
 	resp.Body.Close()
+}
+
+// messageRequest builds an authenticated POST to this client's message endpoint.
+func (c *MCPClient) messageRequest(t *testing.T, body []byte) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, c.mcpURL+c.sessionID, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build MCP message request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	return req
 }
 
 // Web API helpers

@@ -14,7 +14,7 @@ import (
 func TestHTTPRequestFormFileFromCtid(t *testing.T) {
 	s, c := initClient(t)
 
-	registerContainer(t, c, 2, 115, "192.168.10.66", "claude-personal", true)
+	registerContainer(t, s, c, 2, 115, "192.168.10.66", "claude-personal", true)
 
 	resp := c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "http_request",

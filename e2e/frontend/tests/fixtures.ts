@@ -96,7 +96,8 @@ async function startRelay(): Promise<ServerInfo> {
 
 async function connectSSE(mcpURL: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    http.get(`${mcpURL}/sse`, (res) => {
+    // The MCP port requires the same bearer token as the web port.
+    http.get(`${mcpURL}/sse`, { headers: { Authorization: `Bearer ${TOKEN}` } }, (res) => {
       sseResp = res;
       let buf = '';
       res.on('data', (chunk: Buffer) => {
@@ -136,14 +137,14 @@ async function mcpCall(method: string, params?: any): Promise<any> {
     });
   });
 
-  await httpReq('POST', url, body);
+  await httpReq('POST', url, body, { Authorization: `Bearer ${TOKEN}` });
   return responsePromise;
 }
 
 async function mcpNotify(method: string, params?: any): Promise<void> {
   const body = { jsonrpc: '2.0', method, params };
   const url = `http://127.0.0.1:${server!.mcpPort}${sseSessionID}`;
-  await httpReq('POST', url, body);
+  await httpReq('POST', url, body, { Authorization: `Bearer ${TOKEN}` });
 }
 
 function killServer() {

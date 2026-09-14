@@ -249,9 +249,19 @@ func newMCPClient(t *testing.T, mcpURL string) *mcpClient {
 		client:  &http.Client{Timeout: 30 * time.Second},
 	}
 
-	resp, err := http.Get(mcpURL + "/sse")
+	// The MCP port requires the same bearer token as the web port.
+	sseReq, err := http.NewRequest(http.MethodGet, mcpURL+"/sse", nil)
+	if err != nil {
+		t.Fatalf("build SSE request: %v", err)
+	}
+	sseReq.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(sseReq)
 	if err != nil {
 		t.Fatalf("SSE connect: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("SSE connect: got status %d, want 200", resp.StatusCode)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -306,7 +316,7 @@ type jsonrpcResp struct {
 func (c *mcpClient) call(t *testing.T, id int, method string, params interface{}) *jsonrpcResp {
 	t.Helper()
 	body, _ := json.Marshal(jsonrpcReq{JSONRPC: "2.0", ID: id, Method: method, Params: params})
-	resp, err := c.client.Post(c.mcpURL+c.sessionID, "application/json", bytes.NewReader(body))
+	resp, err := c.client.Do(c.messageRequest(t, body))
 	if err != nil {
 		t.Fatalf("MCP call: %v", err)
 	}
@@ -326,11 +336,23 @@ func (c *mcpClient) call(t *testing.T, id int, method string, params interface{}
 func (c *mcpClient) notify(t *testing.T, method string, params interface{}) {
 	t.Helper()
 	body, _ := json.Marshal(jsonrpcReq{JSONRPC: "2.0", Method: method, Params: params})
-	resp, err := c.client.Post(c.mcpURL+c.sessionID, "application/json", bytes.NewReader(body))
+	resp, err := c.client.Do(c.messageRequest(t, body))
 	if err != nil {
 		t.Fatalf("MCP notify: %v", err)
 	}
 	resp.Body.Close()
+}
+
+// messageRequest builds an authenticated POST to this client's message endpoint.
+func (c *mcpClient) messageRequest(t *testing.T, body []byte) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, c.mcpURL+c.sessionID, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build MCP message request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	return req
 }
 
 func (c *mcpClient) init(t *testing.T) {
@@ -440,8 +462,10 @@ func approveAndWait(t *testing.T, c *mcpClient, s *testServer, requestID string,
 	return nil
 }
 
-// registerNode registers a test container with the relay.
-func registerNode(t *testing.T, c *mcpClient, ctid int, ip, hostname string, callID int) {
+// registerNode registers a test container with the relay. register_container is
+// approval-gated (finding #23 part 2): the tool only queues a request, so this
+// approves it and waits for the registry write before returning.
+func registerNode(t *testing.T, c *mcpClient, s *testServer, ctid int, ip, hostname string, callID int) {
 	t.Helper()
 	resp := c.call(t, callID, "tools/call", map[string]interface{}{
 		"name": "register_container",
@@ -454,5 +478,9 @@ func registerNode(t *testing.T, c *mcpClient, ctid int, ip, hostname string, cal
 	})
 	if resp.Error != nil {
 		t.Fatalf("register_container error: %s", resp.Error.Message)
+	}
+	r := approveAndWait(t, c, s, extractRequestID(t, resp), callID)
+	if r.Status != "complete" {
+		t.Fatalf("register_container ended %s: %+v", r.Status, r.Result)
 	}
 }

@@ -496,6 +496,25 @@
     max-height: 300px;
     overflow-y: auto;
   }
+  .content-full { margin-top: 0.5rem; }
+  .content-full .toggle-link {
+    color: var(--blue);
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+  .content-body {
+    margin-top: 0.5rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.75rem;
+    font-family: monospace;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 400px;
+    overflow-y: auto;
+  }
   .output-label { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem; }
   .deny-reason { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
   .empty {
@@ -864,6 +883,49 @@ function truncateWithToggle(text, maxLen, prefix) {
     ' <span class="toggle-link" onclick="toggleTruncate(\'' + id + '\')">show less</span></span>';
 }
 
+// The approval card shows a PREVIEW of a write_file body: the server caps the
+// reason string at 2048 bytes before the request is stored, so "show more" on
+// the reason reveals the rest of the preview, never the rest of the file. This
+// pair fetches the real stdin bytes from /api/requests/{id}/content on demand,
+// so the reviewer can read exactly what will be written.
+function buildContentToggle(r) {
+  // Collapsed label carries bytes only; the line count needs the body.
+  const label = 'show full file (' + formatSize(r.stdin_len) + ')';
+  return '<div class="content-full"><span class="toggle-link" id="cf-' + r.id + '-link"' +
+    ' data-label="' + label + '"' +
+    ' onclick="toggleFullContent(\'' + r.id + '\')">' + label + '</span>' +
+    '<pre class="content-body" id="cf-' + r.id + '-body" style="display:none"></pre></div>';
+}
+
+async function toggleFullContent(id) {
+  const body = document.getElementById('cf-' + id + '-body');
+  const link = document.getElementById('cf-' + id + '-link');
+  if (!body || !link) return;
+  if (body.style.display !== 'none') {
+    body.style.display = 'none';
+    link.textContent = link.dataset.label;
+    return;
+  }
+  if (!body.dataset.loaded) {
+    try {
+      const res = await fetch('/api/requests/' + id + '/content', { headers });
+      if (!res.ok) {
+        body.textContent = '[failed to load content: HTTP ' + res.status + ']';
+      } else {
+        const text = await res.text();
+        // textContent, never innerHTML: the bytes are agent-supplied and are
+        // rendered as text, so there is nothing to escape and nothing to inject.
+        body.textContent = stripBidi(text);
+        link.textContent = 'hide full file (' + text.length + ' bytes, ' + text.split('\n').length + ' lines)';
+      }
+    } catch (e) {
+      body.textContent = '[failed to load content: ' + e + ']';
+    }
+    body.dataset.loaded = '1';
+  }
+  body.style.display = '';
+}
+
 function toggleTruncate(id) {
   const short = document.getElementById(id + '-short');
   const full = document.getElementById(id + '-full');
@@ -930,6 +992,7 @@ function render() {
     const b64Display = isHTTP ? '' : buildBase64Display(r);
     const shellBadge = (!isHTTP && r.shell) ? '<span class="shell-badge">SHELL</span>' : '';
     const fileBadge = (!isHTTP && r.stdin_len > 0) ? '<span class="file-badge">FILE ' + formatSize(r.stdin_len) + '</span>' : '';
+    const contentToggle = (!isHTTP && r.stdin_len > 0) ? buildContentToggle(r) : '';
     // Not gated on !isHTTP: http_url / http_body are exactly the fields the
     // hand-written check used to miss, so HTTP cards need the badge too.
     const nonAsciiBadge = requestHasNonAscii(r) ? '<span class="nonascii-badge">NON-ASCII</span>' : '';
@@ -1074,6 +1137,7 @@ function render() {
       ${psDisplay}
       ${b64Display}
       <div class="reason">${truncateWithToggle(r.reason, 200, 'reason-' + r.id)}</div>
+      ${contentToggle}
       ${wdInfo}
       ${clientInfo}
       <div class="meta">${formatTime(r.created_at)}</div>

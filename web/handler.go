@@ -189,6 +189,13 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 	id := parts[0]
 	action := parts[1]
 
+	// The content route is a read, so it is dispatched before the POST gate
+	// below that every mutating action goes through.
+	if action == "content" {
+		h.handleRequestContent(w, r, id)
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -326,6 +333,35 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// handleRequestContent serves the exact stdin bytes a request will execute
+// against — for write_file, the file the approver is being asked to deploy.
+//
+// The approval card only carries a preview: mcp/tools.go caps the reason string
+// at 2048 bytes before the request ever reaches the store, and Stdin itself is
+// json:"-", so /api/requests cannot carry it. That left the reviewer approving
+// a 12 KB config having read a sixth of it with no way to see the rest. This
+// route closes that gap, and it serves the same bytes the executor pipes to
+// `cat > path` -- not the lossy copy in Reason -- so what is reviewed is what
+// is written.
+func (h *Handler) handleRequestContent(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	req := h.store.Get(id)
+	if req == nil {
+		http.Error(w, "request not found", http.StatusNotFound)
+		return
+	}
+	// Agent-supplied bytes: served as plain text and explicitly not sniffable,
+	// so a file whose first bytes look like markup can never be parsed as HTML
+	// in the reviewer's browser.
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Stdin-SHA256", req.StdinSHA256)
+	w.Write(req.Stdin)
 }
 
 func (h *Handler) handleTurbocharge(w http.ResponseWriter, r *http.Request) {

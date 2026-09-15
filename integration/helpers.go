@@ -51,6 +51,14 @@ func WithCooldown(seconds int) ServerOption {
 	}
 }
 
+// WithKeepalive sets the /sse comment-ping interval in seconds
+// (MHR_SSE_KEEPALIVE). The server default is 15; tests drive it down to 1.
+func WithKeepalive(seconds int) ServerOption {
+	return func(s *TestServer) {
+		s.env = append(s.env, fmt.Sprintf("MHR_SSE_KEEPALIVE=%d", seconds))
+	}
+}
+
 func WithWhitelistFile(path string) ServerOption {
 	return func(s *TestServer) {
 		s.env = append(s.env, "MHR_WHITELIST_FILE="+path)

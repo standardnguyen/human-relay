@@ -427,11 +427,28 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// broadcastEvent ships one state change to every /events subscriber.
+//
+// The frame carries the request's current status, submitting client and
+// output-gated flag whenever the id names a stored request (2026-09-15).
+// Before this, every frame said only "something changed", so a subscriber had
+// to turn around and re-fetch the whole list to find out what — and a harness
+// session parked on an approval had no way to know it had been decided
+// without polling. Purely additive: existing keys keep their names and
+// values, and a lookup that misses (turbo's literal "on"/"off", or a request
+// already gone from the store) publishes the original two-key frame
+// unchanged.
 func (h *Handler) broadcastEvent(eventType, requestID string) {
-	data, _ := json.Marshal(map[string]string{
+	frame := map[string]any{
 		"type":       eventType,
 		"request_id": requestID,
-	})
+	}
+	if req := h.store.Get(requestID); req != nil {
+		frame["status"] = req.Status
+		frame["client"] = req.Client
+		frame["output_gated"] = req.OutputGated
+	}
+	data, _ := json.Marshal(frame)
 	h.sseMu.Lock()
 	for ch := range h.sseClients {
 		select {

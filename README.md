@@ -71,7 +71,29 @@ The `docker-compose.yml` mounts `~/.ssh/id_ed25519` into the container as a read
 
 ### 2. Connect your agent
 
-From wherever your agent runs (a different machine, container, or VM), add to your MCP client config (e.g. Claude Code `~/.claude/settings.json`):
+**The MCP port requires a bearer token.** Both `/sse` and `/message` on `:8080` reject any
+request that does not carry `Authorization: Bearer <token>` — the same credential the
+dashboard API uses.
+
+Two kinds of token verify. `MHR_AUTH_TOKEN` from the relay's `.env` is accepted as the
+client named `master`. Per-client tokens are minted by the binary and are the better habit:
+each one can be revoked on its own, and every request records which client asked.
+
+```bash
+./human-relay -client-add cursor-laptop    # prints the token once — store it now
+./human-relay -client-list                 # name, created, last seen, active/revoked
+./human-relay -client-revoke cursor-laptop
+```
+
+The registry (`<MHR_DATA_DIR>/clients.json`) stores only each token's SHA-256, so a leaked
+client token costs one `-client-revoke` instead of a fleet-wide rotation.
+
+There are two ways to get the header onto the wire.
+
+#### Option A — the client sends the header itself
+
+If your MCP client can set a request header, that is the whole setup. `curl` and native MCP
+SDKs can; so can `mcp-remote`, via `--header`:
 
 ```json
 {
@@ -80,7 +102,7 @@ From wherever your agent runs (a different machine, container, or VM), add to yo
       "command": "npx",
       "args": [
         "mcp-remote", "http://RELAY_HOST:8080/sse", "--allow-http",
-        "--header", "Authorization: Bearer YOUR_MHR_AUTH_TOKEN"
+        "--header", "Authorization: Bearer YOUR_RELAY_TOKEN"
       ]
     }
   }
@@ -88,14 +110,59 @@ From wherever your agent runs (a different machine, container, or VM), add to yo
 ```
 
 Replace `RELAY_HOST` with the IP or hostname of the machine running the relay, and
-`YOUR_MHR_AUTH_TOKEN` with the value of `MHR_AUTH_TOKEN` from the relay's `.env`.
+`YOUR_RELAY_TOKEN` with a token from `-client-add` (or `MHR_AUTH_TOKEN`). `mcp-remote` also
+takes `--header-file <path>`, one `Name: Value` per line, which keeps the token out of the
+config file.
 
-**The MCP port requires the bearer token.** Both `/sse` and `/message` on `:8080`
-reject requests without `Authorization: Bearer $MHR_AUTH_TOKEN` — the same token the
-dashboard API uses. If your MCP client sets custom headers some other way, use that;
-the only requirement is that the header reaches the relay.
+> Checked against `mcp-remote` 0.14.2: `--header`, `--header-file` and `--allow-http` all
+> work, but `--help` prints only `Usage: mcp-remote <https://server-url> [callback-port]
+> [--debug]`, which omits every one of them. Don't read that usage line as the full option
+> set — check your version's argument parsing before concluding a flag is missing.
 
-Human Relay works with any MCP client that supports remote SSE transport via `mcp-remote` — Claude Code, Cursor, Windsurf, Continue, Cline, Zed, Goose. Primary development and testing is against Claude Code; client-specific quirks are tracked in GitHub issues.
+To sanity-check a token with no MCP client involved at all:
+
+```bash
+curl -N -H "Authorization: Bearer YOUR_RELAY_TOKEN" http://RELAY_HOST:8080/sse
+```
+
+#### Option B — a loopback proxy adds the header
+
+Some clients genuinely cannot attach a header, and even where they can, the token then sits
+in a config file you are probably committing. The alternative is a small proxy on loopback:
+the client connects to it in the clear, the proxy reads a bearer token from a mode-`0600`
+file, adds the header, and forwards to the relay. The client never handles the secret.
+
+```json
+{
+  "mcpServers": {
+    "human-relay": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://127.0.0.1:8099/sse", "--allow-http"]
+    }
+  }
+}
+```
+
+**This repository does not ship that proxy.** The deployment this relay is developed against
+runs a ~250-line Python script (`relay-mcp-proxy`) under a systemd unit it wrote itself
+(`relay-mcp-proxy.service`, started with `systemctl enable --now relay-mcp-proxy.service`).
+Neither the script nor the unit is in this repo, so there is no install step here that would
+work for you — what follows describes that deployment's shape, not something this project
+builds or tests. The relay itself is indifferent to how the header arrives; the only
+requirement is that a valid one reaches `:8080`.
+
+| Property | In that deployment | Why it matters |
+|---|---|---|
+| Listen address | `127.0.0.1:8099` (`RELAY_MCP_BIND`) | the proxy holds a token, so nothing off-box should be able to reach it |
+| Upstream | `http://RELAY_HOST:8080` (`RELAY_MCP_UPSTREAM`) | the relay's MCP port |
+| Token file | a `0600` file outside any repo, default `/root/.relay-mcp-token` (`RELAY_MCP_TOKEN_FILE`), re-read **per request** | rotating the token needs no restart, and no config file or environment variable ever carries it |
+| Idle reaping | upstream reads bounded by `RELAY_MCP_IDLE_CHECK` seconds (default 30); each timeout peeks the client socket instead of reading it | an SSE client that vanishes sends nothing, so an unbounded upstream read leaks a thread and two fds per dead client — enough of them and the proxy stops accepting sessions |
+| fd ceiling | `LimitNOFILE=65536` on the unit | systemd's default of 1024 is low enough to hit in practice |
+
+Human Relay works with any MCP client that supports remote SSE transport — Claude Code,
+Cursor, Windsurf, Continue, Cline, Zed, Goose — either directly or through `mcp-remote`.
+Primary development and testing is against Claude Code; client-specific quirks are tracked
+in GitHub issues.
 
 ### 3. Approve commands
 

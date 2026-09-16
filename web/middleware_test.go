@@ -55,9 +55,10 @@ func TestAuthMiddlewareRejectsBadTokens(t *testing.T) {
 	})
 	h := AuthMiddleware(stubVerifier{token: "s3cret", client: "cc-115"}, next)
 
-	// Every case is a 401, but the body splits on why: (a) no bearer scheme was
-	// attempted at all, which is client misconfiguration and safe to explain;
-	// (b) a token was presented and did not verify, which is a question about
+	// Every case is a 401, but the body splits on why: (a) no credential was
+	// presented at all -- no bearer scheme, or the scheme with an empty token --
+	// which is client misconfiguration and safe to explain; (b) a non-empty
+	// token was presented and did not verify, which is a question about
 	// credential validity and must never leak which token was wrong.
 	cases := []struct {
 		name     string
@@ -67,11 +68,14 @@ func TestAuthMiddlewareRejectsBadTokens(t *testing.T) {
 		{"missing header", "", true},
 		{"wrong scheme", "Basic s3cret", true},
 		{"unknown token", "Bearer nope", false},
-		// "Bearer " pins the middleware's own contract on the header value. Note
-		// that net/http trims trailing OWS (RFC 7230), so a request that puts
-		// exactly this on the wire arrives here as "Bearer" and lands in case (a)
-		// instead -- which leaks nothing, since an empty token is not a credential.
-		{"empty bearer", "Bearer ", false},
+		// An empty token is case (a), not case (b): it is not a credential that
+		// failed, it is a caller that never presented one. Both spellings are
+		// here because net/http trims trailing OWS (RFC 7230), so a request that
+		// puts "Bearer " on the wire arrives as "Bearer" -- the middleware now
+		// routes both by an explicit emptiness check rather than by whichever
+		// one the stack happens to hand it.
+		{"empty bearer", "Bearer ", true},
+		{"bare bearer scheme", "Bearer", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,7 +92,7 @@ func TestAuthMiddlewareRejectsBadTokens(t *testing.T) {
 			got := rec.Body.String()
 
 			if tc.wantHelp {
-				// Case (a). The caller never attempted the scheme, so nothing here
+				// Case (a). The caller presented no credential, so nothing here
 				// reports on any token's validity — name the actual fix instead.
 				for _, want := range []string{"Bearer", "relay-mcp-proxy.service", "127.0.0.1:8099"} {
 					if !strings.Contains(got, want) {
@@ -149,11 +153,28 @@ func TestAuthMiddlewareFailureBodiesDiffer(t *testing.T) {
 	}
 
 	// ...and within case (b) the bodies must stay identical to each other, so a
-	// caller cannot probe which of empty/unknown/revoked it hit.
+	// caller cannot probe which of unknown or revoked it hit.
 	_, otherBadToken := respond("Bearer some-other-wrong-token")
-	_, emptyToken := respond("Bearer ")
-	if otherBadToken != badToken || emptyToken != badToken {
-		t.Fatalf("invalid-token bodies differ: %q, %q, %q — they must be indistinguishable",
-			badToken, otherBadToken, emptyToken)
+	if otherBadToken != badToken {
+		t.Fatalf("invalid-token bodies differ: %q vs %q — they must be indistinguishable",
+			badToken, otherBadToken)
+	}
+
+	// An empty token is deliberately NOT in case (b). It is not a credential
+	// that failed to verify, it is the same "never actually tried" state as
+	// sending no header at all, so it gets byte-identical help. This is now
+	// guaranteed by an explicit `provided == ""` check in AuthMiddleware --
+	// previously it held only incidentally, because net/http strips the
+	// trailing space before the handler sees the header, and a stack that did
+	// not trim would have answered these two differently.
+	for _, header := range []string{"Bearer ", "Bearer"} {
+		code, got := respond(header)
+		if code != http.StatusUnauthorized {
+			t.Fatalf("Authorization: %q status = %d, want 401", header, code)
+		}
+		if got != noScheme {
+			t.Fatalf("Authorization: %q body = %q, want the no-header help %q",
+				header, got, noScheme)
+		}
 	}
 }

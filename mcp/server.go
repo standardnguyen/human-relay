@@ -6,23 +6,49 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/standardnguyen/human-relay/auth"
 )
 
+// defaultSSEKeepalive is the /sse comment-ping interval when MHR_SSE_KEEPALIVE
+// is unset or unusable. The stream carries nothing between events, so without
+// a ping neither end can tell a dead connection from an idle one.
+const defaultSSEKeepalive = 15 * time.Second
+
+// keepaliveFromEnv reads MHR_SSE_KEEPALIVE (seconds). A missing, non-numeric
+// or <= 0 value falls back to the default rather than disabling the ping:
+// a broken value must not silently remove the only traffic an idle stream
+// ever sees.
+func keepaliveFromEnv() time.Duration {
+	raw := os.Getenv("MHR_SSE_KEEPALIVE")
+	if raw == "" {
+		return defaultSSEKeepalive
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		return defaultSSEKeepalive
+	}
+	return time.Duration(secs) * time.Second
+}
+
 type Server struct {
-	handler *ToolHandler
-	clients map[string]chan []byte // sessionID -> message channel
-	mu      sync.Mutex
-	nextID  int
+	handler   *ToolHandler
+	clients   map[string]chan []byte // sessionID -> message channel
+	mu        sync.Mutex
+	nextID    int
+	keepalive time.Duration
 }
 
 func NewServer(handler *ToolHandler) *Server {
 	return &Server{
-		handler: handler,
-		clients: make(map[string]chan []byte),
+		handler:   handler,
+		clients:   make(map[string]chan []byte),
+		keepalive: keepaliveFromEnv(),
 	}
 }
 
@@ -60,6 +86,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	ctx := r.Context()
+	// A comment ping every keepalive interval. It is the only traffic an idle
+	// stream ever sees, and it runs as a case in the existing select — NOT a
+	// second goroutine, because http.ResponseWriter is not safe for
+	// concurrent use.
+	ticker := time.NewTicker(s.keepalive)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -69,6 +101,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case msg := <-ch:
 			fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
+			flusher.Flush()
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		}
 	}

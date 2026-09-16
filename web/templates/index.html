@@ -885,45 +885,74 @@ function truncateWithToggle(text, maxLen, prefix) {
 
 // The approval card shows a PREVIEW of a write_file body: the server caps the
 // reason string at 2048 bytes before the request is stored, so "show more" on
-// the reason reveals the rest of the preview, never the rest of the file. This
-// pair fetches the real stdin bytes from /api/requests/{id}/content on demand,
-// so the reviewer can read exactly what will be written.
+// the reason reveals the rest of the preview, never the rest of the file. The
+// functions below fetch the real stdin bytes from /api/requests/{id}/content on
+// demand, so the reviewer can read exactly what will be written.
+//
+// The fetched bytes and the open/closed state live in this Map, NOT in the DOM:
+// render() rebuilds the card list with innerHTML on every SSE event, so a <pre>
+// and the dataset cache on it survive only until the next unrelated request
+// arrives. Holding the state here and re-applying it after every render is what
+// keeps an approver mid-read from being collapsed by someone else's request.
+const fullContentState = new Map();   // request id -> { text, expanded, error }
+
 function buildContentToggle(r) {
   // Collapsed label carries bytes only; the line count needs the body.
+  // data-bytes is the server's byte count -- the same number the FILE badge
+  // renders, so the two labels cannot disagree. A JS string length would:
+  // it counts UTF-16 code units, and a UTF-8 file is longer in bytes.
   const label = 'show full file (' + formatSize(r.stdin_len) + ')';
   return '<div class="content-full"><span class="toggle-link" id="cf-' + r.id + '-link"' +
-    ' data-label="' + label + '"' +
+    ' data-label="' + label + '" data-bytes="' + r.stdin_len + '"' +
     ' onclick="toggleFullContent(\'' + r.id + '\')">' + label + '</span>' +
     '<pre class="content-body" id="cf-' + r.id + '-body" style="display:none"></pre></div>';
 }
 
-async function toggleFullContent(id) {
-  const body = document.getElementById('cf-' + id + '-body');
-  const link = document.getElementById('cf-' + id + '-link');
-  if (!body || !link) return;
-  if (body.style.display !== 'none') {
-    body.style.display = 'none';
-    link.textContent = link.dataset.label;
-    return;
+// A trailing newline terminates the last line, it does not open another one.
+function countLines(text) {
+  if (!text) return 0;
+  const n = text.split('\n').length;
+  return text.endsWith('\n') ? n - 1 : n;
+}
+
+// Re-attach the fetched bytes and the expanded state to the cards render() has
+// just rebuilt, and bound the Map by dropping ids that left the request list.
+function applyFullContentState() {
+  const live = new Set(requests.map(r => r.id));
+  for (const id of Array.from(fullContentState.keys())) {
+    if (!live.has(id)) fullContentState.delete(id);
   }
-  if (!body.dataset.loaded) {
+  fullContentState.forEach((st, id) => {
+    const body = document.getElementById('cf-' + id + '-body');
+    const link = document.getElementById('cf-' + id + '-link');
+    if (!body || !link) return;
+    // textContent, never innerHTML: the bytes are agent-supplied and are
+    // rendered as text, so there is nothing to escape and nothing to inject.
+    body.textContent = st.text;
+    body.style.display = st.expanded ? '' : 'none';
+    link.textContent = (st.expanded && !st.error)
+      ? 'hide full file (' + link.dataset.bytes + ' bytes, ' + countLines(st.text) + ' lines)'
+      : link.dataset.label;
+  });
+}
+
+async function toggleFullContent(id) {
+  let st = fullContentState.get(id);
+  if (!st) {                      // fetch once -- the Map is the cache
     try {
       const res = await fetch('/api/requests/' + id + '/content', { headers });
-      if (!res.ok) {
-        body.textContent = '[failed to load content: HTTP ' + res.status + ']';
-      } else {
-        const text = await res.text();
-        // textContent, never innerHTML: the bytes are agent-supplied and are
-        // rendered as text, so there is nothing to escape and nothing to inject.
-        body.textContent = stripBidi(text);
-        link.textContent = 'hide full file (' + text.length + ' bytes, ' + text.split('\n').length + ' lines)';
-      }
+      st = res.ok
+        ? { text: stripBidi(await res.text()), expanded: false, error: false }
+        : { text: '[failed to load content: HTTP ' + res.status + ']', expanded: false, error: true };
     } catch (e) {
-      body.textContent = '[failed to load content: ' + e + ']';
+      st = { text: '[failed to load content: ' + e + ']', expanded: false, error: true };
     }
-    body.dataset.loaded = '1';
+    fullContentState.set(id, st);
   }
-  body.style.display = '';
+  st.expanded = !st.expanded;
+  // Re-apply rather than write to the nodes looked up before the await: a
+  // render during the fetch would have detached them.
+  applyFullContentState();
 }
 
 function toggleTruncate(id) {
@@ -1156,6 +1185,7 @@ function render() {
   }
 
   el.innerHTML = html;
+  applyFullContentState();
 }
 
 // Whitelist management

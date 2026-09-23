@@ -19,6 +19,7 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 - **Path traversal blocked** — working directories validated against an allowlist.
 - **Output capped** — stdout/stderr limited to 1MB per command.
 - **Separate approver credential** — with `MHR_APPROVER_TOKEN` set, only that token may approve, deny, release output, whitelist or turbocharge; agent tokens get `403` on those calls, and the approver token is not accepted on the MCP port. `MHR_APPROVER_TOKEN_SHA256` configures it by digest so the relay host never stores the token. Unset, any authenticating token can approve (the relay warns at startup).
+- **No script from agent text in the dashboard** — the dashboard and `/chat` attach handlers with `addEventListener` and look requests up by id, and serve a `Content-Security-Policy` with a per-response `script-src` nonce and no `'unsafe-inline'`, so agent-supplied strings cannot run with the approver token held in the browser.
 - **Approval cooldown** — server-enforced rate limit between approvals.
 - **Audit log** — append-only JSONL file records every request, approval, denial, and execution result.
 

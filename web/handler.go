@@ -177,8 +177,7 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.tmpl.ExecuteTemplate(w, "index.html", nil)
+	h.servePage(w, "index.html")
 }
 
 // handleChat serves the chat-shaped view of the signal-lane approval queue —
@@ -188,8 +187,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.tmpl.ExecuteTemplate(w, "chat.html", nil)
+	h.servePage(w, "chat.html")
 }
 
 func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {

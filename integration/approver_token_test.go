@@ -1,0 +1,411 @@
+package integration
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// The approver token separates "may submit and read requests" from "may decide
+// them". Without it, every credential that authenticates on the web port --
+// including the tokens agents hold for the MCP port -- can approve, deny,
+// release and whitelist, so an agent could approve its own request.
+
+const approverToken = "approver-token-for-ci"
+
+// approvalMutation is one call that changes approval state.
+type approvalMutation struct {
+	name   string
+	method string
+	path   string
+	body   interface{}
+}
+
+// submitPending files one request_command_for_relay as the given MCP client
+// and returns its id. The request stays pending until someone decides it.
+func submitPending(t *testing.T, c *MCPClient, id int, word string) string {
+	t.Helper()
+	resp := c.Call(t, id, "tools/call", map[string]interface{}{
+		"name": "request_command_for_relay",
+		"arguments": map[string]interface{}{
+			"command": "echo",
+			"args":    []string{word},
+			"reason":  "approver token test",
+		},
+	})
+	return extractRequestID(t, resp)
+}
+
+func initMCP(t *testing.T, c *MCPClient) {
+	t.Helper()
+	c.Call(t, 1, "initialize", map[string]interface{}{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]interface{}{},
+		"clientInfo":      map[string]string{"name": "approver-test", "version": "1.0"},
+	})
+	c.Notify(t, "notifications/initialized", nil)
+}
+
+// webDo sends one authenticated call with no Origin header (the shape of a
+// non-browser client such as an agent's curl).
+func webDo(t *testing.T, method, url, token string, payload interface{}) (int, string) {
+	t.Helper()
+	switch method {
+	case http.MethodPost:
+		code, body := WebPost(t, url, token, payload)
+		return code, string(body)
+	case http.MethodDelete:
+		code, body := WebDelete(t, url, token)
+		return code, string(body)
+	case http.MethodGet:
+		code, body := WebGet(t, url, token)
+		return code, string(body)
+	}
+	t.Fatalf("unsupported method %s", method)
+	return 0, ""
+}
+
+func requestStatus(t *testing.T, s *TestServer, id string) (string, bool) {
+	t.Helper()
+	code, body := WebGet(t, s.WebURL()+"/api/requests", approverToken)
+	if code != http.StatusOK {
+		// Legacy servers do not know the approver token; fall back to master.
+		code, body = WebGet(t, s.WebURL()+"/api/requests", testToken)
+	}
+	if code != http.StatusOK {
+		t.Fatalf("list requests: status %d, body %s", code, body)
+	}
+	var list []RequestResult
+	if err := json.Unmarshal(body, &list); err != nil {
+		t.Fatalf("parse list: %v", err)
+	}
+	for _, r := range list {
+		if r.ID == id {
+			return r.Status, r.OutputGated
+		}
+	}
+	t.Fatalf("request %s not in list", id)
+	return "", false
+}
+
+func waitForStatus(t *testing.T, s *TestServer, id string, want ...string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st, _ := requestStatus(t, s, id)
+		for _, w := range want {
+			if st == w {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	st, _ := requestStatus(t, s, id)
+	t.Fatalf("request %s stayed %s, want one of %v", id, st, want)
+}
+
+// gatedCompleteRequest returns the id of a request that ran with its output
+// gated, so /release has something to act on.
+func gatedCompleteRequest(t *testing.T, s *TestServer, c *MCPClient, id int) string {
+	t.Helper()
+	rid := submitPending(t, c, id, "gated")
+	code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/approve-gated", s.WebURL(), rid), approverToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("approver approve-gated: status %d, body %s", code, body)
+	}
+	waitForStatus(t, s, rid, "complete", "error")
+	if _, gated := requestStatus(t, s, rid); !gated {
+		t.Fatalf("request %s is not output-gated after approve-gated", rid)
+	}
+	return rid
+}
+
+// agentMutations lists every approval-state mutation, aimed at request rid
+// (pending) and gatedID (complete, output gated).
+func agentMutations(rid, gatedID string) []approvalMutation {
+	return []approvalMutation{
+		{"approve", http.MethodPost, "/api/requests/" + rid + "/approve", nil},
+		{"approve-gated", http.MethodPost, "/api/requests/" + rid + "/approve-gated", nil},
+		{"deny", http.MethodPost, "/api/requests/" + rid + "/deny", map[string]string{"reason": "self-deny"}},
+		{"release", http.MethodPost, "/api/requests/" + gatedID + "/release", nil},
+		{"whitelist-add", http.MethodPost, "/api/whitelist", map[string]interface{}{"request_id": rid}},
+		{"whitelist-add-raw", http.MethodPost, "/api/whitelist", map[string]interface{}{"command": "echo", "args": []string{"x"}}},
+		{"whitelist-remove", http.MethodPost, "/api/whitelist/remove", map[string]interface{}{"command": "echo", "args": []string{"seeded"}}},
+		{"turbocharge-on", http.MethodPost, "/api/turbocharge", map[string]int{"duration_minutes": 5, "cooldown_seconds": 1}},
+		{"turbocharge-off", http.MethodDelete, "/api/turbocharge", nil},
+	}
+}
+
+// TestApproverToken_AgentTokensCannotMutateApprovalState is the hole itself:
+// with the approver token configured, neither the master token nor a minted
+// per-client token may change approval state, and the request stays pending.
+func TestApproverToken_AgentTokensCannotMutateApprovalState(t *testing.T) {
+	dataDir := t.TempDir()
+	clientToken := mintClient(t, dataDir, "agent-a")
+	s := StartServer(t, WithDataDir(dataDir), WithApproverToken(approverToken))
+
+	c := NewMCPClientWithToken(t, s.MCPURL(), clientToken)
+	initMCP(t, c)
+	rid := submitPending(t, c, 2, "self-approve")
+	gatedID := gatedCompleteRequest(t, s, c, 3)
+
+	// Seed a rule so whitelist-remove has a real target to refuse.
+	if code, body := WebPost(t, s.WebURL()+"/api/whitelist", approverToken,
+		map[string]interface{}{"command": "echo", "args": []string{"seeded"}}); code != http.StatusOK {
+		t.Fatalf("seed whitelist rule: status %d, body %s", code, body)
+	}
+
+	for _, tok := range []struct{ name, token string }{{"master", testToken}, {"per-client", clientToken}} {
+		for _, m := range agentMutations(rid, gatedID) {
+			t.Run(tok.name+"/"+m.name, func(t *testing.T) {
+				code, body := webDo(t, m.method, s.WebURL()+m.path, tok.token, m.body)
+				if code != http.StatusForbidden {
+					t.Fatalf("%s with %s token: status %d, body %q, want 403", m.name, tok.name, code, body)
+				}
+				if !strings.Contains(body, "cannot approve") {
+					t.Fatalf("%s 403 body = %q, want it to say the token cannot approve", m.name, body)
+				}
+			})
+		}
+	}
+
+	if st, _ := requestStatus(t, s, rid); st != "pending" {
+		t.Fatalf("request %s is %s after refused agent calls, want pending", rid, st)
+	}
+	if _, gated := requestStatus(t, s, gatedID); !gated {
+		t.Fatalf("request %s output was released by an agent token", gatedID)
+	}
+	_, wl := WebGet(t, s.WebURL()+"/api/whitelist", approverToken)
+	if strings.Contains(string(wl), `"x"`) {
+		t.Fatalf("an agent token added a whitelist rule: %s", wl)
+	}
+	if !strings.Contains(string(wl), "seeded") {
+		t.Fatalf("an agent token removed a whitelist rule: %s", wl)
+	}
+	code, tb := WebGet(t, s.WebURL()+"/api/turbocharge", approverToken)
+	if code != http.StatusOK || strings.Contains(string(tb), `"active":true`) {
+		t.Fatalf("turbocharge state changed by an agent token: %d %s", code, tb)
+	}
+}
+
+// TestApproverToken_ApproverCanMutateApprovalState: the approver token does
+// every one of those things.
+func TestApproverToken_ApproverCanMutateApprovalState(t *testing.T) {
+	s := StartServer(t, WithApproverToken(approverToken))
+	c := NewMCPClient(t, s.MCPURL())
+	initMCP(t, c)
+
+	approveID := submitPending(t, c, 2, "approve-me")
+	denyID := submitPending(t, c, 3, "deny-me")
+	gatedID := gatedCompleteRequest(t, s, c, 4)
+
+	steps := []approvalMutation{
+		{"approve", http.MethodPost, "/api/requests/" + approveID + "/approve", nil},
+		{"deny", http.MethodPost, "/api/requests/" + denyID + "/deny", map[string]string{"reason": "no"}},
+		{"release", http.MethodPost, "/api/requests/" + gatedID + "/release", nil},
+		{"whitelist-add", http.MethodPost, "/api/whitelist", map[string]interface{}{"command": "echo", "args": []string{"y"}}},
+		{"whitelist-remove", http.MethodPost, "/api/whitelist/remove", map[string]interface{}{"command": "echo", "args": []string{"y"}}},
+		{"turbocharge-on", http.MethodPost, "/api/turbocharge", map[string]int{"duration_minutes": 5, "cooldown_seconds": 1}},
+		{"turbocharge-off", http.MethodDelete, "/api/turbocharge", nil},
+	}
+	for _, m := range steps {
+		code, body := webDo(t, m.method, s.WebURL()+m.path, approverToken, m.body)
+		if code != http.StatusOK {
+			t.Fatalf("approver %s: status %d, body %q, want 200", m.name, code, body)
+		}
+	}
+	waitForStatus(t, s, approveID, "complete")
+	if st, _ := requestStatus(t, s, denyID); st != "denied" {
+		t.Fatalf("deny: request is %s, want denied", st)
+	}
+	if _, gated := requestStatus(t, s, gatedID); gated {
+		t.Fatal("release: request is still output-gated")
+	}
+}
+
+// TestApproverToken_ReadsAcceptEitherToken: reads stay open to every token, so
+// agents that watch the queue (list, content, whitelist, turbo state, /events)
+// keep working.
+func TestApproverToken_ReadsAcceptEitherToken(t *testing.T) {
+	dataDir := t.TempDir()
+	clientToken := mintClient(t, dataDir, "agent-b")
+	s := StartServer(t, WithDataDir(dataDir), WithApproverToken(approverToken))
+	c := NewMCPClient(t, s.MCPURL())
+	initMCP(t, c)
+	rid := submitPending(t, c, 2, "read-me")
+
+	for _, tok := range []struct{ name, token string }{
+		{"master", testToken}, {"per-client", clientToken}, {"approver", approverToken},
+	} {
+		for _, path := range []string{
+			"/api/requests",
+			"/api/requests?status=pending",
+			"/api/requests/" + rid + "/content",
+			"/api/whitelist",
+			"/api/turbocharge",
+		} {
+			if code, body := WebGet(t, s.WebURL()+path, tok.token); code != http.StatusOK {
+				t.Errorf("%s GET %s: status %d, body %s, want 200", tok.name, path, code, body)
+			}
+		}
+
+		resp := WebGetResp(t, s.WebURL()+"/events", tok.token)
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			t.Fatalf("%s GET /events: status %d, want 200", tok.name, resp.StatusCode)
+		}
+		line, err := bufio.NewReader(resp.Body).ReadString('\n')
+		resp.Body.Close()
+		if err != nil || !strings.HasPrefix(line, ": connected") {
+			t.Fatalf("%s /events first line = %q (err %v), want the connected comment", tok.name, line, err)
+		}
+	}
+}
+
+// TestApproverToken_AgentWritesThatAreNotDecisionsStillWork: an agent's own
+// submissions over the web port -- the permission-check gate -- are not
+// approval decisions and keep working with an agent token.
+func TestApproverToken_AgentWritesThatAreNotDecisionsStillWork(t *testing.T) {
+	s := StartServer(t, WithApproverToken(approverToken), WithPermissionsFile(writePermFile(t)))
+	code, body := WebPost(t, s.WebURL()+"/api/permission/check", testToken, map[string]any{
+		"tool":  "Bash",
+		"input": map[string]any{"command": "git push origin main"},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("agent permission check: status %d, body %s, want 200", code, body)
+	}
+}
+
+// TestApproverToken_NotAcceptedOnMCPPort: the approver credential belongs to
+// the dashboard only. It is not an agent credential, so the MCP port refuses it.
+func TestApproverToken_NotAcceptedOnMCPPort(t *testing.T) {
+	s := StartServer(t, WithApproverToken(approverToken))
+	req, _ := http.NewRequest(http.MethodGet, s.MCPURL()+"/sse", nil)
+	req.Header.Set("Authorization", "Bearer "+approverToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("SSE GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("approver token on the MCP port: status %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestApproverToken_UnsetKeepsLegacyBehaviour: a deployment that has not set
+// the approver token keeps working exactly as before, and says so at startup.
+func TestApproverToken_UnsetKeepsLegacyBehaviour(t *testing.T) {
+	s := StartServer(t)
+	c := NewMCPClient(t, s.MCPURL())
+	initMCP(t, c)
+	rid := submitPending(t, c, 2, "legacy")
+
+	if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/approve", s.WebURL(), rid), testToken, nil); code != http.StatusOK {
+		t.Fatalf("legacy approve with the shared token: status %d, body %s", code, body)
+	}
+	if code, body := WebPost(t, s.WebURL()+"/api/turbocharge", testToken, map[string]int{"duration_minutes": 1}); code != http.StatusOK {
+		t.Fatalf("legacy turbocharge with the shared token: status %d, body %s", code, body)
+	}
+	if !strings.Contains(s.Stderr(), "MHR_APPROVER_TOKEN is not set") {
+		t.Fatalf("no startup warning about the missing approver token; stderr:\n%s", s.Stderr())
+	}
+}
+
+// TestApproverToken_AuditRecordsApprovedBy: every decision in the audit log
+// says which kind of credential made it.
+func TestApproverToken_AuditRecordsApprovedBy(t *testing.T) {
+	cases := []struct {
+		name  string
+		opts  []ServerOption
+		token string
+		want  string
+	}{
+		{"approver", []ServerOption{WithApproverToken(approverToken)}, approverToken, "approver"},
+		{"legacy", nil, testToken, "legacy-shared-token"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			s := StartServer(t, append([]ServerOption{WithDataDir(dataDir)}, tc.opts...)...)
+			c := NewMCPClient(t, s.MCPURL())
+			initMCP(t, c)
+			approveID := submitPending(t, c, 2, "audit-approve")
+			denyID := submitPending(t, c, 3, "audit-deny")
+
+			if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/approve", s.WebURL(), approveID), tc.token, nil); code != http.StatusOK {
+				t.Fatalf("approve: %d %s", code, body)
+			}
+			if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/deny", s.WebURL(), denyID), tc.token, map[string]string{"reason": "r"}); code != http.StatusOK {
+				t.Fatalf("deny: %d %s", code, body)
+			}
+			waitForStatus(t, s, approveID, "complete")
+
+			got := map[string]string{}
+			for _, e := range readAuditLog(t, filepath.Join(dataDir, "audit.log")) {
+				switch e.Event {
+				case "request_approved", "request_denied":
+					by, _ := e.Fields["approved_by"].(string)
+					got[e.Event] = by
+				}
+			}
+			for _, ev := range []string{"request_approved", "request_denied"} {
+				if got[ev] != tc.want {
+					t.Errorf("%s approved_by = %q, want %q", ev, got[ev], tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestApproverToken_MustDifferFromAgentToken: an approver token equal to any
+// agent token (the shared one or a minted client) would re-open the hole, so
+// the relay refuses to start.
+func TestApproverToken_MustDifferFromAgentToken(t *testing.T) {
+	t.Run("auth-token", func(t *testing.T) {
+		assertRefusesApprover(t, t.TempDir(), testToken, "must differ from MHR_AUTH_TOKEN")
+	})
+	t.Run("client-token", func(t *testing.T) {
+		dataDir := t.TempDir()
+		assertRefusesApprover(t, dataDir, mintClient(t, dataDir, "agent-c"), "must differ from every client token")
+	})
+}
+
+func assertRefusesApprover(t *testing.T, dataDir, approver, wantMsg string) {
+	t.Helper()
+	bin := os.Getenv("HUMAN_RELAY_BIN")
+	if bin == "" {
+		t.Fatal("HUMAN_RELAY_BIN not set")
+	}
+	cmd := exec.Command(bin)
+	cmd.Env = append(os.Environ(),
+		"MHR_AUTH_TOKEN="+testToken,
+		"MHR_APPROVER_TOKEN="+approver,
+		"MHR_DATA_DIR="+dataDir,
+		"MHR_MCP_PORT=0",
+		"MHR_WEB_PORT=0",
+	)
+	done := make(chan struct{})
+	var out []byte
+	var err error
+	go func() { out, err = cmd.CombinedOutput(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cmd.Process.Kill()
+		<-done
+		t.Fatal("relay started with an approver token an agent holds; want it to refuse")
+	}
+	if err == nil {
+		t.Fatalf("relay exited 0 with a reused approver token; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), wantMsg) {
+		t.Fatalf("refusal does not name the problem; output:\n%s", out)
+	}
+}

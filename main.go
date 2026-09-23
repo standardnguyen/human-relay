@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net/http"
@@ -65,6 +66,25 @@ func main() {
 	}
 	verifier := auth.NewVerifier(clientRegistry, authToken)
 	log.Printf("Client registry: %s", clientsPath)
+
+	// Approver token: the only credential that may approve, deny, release,
+	// whitelist or turbocharge once set. The web port verifies it; the MCP
+	// port never does, so no agent credential can double as it. Unset keeps
+	// the legacy behaviour, where every authenticating token can decide.
+	webVerifier := verifier
+	approverToken := os.Getenv("MHR_APPROVER_TOKEN")
+	if approverToken != "" {
+		if subtle.ConstantTimeCompare([]byte(approverToken), []byte(authToken)) == 1 {
+			log.Fatal("MHR_APPROVER_TOKEN must differ from MHR_AUTH_TOKEN: agents hold the auth token, so sharing it would let them approve their own requests")
+		}
+		if name, ok := clientRegistry.Verify(approverToken); ok {
+			log.Fatalf("MHR_APPROVER_TOKEN must differ from every client token, but it matches client %q", name)
+		}
+		webVerifier = verifier.WithApprover(approverToken)
+		log.Printf("Approver token: set; only it may approve, deny, release, whitelist or turbocharge")
+	} else {
+		log.Printf("WARNING: MHR_APPROVER_TOKEN is not set, so any token that authenticates, including the ones agents use on the MCP port, can approve, deny, release and whitelist requests. Set it to a token no agent holds.")
+	}
 
 	s := store.New()
 	exec := executor.New(executor.Config{
@@ -135,7 +155,7 @@ func main() {
 	log.Printf("Permissions: %d allow, %d deny, %d ask from %s", len(rules.Allow), len(rules.Deny), len(rules.Ask), permPath)
 
 	cd := envInt("MHR_APPROVAL_COOLDOWN", 30)
-	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms), web.WithRegistries(containerStore, machineStore))
+	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms), web.WithRegistries(containerStore, machineStore), web.WithApproverRequired(approverToken != ""))
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 
@@ -160,7 +180,7 @@ func main() {
 			return
 		}
 		// Everything else goes through auth + CSRF
-		web.AuthMiddleware(verifier,
+		web.AuthMiddleware(webVerifier,
 			web.CSRFMiddleware(webMux),
 		).ServeHTTP(w, r)
 	})

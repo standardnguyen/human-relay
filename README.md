@@ -88,6 +88,13 @@ each one can be revoked on its own, and every request records which client asked
 The registry (`<MHR_DATA_DIR>/clients.json`) stores only each token's SHA-256, so a leaked
 client token costs one `-client-revoke` instead of a fleet-wide rotation.
 
+**Keep approving separate from asking.** Every token above authenticates on the dashboard
+API too, so without more configuration an agent holding one could approve its own request.
+Set `MHR_APPROVER_TOKEN` to a token no agent holds and paste it into the dashboard: it
+becomes the only credential that can approve, deny, release output, whitelist or
+turbocharge, and each decision is written to the audit log with `approved_by: "approver"`
+(`"legacy-shared-token"` when the variable is unset).
+
 There are two ways to get the header onto the wire.
 
 #### Option A — the client sends the header itself
@@ -240,6 +247,7 @@ Features:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MHR_AUTH_TOKEN` | (required) | Bearer token for dashboard API authentication |
+| `MHR_APPROVER_TOKEN` | (none) | Token the dashboard uses to approve. When set, only it may approve, deny, release output, whitelist or turbocharge; every other token (agents included) can only submit and read requests, and gets `403` on those calls. It is accepted on the web port only, never on the MCP port, and must differ from `MHR_AUTH_TOKEN` and every client token (the relay refuses to start otherwise). Unset keeps the old behaviour, where any authenticating token can approve, and logs a warning at startup |
 | `MHR_MCP_PORT` | `8080` | MCP SSE server port |
 | `MHR_WEB_PORT` | `8090` | Web dashboard port |
 | `MHR_DEFAULT_TIMEOUT` | `30` | Default command timeout (seconds) |

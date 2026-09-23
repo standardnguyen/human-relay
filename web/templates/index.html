@@ -555,7 +555,7 @@
 <div id="requests" class="request-list"></div>
 
 <script>
-const TOKEN = localStorage.getItem('mhr_token') || prompt('Enter auth token:');
+const TOKEN = localStorage.getItem('mhr_token') || prompt('Enter the approver token (or the auth token, if this relay has no approver token set):');
 if (TOKEN) localStorage.setItem('mhr_token', TOKEN);
 
 const headers = { 'Authorization': 'Bearer ' + TOKEN };
@@ -1253,7 +1253,7 @@ async function addWhitelist(requestId, command, args, gateOutput) {
   if (!confirm(prompt + command + argsStr)) return;
   // request_id lets the server derive the rule key itself — for script creates
   // that key includes a hash of the body, which the browser never receives.
-  const resp = await fetch('/api/whitelist', {
+  const resp = await decide('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ request_id: requestId, command, args: args || [], gate_output: !!gateOutput })
@@ -1268,7 +1268,7 @@ async function toggleWhitelistGate(index) {
   const rule = whitelistRules[index];
   if (!rule) return;
   // Re-adding an existing rule updates its gate flag in place
-  const resp = await fetch('/api/whitelist', {
+  const resp = await decide('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ command: rule.command, args: rule.args || [], gate_output: !rule.gate_output })
@@ -1280,7 +1280,7 @@ async function removeWhitelist(index) {
   const rule = whitelistRules[index];
   if (!rule) return;
   if (!confirm('Remove this whitelist rule?')) return;
-  await fetch('/api/whitelist/remove', {
+  await decide('/api/whitelist/remove', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ command: rule.command, args: rule.args || [] })
@@ -1321,7 +1321,7 @@ async function fetchRequests() {
 }
 
 async function approve(id) {
-  await fetch('/api/requests/' + id + '/approve', {
+  await decide('/api/requests/' + id + '/approve', {
     method: 'POST',
     headers
   });
@@ -1330,11 +1330,12 @@ async function approve(id) {
 }
 
 async function approveAndWhitelist(id, command, args) {
-  await fetch('/api/requests/' + id + '/approve', {
+  const approved = await decide('/api/requests/' + id + '/approve', {
     method: 'POST',
     headers
   });
-  await fetch('/api/whitelist', {
+  if (approved.status === 403) return;
+  await decide('/api/whitelist', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ request_id: id, command, args: args || [] })
@@ -1372,7 +1373,7 @@ function updateCooldownDisplay() {
 }
 
 async function approveGated(id) {
-  await fetch('/api/requests/' + id + '/approve-gated', {
+  await decide('/api/requests/' + id + '/approve-gated', {
     method: 'POST',
     headers
   });
@@ -1380,7 +1381,7 @@ async function approveGated(id) {
 }
 
 async function releaseOutput(id) {
-  await fetch('/api/requests/' + id + '/release', {
+  await decide('/api/requests/' + id + '/release', {
     method: 'POST',
     headers
   });
@@ -1390,7 +1391,7 @@ async function releaseOutput(id) {
 async function deny(id) {
   const reason = prompt('Deny reason (optional):');
   if (reason === null) return;
-  await fetch('/api/requests/' + id + '/deny', {
+  await decide('/api/requests/' + id + '/deny', {
     method: 'POST',
     headers,
     body: JSON.stringify({ reason })
@@ -1400,9 +1401,9 @@ async function deny(id) {
 
 async function toggleTurbo() {
   if (turboActive) {
-    await fetch('/api/turbocharge', { method: 'DELETE', headers });
+    await decide('/api/turbocharge', { method: 'DELETE', headers });
   } else {
-    await fetch('/api/turbocharge', {
+    await decide('/api/turbocharge', {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ duration_minutes: 5, cooldown_seconds: 10 })
@@ -1414,6 +1415,21 @@ async function toggleTurbo() {
 function purgeToken() {
   localStorage.removeItem('mhr_token');
   location.reload();
+}
+
+// decide() is fetch() for approval actions. A relay with an approver token
+// answers 403 "cannot approve" to any other token; say so, and offer to swap
+// the stored token, instead of the click silently doing nothing.
+async function decide(url, opts) {
+  const resp = await fetch(url, opts);
+  if (resp.status === 403) {
+    const msg = (await resp.text()).trim();
+    if (msg.includes('cannot approve') &&
+        confirm(msg + '\n\nThis dashboard holds a token that cannot approve. Clear it and enter the approver token?')) {
+      purgeToken();
+    }
+  }
+  return resp;
 }
 
 function clearHistory() {

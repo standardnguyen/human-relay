@@ -13,6 +13,14 @@ type Verifier interface {
 	Verify(token string) (client string, ok bool)
 }
 
+// RoleVerifier is a Verifier that can also say whether a token is the approver
+// token. AuthMiddleware marks the request context with auth.WithApprover when
+// it is; auth.Verifier implements it.
+type RoleVerifier interface {
+	Verifier
+	VerifyRole(token string) (client string, approver bool, ok bool)
+}
+
 // missingBearerHint is the 401 body for a caller that presented no credential
 // at all — no bearer scheme, or the scheme with an empty token. It names the
 // actual fix, which is safe precisely because the request carried no
@@ -81,14 +89,24 @@ func AuthMiddleware(v Verifier, next http.Handler) http.Handler {
 			return
 		}
 
-		client, ok := v.Verify(provided)
+		var client string
+		var approver, ok bool
+		if rv, isRole := v.(RoleVerifier); isRole {
+			client, approver, ok = rv.VerifyRole(provided)
+		} else {
+			client, ok = v.Verify(provided)
+		}
 		if !ok {
 			// Case (b): credential validity — must never leak which of unknown
 			// or revoked it was. Bare body, unchanged.
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithClient(r.Context(), client)))
+		ctx := auth.WithClient(r.Context(), client)
+		if approver {
+			ctx = auth.WithApprover(ctx)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

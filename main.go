@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"log"
@@ -71,16 +72,24 @@ func main() {
 	// whitelist or turbocharge once set. The web port verifies it; the MCP
 	// port never does, so no agent credential can double as it. Unset keeps
 	// the legacy behaviour, where every authenticating token can decide.
+	//
+	// MHR_APPROVER_TOKEN_SHA256 (the token's hex SHA-256) is the better form:
+	// the relay needs only the digest, so the token itself never has to exist
+	// on the relay host. Either variable is dropped from this process's
+	// environment once read, so commands the relay runs do not inherit it.
 	webVerifier := verifier
-	approverToken := os.Getenv("MHR_APPROVER_TOKEN")
-	if approverToken != "" {
-		if subtle.ConstantTimeCompare([]byte(approverToken), []byte(authToken)) == 1 {
-			log.Fatal("MHR_APPROVER_TOKEN must differ from MHR_AUTH_TOKEN: agents hold the auth token, so sharing it would let them approve their own requests")
+	approverDigest, approverSet := approverDigestFromEnv()
+	os.Unsetenv("MHR_APPROVER_TOKEN")
+	os.Unsetenv("MHR_APPROVER_TOKEN_SHA256")
+	if approverSet {
+		authDigest := sha256.Sum256([]byte(authToken))
+		if subtle.ConstantTimeCompare(approverDigest[:], authDigest[:]) == 1 {
+			log.Fatal("the approver token must differ from MHR_AUTH_TOKEN: agents hold the auth token, so sharing it would let them approve their own requests")
 		}
-		if name, ok := clientRegistry.Verify(approverToken); ok {
-			log.Fatalf("MHR_APPROVER_TOKEN must differ from every client token, but it matches client %q", name)
+		if name, ok := clientRegistry.MatchDigest(approverDigest); ok {
+			log.Fatalf("the approver token must differ from every client token, but it matches client %q", name)
 		}
-		webVerifier = verifier.WithApprover(approverToken)
+		webVerifier = verifier.WithApproverDigest(approverDigest)
 		log.Printf("Approver token: set; only it may approve, deny, release, whitelist or turbocharge")
 	} else {
 		log.Printf("WARNING: MHR_APPROVER_TOKEN is not set, so any token that authenticates, including the ones agents use on the MCP port, can approve, deny, release and whitelist requests. Set it to a token no agent holds.")
@@ -155,7 +164,7 @@ func main() {
 	log.Printf("Permissions: %d allow, %d deny, %d ask from %s", len(rules.Allow), len(rules.Deny), len(rules.Ask), permPath)
 
 	cd := envInt("MHR_APPROVAL_COOLDOWN", 30)
-	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms), web.WithRegistries(containerStore, machineStore), web.WithApproverRequired(approverToken != ""))
+	webHandler := web.NewHandler(s, exec, auditLog, web.WithCooldown(time.Duration(cd)*time.Second), web.WithWhitelist(wl), web.WithScriptsDir(scriptsDir), web.WithPermissions(perms), web.WithRegistries(containerStore, machineStore), web.WithApproverRequired(approverSet))
 	webMux := http.NewServeMux()
 	webHandler.RegisterRoutes(webMux)
 
@@ -275,6 +284,27 @@ func handleClientCommand(args []string, clientsPath string) (bool, int) {
 	}
 
 	return false, 0
+}
+
+// approverDigestFromEnv reads the approver credential from MHR_APPROVER_TOKEN or
+// MHR_APPROVER_TOKEN_SHA256 (not both) and returns its SHA-256. It exits on a
+// misconfiguration rather than start with approval left open by mistake.
+func approverDigestFromEnv() ([sha256.Size]byte, bool) {
+	token := os.Getenv("MHR_APPROVER_TOKEN")
+	digestHex := os.Getenv("MHR_APPROVER_TOKEN_SHA256")
+	switch {
+	case token != "" && digestHex != "":
+		log.Fatal("set MHR_APPROVER_TOKEN or MHR_APPROVER_TOKEN_SHA256, not both")
+	case token != "":
+		return sha256.Sum256([]byte(token)), true
+	case digestHex != "":
+		d, err := auth.ParseTokenDigest(strings.TrimSpace(digestHex))
+		if err != nil {
+			log.Fatalf("MHR_APPROVER_TOKEN_SHA256: %v", err)
+		}
+		return d, true
+	}
+	return [sha256.Size]byte{}, false
 }
 
 func envInt(key string, def int) int {

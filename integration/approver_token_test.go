@@ -2,6 +2,8 @@ package integration
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -379,6 +381,11 @@ func TestApproverToken_MustDifferFromAgentToken(t *testing.T) {
 
 func assertRefusesApprover(t *testing.T, dataDir, approver, wantMsg string) {
 	t.Helper()
+	assertRefusesStart(t, dataDir, []string{"MHR_APPROVER_TOKEN=" + approver}, wantMsg)
+}
+
+func assertRefusesStart(t *testing.T, dataDir string, extraEnv []string, wantMsg string) {
+	t.Helper()
 	bin := os.Getenv("HUMAN_RELAY_BIN")
 	if bin == "" {
 		t.Fatal("HUMAN_RELAY_BIN not set")
@@ -386,11 +393,11 @@ func assertRefusesApprover(t *testing.T, dataDir, approver, wantMsg string) {
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(),
 		"MHR_AUTH_TOKEN="+testToken,
-		"MHR_APPROVER_TOKEN="+approver,
 		"MHR_DATA_DIR="+dataDir,
 		"MHR_MCP_PORT=0",
 		"MHR_WEB_PORT=0",
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	done := make(chan struct{})
 	var out []byte
 	var err error
@@ -407,5 +414,86 @@ func assertRefusesApprover(t *testing.T, dataDir, approver, wantMsg string) {
 	}
 	if !strings.Contains(string(out), wantMsg) {
 		t.Fatalf("refusal does not name the problem; output:\n%s", out)
+	}
+}
+
+// runApproved submits one relay-local command as the agent, approves it with
+// the approver token, and returns its stdout.
+func runApproved(t *testing.T, s *TestServer, c *MCPClient, id int, command string, args ...string) string {
+	t.Helper()
+	resp := c.Call(t, id, "tools/call", map[string]interface{}{
+		"name": "request_command_for_relay",
+		"arguments": map[string]interface{}{
+			"command": command,
+			"args":    args,
+			"reason":  "approver token test",
+		},
+	})
+	rid := extractRequestID(t, resp)
+	if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/approve", s.WebURL(), rid), approverToken, nil); code != http.StatusOK {
+		t.Fatalf("approve %s: %d %s", command, code, body)
+	}
+	waitForStatus(t, s, rid, "complete", "error")
+	res := extractResult(t, c.Call(t, id+1000, "tools/call", map[string]interface{}{
+		"name":      "get_result",
+		"arguments": map[string]interface{}{"request_id": rid},
+	}))
+	if res.Result == nil {
+		t.Fatalf("no result for %s", rid)
+	}
+	return res.Result.Stdout
+}
+
+// TestApproverToken_NotInheritedByApprovedCommands: commands the relay runs
+// inherit its environment, so an approved script that prints `env` would hand
+// an agent the approver token. The relay drops it from its environment once
+// read.
+func TestApproverToken_NotInheritedByApprovedCommands(t *testing.T) {
+	s := StartServer(t, WithApproverToken(approverToken))
+	c := NewMCPClient(t, s.MCPURL())
+	initMCP(t, c)
+	out := runApproved(t, s, c, 2, "env")
+	if !strings.Contains(out, "MHR_AUTH_TOKEN") {
+		t.Fatal("control failed: env output does not show the relay's environment")
+	}
+	if strings.Contains(out, approverToken) || strings.Contains(out, "MHR_APPROVER_TOKEN") {
+		// Never print `out`: it is the whole test environment.
+		t.Fatal("an approved command can read the approver token from its environment")
+	}
+}
+
+// TestApproverToken_DigestForm: MHR_APPROVER_TOKEN_SHA256 configures the
+// approver by the token's SHA-256 alone, so the plaintext never has to exist
+// on the relay host at all.
+func TestApproverToken_DigestForm(t *testing.T) {
+	sum := sha256.Sum256([]byte(approverToken))
+	s := StartServer(t, WithApproverTokenSHA256(hex.EncodeToString(sum[:])))
+	c := NewMCPClient(t, s.MCPURL())
+	initMCP(t, c)
+	rid := submitPending(t, c, 2, "digest")
+
+	if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/approve", s.WebURL(), rid), testToken, nil); code != http.StatusForbidden {
+		t.Fatalf("agent approve under the digest form: %d %s, want 403", code, body)
+	}
+	if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/approve", s.WebURL(), rid), approverToken, nil); code != http.StatusOK {
+		t.Fatalf("approver approve under the digest form: %d %s, want 200", code, body)
+	}
+}
+
+// TestApproverToken_BadConfigRefused: the digest form is checked as strictly
+// as the plaintext form.
+func TestApproverToken_BadConfigRefused(t *testing.T) {
+	authSum := sha256.Sum256([]byte(testToken))
+	cases := []struct {
+		name, env, want string
+	}{
+		{"both-forms", "MHR_APPROVER_TOKEN=x\x00MHR_APPROVER_TOKEN_SHA256=" + strings.Repeat("a", 64), "not both"},
+		{"malformed-digest", "MHR_APPROVER_TOKEN_SHA256=not-hex", "64 hex characters"},
+		{"digest-of-auth-token", "MHR_APPROVER_TOKEN_SHA256=" + hex.EncodeToString(authSum[:]), "must differ from MHR_AUTH_TOKEN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertRefusesStart(t, t.TempDir(), strings.Split(tc.env, "\x00"), tc.want)
+		})
 	}
 }

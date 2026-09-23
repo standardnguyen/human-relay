@@ -94,6 +94,11 @@ Set `MHR_APPROVER_TOKEN` to a token no agent holds and paste it into the dashboa
 becomes the only credential that can approve, deny, release output, whitelist or
 turbocharge, and each decision is written to the audit log with `approved_by: "approver"`
 (`"legacy-shared-token"` when the variable is unset).
+Prefer `MHR_APPROVER_TOKEN_SHA256`, the token's SHA-256: the relay verifies against the digest,
+so the token itself lives only in the dashboard. The relay drops either variable from its
+environment at startup so commands it runs do not inherit it, but the plaintext form still
+sits in the relay process's initial environment, where a command running as the same user
+could read it; the digest form leaves nothing there worth reading.
 
 There are two ways to get the header onto the wire.
 
@@ -248,6 +253,7 @@ Features:
 |----------|---------|-------------|
 | `MHR_AUTH_TOKEN` | (required) | Bearer token for dashboard API authentication |
 | `MHR_APPROVER_TOKEN` | (none) | Token the dashboard uses to approve. When set, only it may approve, deny, release output, whitelist or turbocharge; every other token (agents included) can only submit and read requests, and gets `403` on those calls. It is accepted on the web port only, never on the MCP port, and must differ from `MHR_AUTH_TOKEN` and every client token (the relay refuses to start otherwise). Unset keeps the old behaviour, where any authenticating token can approve, and logs a warning at startup |
+| `MHR_APPROVER_TOKEN_SHA256` | (none) | The approver token's hex SHA-256, instead of the token itself (set one or the other, not both). Preferred: the relay only needs the digest, so the token never has to be stored on the relay host. Generate with the first field of `printf %s "$TOKEN" \| sha256sum` |
 | `MHR_MCP_PORT` | `8080` | MCP SSE server port |
 | `MHR_WEB_PORT` | `8090` | Web dashboard port |
 | `MHR_DEFAULT_TIMEOUT` | `30` | Default command timeout (seconds) |

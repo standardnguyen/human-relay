@@ -58,6 +58,13 @@ func WithApproverToken(token string) ServerOption {
 	}
 }
 
+// WithApproverTokenSHA256 configures the approver by the token's hex SHA-256.
+func WithApproverTokenSHA256(digest string) ServerOption {
+	return func(s *TestServer) {
+		s.env = append(s.env, "MHR_APPROVER_TOKEN_SHA256="+digest)
+	}
+}
+
 func WithAllowedDirs(dirs string) ServerOption {
 	return func(s *TestServer) {
 		s.env = append(s.env, "MHR_ALLOWED_DIRS="+dirs)

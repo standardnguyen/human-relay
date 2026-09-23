@@ -190,12 +190,46 @@ type Verifier struct {
 // unchanged, so the MCP port can keep a verifier that never accepts the
 // approver token while the web port uses the copy. An empty token adds nothing.
 func (v *Verifier) WithApprover(approverToken string) *Verifier {
-	c := *v
-	if approverToken != "" {
-		c.approverDigest = sha256.Sum256([]byte(approverToken))
-		c.hasApprover = true
+	if approverToken == "" {
+		c := *v
+		return &c
 	}
+	return v.WithApproverDigest(sha256.Sum256([]byte(approverToken)))
+}
+
+// WithApproverDigest is WithApprover given only the token's SHA-256, so the
+// relay can verify the approver without ever holding the token itself.
+func (v *Verifier) WithApproverDigest(digest [sha256.Size]byte) *Verifier {
+	c := *v
+	c.approverDigest = digest
+	c.hasApprover = true
 	return &c
+}
+
+// ParseTokenDigest decodes a hex SHA-256 token digest (64 hex characters).
+func ParseTokenDigest(s string) ([sha256.Size]byte, error) {
+	var d [sha256.Size]byte
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != sha256.Size {
+		return d, fmt.Errorf("want 64 hex characters (a SHA-256 digest)")
+	}
+	copy(d[:], b)
+	return d, nil
+}
+
+// MatchDigest reports whether digest is the token digest of a registered
+// client (revoked or not), and which. Every row is compared constant-time.
+func (r *Registry) MatchDigest(digest [sha256.Size]byte) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var name string
+	var found bool
+	for n, c := range r.clients {
+		if subtle.ConstantTimeCompare(digest[:], digestBytes(c.TokenSHA256)) == 1 {
+			name, found = n, true
+		}
+	}
+	return name, found
 }
 
 // VerifyRole is Verify plus whether the token is the approver token. Master

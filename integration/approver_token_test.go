@@ -462,6 +462,33 @@ func TestApproverToken_NotInheritedByApprovedCommands(t *testing.T) {
 	}
 }
 
+// TestApproverToken_NotInRelayInitialEnviron: os.Unsetenv only edits Go's copy
+// of the environment. The kernel keeps the block the process was exec'd with
+// and serves it at /proc/<pid>/environ, which any command the relay runs (same
+// uid) can read. The plaintext form must not survive there either.
+func TestApproverToken_NotInRelayInitialEnviron(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("no /proc on this platform")
+	}
+	s := StartServer(t, WithApproverToken(approverToken))
+	c := NewMCPClient(t, s.MCPURL())
+	initMCP(t, c)
+	environPath := fmt.Sprintf("/proc/%d/environ", s.cmd.Process.Pid)
+	out := runApproved(t, s, c, 2, "sh", "-c", "tr '\\0' '\\n' < "+environPath)
+	if !strings.Contains(out, "MHR_AUTH_TOKEN=") {
+		t.Fatal("control failed: the relay's /proc environ is not readable, so this test measures nothing")
+	}
+	if strings.Contains(out, approverToken) {
+		// Never print `out`: it is the relay's whole environment.
+		t.Fatal("the plaintext approver token is still in the relay's /proc/<pid>/environ")
+	}
+	// The relay still enforces the approver after dropping the plaintext.
+	rid := submitPending(t, c, 3, "after-reexec")
+	if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/approve", s.WebURL(), rid), testToken, nil); code != http.StatusForbidden {
+		t.Fatalf("agent approve after the environ scrub: %d %s, want 403", code, body)
+	}
+}
+
 // TestApproverToken_DigestForm: MHR_APPROVER_TOKEN_SHA256 configures the
 // approver by the token's SHA-256 alone, so the plaintext never has to exist
 // on the relay host at all.

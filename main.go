@@ -25,6 +25,10 @@ import (
 )
 
 func main() {
+	// Before anything else: a plaintext approver token must not stay in this
+	// process's /proc/<pid>/environ, where every command it runs could read it.
+	scrubPlaintextApproverToken()
+
 	dataDir := envString("MHR_DATA_DIR", "/opt/human-relay/data")
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		log.Fatalf("create data dir: %v", err)
@@ -75,8 +79,10 @@ func main() {
 	//
 	// MHR_APPROVER_TOKEN_SHA256 (the token's hex SHA-256) is the better form:
 	// the relay needs only the digest, so the token itself never has to exist
-	// on the relay host. Either variable is dropped from this process's
-	// environment once read, so commands the relay runs do not inherit it.
+	// on the relay host. A plaintext token was already swapped for its digest
+	// by scrubPlaintextApproverToken's re-exec, so the kernel's copy of the
+	// initial environment never holds it. Either variable is also dropped from
+	// Go's environment once read, so commands the relay runs do not inherit it.
 	webVerifier := verifier
 	approverDigest, approverSet := approverDigestFromEnv()
 	os.Unsetenv("MHR_APPROVER_TOKEN")

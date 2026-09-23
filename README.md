@@ -95,10 +95,15 @@ becomes the only credential that can approve, deny, release output, whitelist or
 turbocharge, and each decision is written to the audit log with `approved_by: "approver"`
 (`"legacy-shared-token"` when the variable is unset).
 Prefer `MHR_APPROVER_TOKEN_SHA256`, the token's SHA-256: the relay verifies against the digest,
-so the token itself lives only in the dashboard. The relay drops either variable from its
-environment at startup so commands it runs do not inherit it, but the plaintext form still
-sits in the relay process's initial environment, where a command running as the same user
-could read it; the digest form leaves nothing there worth reading.
+so the token itself lives only in the dashboard and never in the relay's service config. If you
+set the plaintext form, the relay re-executes itself at startup (same PID) with the token swapped
+for its digest, so it is not left in `/proc/<pid>/environ` where a command running as the same
+user could read it. Either variable is also dropped from the environment that approved commands
+inherit.
+
+The dashboard and `/chat` keep the approver token in the browser, so both pages are built to
+never run agent-supplied text as code: no inline event handlers, and a
+`Content-Security-Policy` whose `script-src` is a per-response nonce with no `'unsafe-inline'`.
 
 There are two ways to get the header onto the wire.
 

@@ -13,7 +13,9 @@ import (
 // is a fresh per-response nonce with no 'unsafe-inline', so an injected
 // onclick/onmouseover or <script> cannot run even if some render path fails
 // to escape. Inline style attributes stay allowed (the pages use them, and a
-// style cannot call the API).
+// style cannot call the API). frame-ancestors 'none' (with X-Frame-Options:
+// DENY in servePage for browsers that ignore it) stops another site framing a
+// page that holds the approver token and clickjacking an approval.
 func pageCSP(nonce string) string {
 	return "default-src 'self'; " +
 		"script-src 'nonce-" + nonce + "'; " +
@@ -22,7 +24,8 @@ func pageCSP(nonce string) string {
 		"connect-src 'self'; " +
 		"object-src 'none'; " +
 		"base-uri 'none'; " +
-		"form-action 'self'"
+		"form-action 'self'; " +
+		"frame-ancestors 'none'"
 }
 
 // pageData is what the page templates receive.
@@ -40,6 +43,7 @@ func (h *Handler) servePage(w http.ResponseWriter, name string) {
 	nonce := base64.RawURLEncoding.EncodeToString(b[:])
 	w.Header().Set("Content-Security-Policy", pageCSP(nonce))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	h.tmpl.ExecuteTemplate(w, name, pageData{Nonce: nonce})
 }

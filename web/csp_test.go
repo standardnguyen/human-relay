@@ -140,3 +140,22 @@ func TestPages_NoInlineEventHandlers(t *testing.T) {
 		}
 	}
 }
+
+// TestPages_CannotBeFramed: a framed copy of the dashboard loads the approver
+// token from localStorage and renders live Approve buttons, so a page on any
+// other origin could overlay it and clickjack an approval. Both pages refuse
+// every framer, by CSP frame-ancestors and by X-Frame-Options for browsers
+// that ignore frame-ancestors.
+func TestPages_CannotBeFramed(t *testing.T) {
+	srv := newPageTestServer(t)
+	for _, path := range []string{"/", "/chat"} {
+		_, hdr := getPage(t, srv.URL+path)
+		csp := hdr.Get("Content-Security-Policy")
+		if !strings.Contains(csp, "frame-ancestors 'none'") {
+			t.Errorf("%s CSP lacks frame-ancestors 'none', so any site can frame it: %q", path, csp)
+		}
+		if got := hdr.Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s X-Frame-Options = %q, want DENY", path, got)
+		}
+	}
+}

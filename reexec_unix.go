@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"log"
 	"os"
-	"strings"
 	"syscall"
 )
 
@@ -25,27 +24,27 @@ import (
 //
 // It runs first thing in main, before any goroutine, listener or command, so
 // the only window in which the plaintext is readable is before the relay can
-// run anything. Setting both variables is left to approverDigestFromEnv to
-// refuse.
+// run anything. An environment it cannot read unambiguously (a variable set
+// twice) or that sets both variables is left untouched for
+// approverDigestFromEnv to refuse.
+//
+// The re-exec environment drops EVERY entry of both variables, empty ones
+// included, before appending the digest. An empty MHR_APPROVER_TOKEN_SHA256=
+// left in place would sit ahead of the appended digest, Go would read the
+// empty one, and the relay would start in legacy mode where every agent token
+// approves.
 func scrubPlaintextApproverToken() {
-	token := os.Getenv("MHR_APPROVER_TOKEN")
-	if token == "" || os.Getenv("MHR_APPROVER_TOKEN_SHA256") != "" {
+	environ := initialEnviron()
+	e, err := readApproverEnv(environ)
+	if err != nil || e.token == "" || e.digestHex != "" {
 		return
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		log.Fatalf("cannot locate this binary to drop MHR_APPROVER_TOKEN from the process environment (%v); set MHR_APPROVER_TOKEN_SHA256 instead", err)
 	}
-	sum := sha256.Sum256([]byte(token))
-	env := make([]string, 0, len(os.Environ())+1)
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "MHR_APPROVER_TOKEN=") {
-			continue
-		}
-		env = append(env, kv)
-	}
-	env = append(env, "MHR_APPROVER_TOKEN_SHA256="+hex.EncodeToString(sum[:]))
-	err = syscall.Exec(exe, os.Args, env)
+	sum := sha256.Sum256([]byte(e.token))
+	err = syscall.Exec(exe, os.Args, scrubbedApproverEnv(environ, hex.EncodeToString(sum[:])))
 	// Exec only returns on failure. Refuse to run with the plaintext still
 	// readable rather than carry on quietly.
 	log.Fatalf("re-exec to drop MHR_APPROVER_TOKEN from the process environment failed (%v); set MHR_APPROVER_TOKEN_SHA256 instead", err)

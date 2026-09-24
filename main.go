@@ -294,21 +294,30 @@ func handleClientCommand(args []string, clientsPath string) (bool, int) {
 
 // approverDigestFromEnv reads the approver credential from MHR_APPROVER_TOKEN or
 // MHR_APPROVER_TOKEN_SHA256 (not both) and returns its SHA-256. It exits on a
-// misconfiguration rather than start with approval left open by mistake.
+// misconfiguration rather than start with approval left open by mistake:
+// either variable set twice, both set, a malformed digest, or -- the backstop
+// -- a non-empty approver value anywhere in the environment that did not end
+// up configuring the gate. Both variables absent or empty is the legacy mode.
 func approverDigestFromEnv() ([sha256.Size]byte, bool) {
-	token := os.Getenv("MHR_APPROVER_TOKEN")
-	digestHex := os.Getenv("MHR_APPROVER_TOKEN_SHA256")
+	environ := initialEnviron()
+	e, err := readApproverEnv(environ)
+	if err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
 	switch {
-	case token != "" && digestHex != "":
+	case e.token != "" && e.digestHex != "":
 		log.Fatal("set MHR_APPROVER_TOKEN or MHR_APPROVER_TOKEN_SHA256, not both")
-	case token != "":
-		return sha256.Sum256([]byte(token)), true
-	case digestHex != "":
-		d, err := auth.ParseTokenDigest(strings.TrimSpace(digestHex))
+	case e.token != "":
+		return sha256.Sum256([]byte(e.token)), true
+	case e.digestHex != "":
+		d, err := auth.ParseTokenDigest(strings.TrimSpace(e.digestHex))
 		if err != nil {
 			log.Fatalf("MHR_APPROVER_TOKEN_SHA256: %v", err)
 		}
 		return d, true
+	}
+	if approverValuePresent(environ) {
+		log.Fatal("refusing to start: an approver variable carries a value but the approver gate did not come up, and falling back to legacy mode would let every agent token approve")
 	}
 	return [sha256.Size]byte{}, false
 }

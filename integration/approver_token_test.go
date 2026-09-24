@@ -524,3 +524,144 @@ func TestApproverToken_BadConfigRefused(t *testing.T) {
 		})
 	}
 }
+
+// approverGateOn asserts the approver gate is on: an agent token is refused a
+// decision and the approver token may make it.
+func approverGateOn(t *testing.T, s *TestServer) {
+	t.Helper()
+	turbo := map[string]int{"duration_minutes": 1, "cooldown_seconds": 1}
+	if code, body := WebPost(t, s.WebURL()+"/api/turbocharge", testToken, turbo); code != http.StatusForbidden {
+		t.Fatalf("agent-token turbocharge: status %d, body %s, want 403 -- the approver gate is OFF and any agent token can approve", code, body)
+	}
+	if code, body := WebPost(t, s.WebURL()+"/api/turbocharge", approverToken, turbo); code != http.StatusOK {
+		t.Fatalf("approver turbocharge: status %d, body %s, want 200", code, body)
+	}
+	if strings.Contains(s.Stderr(), "MHR_APPROVER_TOKEN is not set") {
+		t.Fatalf("relay logged the legacy-mode warning although an approver was configured; stderr:\n%s", s.Stderr())
+	}
+}
+
+// TestApproverToken_EmptyDigestVarDoesNotDisableGate: an env file that lists
+// both keys and leaves MHR_APPROVER_TOKEN_SHA256= empty is ordinary. The
+// re-exec that swaps the plaintext for its digest once kept that empty entry
+// ahead of the digest it appended; Go reads the first entry, so the relay
+// started in legacy mode where every agent token approves.
+func TestApproverToken_EmptyDigestVarDoesNotDisableGate(t *testing.T) {
+	s := StartServer(t, WithApproverToken(approverToken), WithApproverTokenSHA256(""))
+	approverGateOn(t, s)
+
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		return
+	}
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", s.cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("read relay environ: %v", err)
+	}
+	var digestEntries, emptyEntries int
+	for _, kv := range strings.Split(string(raw), "\x00") {
+		if strings.HasPrefix(kv, "MHR_APPROVER_TOKEN_SHA256=") {
+			digestEntries++
+			if kv == "MHR_APPROVER_TOKEN_SHA256=" {
+				emptyEntries++
+			}
+		}
+	}
+	if digestEntries != 1 || emptyEntries != 0 {
+		t.Fatalf("relay environ holds %d MHR_APPROVER_TOKEN_SHA256 entries (%d empty), want exactly 1 non-empty", digestEntries, emptyEntries)
+	}
+	if strings.Contains(string(raw), approverToken) {
+		t.Fatal("the plaintext approver token is in the relay's /proc/<pid>/environ")
+	}
+}
+
+// TestApproverToken_DigestWithEmptyTokenVar: the SHA-256-only form, from an env
+// file that also lists MHR_APPROVER_TOKEN= empty. The empty plaintext variable
+// must neither switch the gate off nor count as "both set".
+func TestApproverToken_DigestWithEmptyTokenVar(t *testing.T) {
+	sum := sha256.Sum256([]byte(approverToken))
+	s := StartServer(t, WithApproverToken(""), WithApproverTokenSHA256(hex.EncodeToString(sum[:])))
+	approverGateOn(t, s)
+}
+
+// TestApproverToken_BothEmptyKeepsLegacyBehaviour: both variables present and
+// empty is "not configured", the same as both absent.
+func TestApproverToken_BothEmptyKeepsLegacyBehaviour(t *testing.T) {
+	s := StartServer(t, WithApproverToken(""), WithApproverTokenSHA256(""))
+	if code, body := WebPost(t, s.WebURL()+"/api/turbocharge", testToken, map[string]int{"duration_minutes": 1}); code != http.StatusOK {
+		t.Fatalf("legacy turbocharge with the shared token: status %d, body %s", code, body)
+	}
+	if !strings.Contains(s.Stderr(), "MHR_APPROVER_TOKEN is not set") {
+		t.Fatalf("no startup warning about the missing approver token; stderr:\n%s", s.Stderr())
+	}
+}
+
+// TestApproverToken_DuplicateEntryRefused: an environment block with two
+// entries for one approver variable is ambiguous -- Go's Getenv takes the
+// first, other readers the last -- and with an empty entry first it read as
+// "no approver", i.e. legacy mode. The relay must refuse to start instead.
+//
+// os/exec de-duplicates Cmd.Env (keeping the last entry), which would hide the
+// bug, so these start the binary with os.StartProcess and the block verbatim.
+func TestApproverToken_DuplicateEntryRefused(t *testing.T) {
+	sum := sha256.Sum256([]byte(approverToken))
+	digest := hex.EncodeToString(sum[:])
+	cases := []struct{ name, first, second, want string }{
+		{"digest-empty-then-set", "MHR_APPROVER_TOKEN_SHA256=", "MHR_APPROVER_TOKEN_SHA256=" + digest, "MHR_APPROVER_TOKEN_SHA256 appears more than once"},
+		{"token-empty-then-set", "MHR_APPROVER_TOKEN=", "MHR_APPROVER_TOKEN=" + approverToken, "MHR_APPROVER_TOKEN appears more than once"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertRefusesStartRawEnv(t, []string{tc.first, tc.second}, tc.want)
+		})
+	}
+}
+
+// assertRefusesStartRawEnv starts the relay with os.StartProcess, so the
+// environment reaches it exactly as given (duplicates included), and asserts
+// it exits non-zero naming wantMsg rather than serving.
+func assertRefusesStartRawEnv(t *testing.T, extraEnv []string, wantMsg string) {
+	t.Helper()
+	bin := os.Getenv("HUMAN_RELAY_BIN")
+	if bin == "" {
+		t.Fatal("HUMAN_RELAY_BIN not set")
+	}
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"MHR_AUTH_TOKEN=" + testToken,
+		"MHR_DATA_DIR=" + t.TempDir(),
+		"MHR_MCP_PORT=0",
+		"MHR_WEB_PORT=0",
+	}
+	env = append(env, extraEnv...)
+	logPath := filepath.Join(t.TempDir(), "relay.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+	proc, err := os.StartProcess(bin, []string{bin}, &os.ProcAttr{
+		Env:   env,
+		Files: []*os.File{nil, logFile, logFile},
+	})
+	if err != nil {
+		t.Fatalf("start relay: %v", err)
+	}
+	done := make(chan *os.ProcessState, 1)
+	go func() { st, _ := proc.Wait(); done <- st }()
+	var st *os.ProcessState
+	select {
+	case st = <-done:
+	case <-time.After(5 * time.Second):
+		proc.Kill()
+		<-done
+		out, _ := os.ReadFile(logPath)
+		t.Fatalf("relay started with an ambiguous approver environment (%q) instead of refusing; it is serving, possibly in legacy mode where agent tokens approve. log:\n%s", extraEnv, out)
+	}
+	out, _ := os.ReadFile(logPath)
+	if st.Success() {
+		t.Fatalf("relay exited 0 with an ambiguous approver environment; log:\n%s", out)
+	}
+	if !strings.Contains(string(out), wantMsg) {
+		t.Fatalf("refusal does not name the problem (want %q); log:\n%s", wantMsg, out)
+	}
+}

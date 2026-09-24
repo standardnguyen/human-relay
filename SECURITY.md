@@ -31,6 +31,16 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 - Whitelist is exact-match only — no glob/regex patterns.
 - The dashboard's `/events` metadata stream on `:8090` is unauthenticated (EventSource cannot set headers). It is read-only. This does not apply to the MCP `/sse` endpoint on `:8080`, which requires the bearer token.
 
+### The approver token holds only up to the relay's uid
+
+Approved and whitelisted commands run as the relay's own uid (root in the shipped container), so the separation between the approver and agents is only as strong as what a command running as that uid cannot do. The relay keeps the plaintext approver token out of `/proc/<pid>/environ` and out of every command's environment, but an approved command with enough reach can still take approval over in these ways (measured against a local relay on 2026-09-24; none is fixed in code yet):
+
+- **The relay's heap.** Every approval request the dashboard sends carries `Authorization: Bearer <approver token>`, and those bytes stay in the relay's memory. A command that can ptrace the relay (it holds `CAP_SYS_PTRACE`, as a root process in an LXC container or on a native root install does, or `kernel.yama.ptrace_scope` is `0` and the uid matches) can read `/proc/<relay pid>/mem`, recover the token and approve from then on. This applies to `MHR_APPROVER_TOKEN_SHA256` deployments too, since the browser still sends the plaintext token. Docker's default capability set lacks `SYS_PTRACE`, and with `ptrace_scope` `1` the read is refused; a privileged container or a native root install does not have that protection.
+- **Writable scripts.** `/scripts` is mounted read-write (`create_script` writes there), and a `run_script` whitelist rule matches the script's name only, not its content or arguments. A command that rewrites a whitelisted script's body gets that body auto-approved on every later `run_script` call.
+- **Writable whitelist.** `whitelist.json` in the data directory is writable by the same uid. The relay reads it at startup, so a command that adds rules to it has them take effect at the next restart.
+
+Run approved commands under a different uid than the relay, run the relay without `CAP_SYS_PTRACE`, and keep `/scripts` and the data directory out of the command uid's reach to close these. Until then, treat an approved command as able to become the approver.
+
 ## Reporting a vulnerability
 
 If you believe you've found a security issue, please **do not open a public issue**. Instead, use GitHub's [private vulnerability reporting](https://github.com/standardnguyen/human-relay/security/advisories/new) to file a coordinated-disclosure advisory.

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -502,4 +503,30 @@ func generateID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// RedactGatedOutput returns r untouched when its output is not gated (never
+// gated, or released), and otherwise a copy whose result withholds everything
+// the command or HTTP call produced: stdout (an HTTP response body lands
+// there), stderr and the response headers are replaced or dropped. The exit
+// code and HTTP status code stay, so a caller still learns whether it worked.
+//
+// Every path that hands a request to a caller who may not see gated output
+// must pass it through here: MCP get_result and list_requests always, the web
+// request list for any token but the approver's.
+func RedactGatedOutput(r *Request) *Request {
+	if r == nil || !r.OutputGated || r.Result == nil {
+		return r
+	}
+	gated := *r
+	gr := *r.Result
+	stdoutLen := len(gr.Stdout)
+	stderrLen := len(gr.Stderr)
+	gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
+	if stderrLen > 0 {
+		gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
+	}
+	gr.RespHeaders = nil
+	gated.Result = &gr
+	return &gated
 }

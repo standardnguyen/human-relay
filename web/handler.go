@@ -201,6 +201,16 @@ func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
 		requests = []*store.Request{}
 	}
 	sortRequests(requests, status)
+	// Gated output is the approver's to release, so with an approver
+	// configured only the approver token reads it here: agent tokens
+	// authenticate on this port too, and would otherwise read what MCP
+	// get_result withholds. Legacy mode (no approver) cannot tell the
+	// operator's browser from an agent and serves it to every token.
+	if h.approverRequired && !auth.IsApprover(r.Context()) {
+		for i, req := range requests {
+			requests[i] = store.RedactGatedOutput(req)
+		}
+	}
 	// Tell the frontend how much cooldown remains (0 if none)
 	h.cooldownMu.Lock()
 	cd := h.activeCooldown()

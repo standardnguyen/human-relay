@@ -104,6 +104,7 @@ inherit.
 The dashboard and `/chat` keep the approver token in the browser, so both pages are built to
 never run agent-supplied text as code: no inline event handlers, and a
 `Content-Security-Policy` whose `script-src` is a per-response nonce with no `'unsafe-inline'`.
+Neither page can be framed by another site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`).
 
 There are two ways to get the header onto the wire.
 
@@ -257,8 +258,8 @@ Features:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MHR_AUTH_TOKEN` | (required) | Bearer token for dashboard API authentication |
-| `MHR_APPROVER_TOKEN` | (none) | Token the dashboard uses to approve. When set, only it may approve, deny, release output, whitelist or turbocharge; every other token (agents included) can only submit and read requests, and gets `403` on those calls. It is accepted on the web port only, never on the MCP port, and must differ from `MHR_AUTH_TOKEN` and every client token (the relay refuses to start otherwise). Unset keeps the old behaviour, where any authenticating token can approve, and logs a warning at startup |
-| `MHR_APPROVER_TOKEN_SHA256` | (none) | The approver token's hex SHA-256, instead of the token itself (set one or the other, not both). Preferred: the relay only needs the digest, so the token never has to be stored on the relay host. Generate with the first field of `printf %s "$TOKEN" \| sha256sum` |
+| `MHR_APPROVER_TOKEN` | (none) | Token the dashboard uses to approve. When set, only it may approve, deny, release output, whitelist or turbocharge; every other token (agents included) can only submit and read requests, gets `403` on those calls, and sees a gated result's output withheld until it is released. It is accepted on the web port only, never on the MCP port, and must differ from `MHR_AUTH_TOKEN` and every client token (the relay refuses to start otherwise). Unset keeps the old behaviour, where any authenticating token can approve, and logs a warning at startup |
+| `MHR_APPROVER_TOKEN_SHA256` | (none) | The approver token's hex SHA-256, instead of the token itself (set one or the other, not both; an empty value counts as unset, and the relay refuses to start if either variable appears twice in its environment). Preferred: the relay only needs the digest, so the token never has to be stored on the relay host. Generate with the first field of `printf %s "$TOKEN" \| sha256sum` |
 | `MHR_MCP_PORT` | `8080` | MCP SSE server port |
 | `MHR_WEB_PORT` | `8090` | Web dashboard port |
 | `MHR_DEFAULT_TIMEOUT` | `30` | Default command timeout (seconds) |

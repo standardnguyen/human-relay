@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -22,9 +23,47 @@ type TestServer struct {
 	webPort int
 	token   string
 	env     []string
+	stderr  *lockedBuffer
 }
 
+// lockedBuffer is a bytes.Buffer safe to read while the server process is
+// still writing its log to it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Stderr returns everything the server has logged so far.
+func (s *TestServer) Stderr() string { return s.stderr.String() }
+
 type ServerOption func(*TestServer)
+
+// WithApproverToken sets MHR_APPROVER_TOKEN, the credential that alone may
+// approve, deny, release, whitelist and turbocharge once it is configured.
+func WithApproverToken(token string) ServerOption {
+	return func(s *TestServer) {
+		s.env = append(s.env, "MHR_APPROVER_TOKEN="+token)
+	}
+}
+
+// WithApproverTokenSHA256 configures the approver by the token's hex SHA-256.
+func WithApproverTokenSHA256(digest string) ServerOption {
+	return func(s *TestServer) {
+		s.env = append(s.env, "MHR_APPROVER_TOKEN_SHA256="+digest)
+	}
+}
 
 func WithAllowedDirs(dirs string) ServerOption {
 	return func(s *TestServer) {
@@ -71,12 +110,6 @@ func WithScriptsDir(dir string) ServerOption {
 	}
 }
 
-func WithPermissionsFile(path string) ServerOption {
-	return func(s *TestServer) {
-		s.env = append(s.env, "MHR_PERMISSIONS_FILE="+path)
-	}
-}
-
 func StartServer(t *testing.T, opts ...ServerOption) *TestServer {
 	t.Helper()
 	bin := os.Getenv("HUMAN_RELAY_BIN")
@@ -110,8 +143,8 @@ func StartServer(t *testing.T, opts ...ServerOption) *TestServer {
 	)
 	s.cmd.Env = append(s.cmd.Env, s.env...)
 
-	var stderr bytes.Buffer
-	s.cmd.Stderr = &stderr
+	s.stderr = &lockedBuffer{}
+	s.cmd.Stderr = s.stderr
 
 	if err := s.cmd.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
@@ -132,7 +165,7 @@ func StartServer(t *testing.T, opts ...ServerOption) *TestServer {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("server didn't start within 5s, stderr: %s", stderr.String())
+	t.Fatalf("server didn't start within 5s, stderr: %s", s.stderr.String())
 	return nil
 }
 

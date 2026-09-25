@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-var chatScriptBlockRe = regexp.MustCompile(`(?s)<script>(.*)</script>`)
+var chatScriptBlockRe = regexp.MustCompile(`(?s)<script[^>]*>(.*)</script>`)
 
 // TestChatGroupingLogic drives the real client-side mapRequest/rebuild JS —
 // extracted live from chat.html, not a copy, so this can't silently drift
@@ -65,7 +65,7 @@ globalThis.localStorage = { getItem: () => "fake-token", setItem: () => {} };
 globalThis.prompt = () => "fake-token";
 globalThis.fetch = () => Promise.resolve({ ok: false, status: 0 });
 globalThis.EventSource = function () { this.onopen = null; this.onmessage = null; this.onerror = null; };
-globalThis.document = { getElementById: () => ({}), createElement: () => ({}) };
+globalThis.document = { getElementById: () => ({}), createElement: () => ({}), addEventListener: () => {} };
 globalThis.setInterval = () => {};
 globalThis.setTimeout = () => {};
 

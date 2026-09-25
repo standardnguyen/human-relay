@@ -178,3 +178,45 @@ func TestAuthMiddlewareFailureBodiesDiffer(t *testing.T) {
 		}
 	}
 }
+
+// roleStub accepts two tokens, one of which carries the approver role.
+type roleStub struct{}
+
+func (roleStub) Verify(token string) (string, bool) {
+	c, _, ok := roleStub{}.VerifyRole(token)
+	return c, ok
+}
+
+func (roleStub) VerifyRole(token string) (string, bool, bool) {
+	switch token {
+	case "approve-me":
+		return "approver", true, true
+	case "agent":
+		// Named "approver" on purpose: the role, not the name, decides.
+		return "approver", false, true
+	}
+	return "", false, false
+}
+
+func TestAuthMiddlewareAttachesApproverRole(t *testing.T) {
+	var gotApprover bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotApprover = auth.IsApprover(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	h := AuthMiddleware(roleStub{}, next)
+
+	for token, want := range map[string]bool{"approve-me": true, "agent": false} {
+		gotApprover = !want
+		req := httptest.NewRequest(http.MethodGet, "/api/requests", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", token, rec.Code)
+		}
+		if gotApprover != want {
+			t.Fatalf("%s: IsApprover = %v, want %v", token, gotApprover, want)
+		}
+	}
+}

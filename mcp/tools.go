@@ -902,34 +902,14 @@ func (h *ToolHandler) listRequests(args map[string]interface{}) *CallToolResult 
 	// marshaling the raw list would hand back every gated request's real
 	// stdout/stderr in one call and bypass the gate entirely.
 	for i, r := range requests {
-		requests[i] = redactIfGated(r)
+		requests[i] = store.RedactGatedOutput(r)
 	}
 	data, _ := json.Marshal(requests)
 	return textResult(string(data))
 }
 
-// redactIfGated returns r untouched when its output isn't gated, and a copy
-// with stdout/stderr replaced by placeholders when it is. Every agent-facing
-// path that marshals a store.Request must run it through this — get_result and
-// list_requests both do.
-func redactIfGated(r *store.Request) *store.Request {
-	if r == nil || !r.OutputGated || r.Result == nil {
-		return r
-	}
-	gated := *r
-	gr := *r.Result
-	stdoutLen := len(gr.Stdout)
-	stderrLen := len(gr.Stderr)
-	gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
-	if stderrLen > 0 {
-		gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
-	}
-	gated.Result = &gr
-	return &gated
-}
-
 func requestResult(r *store.Request) *CallToolResult {
-	data, _ := json.Marshal(redactIfGated(r))
+	data, _ := json.Marshal(store.RedactGatedOutput(r))
 	return textResult(string(data))
 }
 

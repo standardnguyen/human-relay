@@ -18,7 +18,6 @@ import (
 	"github.com/standardnguyen/human-relay/containers"
 	"github.com/standardnguyen/human-relay/executor"
 	"github.com/standardnguyen/human-relay/machines"
-	"github.com/standardnguyen/human-relay/permissions"
 	"github.com/standardnguyen/human-relay/store"
 	"github.com/standardnguyen/human-relay/whitelist"
 )
@@ -41,10 +40,10 @@ type Handler struct {
 	turboCooldown    time.Duration
 	turboExpiry      time.Time
 	whitelist        *whitelist.Whitelist
-	permissions      *permissions.Permissions
 	scriptsDir       string
 	containerStore   *containers.Store
 	machineStore     *machines.Store
+	approverRequired bool
 }
 
 type HandlerOption func(*Handler)
@@ -67,12 +66,6 @@ func WithScriptsDir(dir string) HandlerOption {
 	}
 }
 
-func WithPermissions(p *permissions.Permissions) HandlerOption {
-	return func(h *Handler) {
-		h.permissions = p
-	}
-}
-
 // WithRegistries wires the container and machine registries into the handler.
 // registry_op requests (register_container, delete_container, register_machine,
 // delete_machine) are queued by the MCP tools and applied here after approval,
@@ -82,6 +75,52 @@ func WithRegistries(cs *containers.Store, ms *machines.Store) HandlerOption {
 		h.containerStore = cs
 		h.machineStore = ms
 	}
+}
+
+// WithApproverRequired makes every approval-state mutation (approve, deny,
+// release, whitelist add/remove, turbocharge on/off) require a request
+// authenticated by the approver token (auth.IsApprover). Off, any token that
+// authenticates may make those calls: the legacy behaviour.
+func WithApproverRequired(required bool) HandlerOption {
+	return func(h *Handler) {
+		h.approverRequired = required
+	}
+}
+
+// Values of the audit field approved_by: which kind of credential exercised
+// approval authority on a decision (approve, deny, release, whitelist, turbo).
+const (
+	approvedByApprover    = "approver"
+	approvedByLegacyToken = "legacy-shared-token"
+)
+
+// forbiddenNotApprover is the 403 body for an approval-state mutation made
+// with a token that is not the approver token.
+const forbiddenNotApprover = "forbidden: this token cannot approve. Approving, denying, releasing output, " +
+	"whitelisting and turbocharge need the relay's approver token (MHR_APPROVER_TOKEN); " +
+	"agent tokens can only submit and read requests."
+
+// authorizeDecision gates an approval-state mutation. It returns the
+// approved_by value for the audit log, or writes a 403 and returns ok=false.
+func (h *Handler) authorizeDecision(w http.ResponseWriter, r *http.Request) (approvedBy string, ok bool) {
+	if !h.approverRequired {
+		return approvedByLegacyToken, true
+	}
+	if !auth.IsApprover(r.Context()) {
+		http.Error(w, forbiddenNotApprover, http.StatusForbidden)
+		return "", false
+	}
+	return approvedByApprover, true
+}
+
+// decisionFields is the audit attribution every decision event carries.
+func decisionFields(r *http.Request, approvedBy string, fields map[string]interface{}) map[string]interface{} {
+	if fields == nil {
+		fields = map[string]interface{}{}
+	}
+	fields["approved_by"] = approvedBy
+	fields["approver_client"] = auth.ClientFrom(r.Context())
+	return fields
 }
 
 func NewHandler(s *store.Store, exec *executor.Executor, al *audit.Logger, opts ...HandlerOption) *Handler {
@@ -120,8 +159,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/turbocharge", h.handleTurbocharge)
 	mux.HandleFunc("/api/whitelist", h.handleWhitelist)
 	mux.HandleFunc("/api/whitelist/remove", h.handleWhitelistRemove)
-	mux.HandleFunc("/api/permission/check", h.handlePermissionCheck)
-	mux.HandleFunc("/api/permission/check/", h.handlePermissionStatus)
 	mux.HandleFunc("/events", h.handleSSE)
 }
 
@@ -130,8 +167,7 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.tmpl.ExecuteTemplate(w, "index.html", nil)
+	h.servePage(w, "index.html")
 }
 
 // handleChat serves the chat-shaped view of the signal-lane approval queue —
@@ -141,8 +177,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.tmpl.ExecuteTemplate(w, "chat.html", nil)
+	h.servePage(w, "chat.html")
 }
 
 func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +191,16 @@ func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
 		requests = []*store.Request{}
 	}
 	sortRequests(requests, status)
+	// Gated output is the approver's to release, so with an approver
+	// configured only the approver token reads it here: agent tokens
+	// authenticate on this port too, and would otherwise read what MCP
+	// get_result withholds. Legacy mode (no approver) cannot tell the
+	// operator's browser from an agent and serves it to every token.
+	if h.approverRequired && !auth.IsApprover(r.Context()) {
+		for i, req := range requests {
+			requests[i] = store.RedactGatedOutput(req)
+		}
+	}
 	// Tell the frontend how much cooldown remains (0 if none)
 	h.cooldownMu.Lock()
 	cd := h.activeCooldown()
@@ -201,6 +246,13 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Every POST action here is a decision. Gate before any lookup, so a
+	// refused caller learns nothing about the request either.
+	approvedBy, allowed := h.authorizeDecision(w, r)
+	if !allowed {
+		return
+	}
+
 	req := h.store.Get(id)
 	if req == nil {
 		http.Error(w, "request not found", http.StatusNotFound)
@@ -214,7 +266,7 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		}
 		h.store.ReleaseOutput(id)
 		log.Printf("request %s output released", id)
-		h.audit.Log("output_released", id, nil)
+		h.audit.Log("output_released", id, decisionFields(r, approvedBy, nil))
 		h.broadcastEvent("update", id)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "released"})
@@ -265,42 +317,42 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		switch req.Type {
 		case "http":
 			log.Printf("request %s approved, executing: %s %s", id, req.HTTPMethod, req.HTTPURL)
-			h.audit.Log("request_approved", id, map[string]interface{}{
+			h.audit.Log("request_approved", id, decisionFields(r, approvedBy, map[string]interface{}{
 				"type":   "http",
 				"method": req.HTTPMethod,
 				"url":    req.HTTPURL,
-			})
+			}))
 		case "script":
 			log.Printf("request %s approved, executing script: %s", id, req.ScriptName)
-			h.audit.Log("request_approved", id, map[string]interface{}{
+			h.audit.Log("request_approved", id, decisionFields(r, approvedBy, map[string]interface{}{
 				"type":   "script",
 				"script": req.ScriptName,
-			})
+			}))
 		case "script_create":
 			log.Printf("request %s approved, creating script: %s", id, req.ScriptName)
-			h.audit.Log("request_approved", id, map[string]interface{}{
+			h.audit.Log("request_approved", id, decisionFields(r, approvedBy, map[string]interface{}{
 				"type":   "script_create",
 				"script": req.ScriptName,
-			})
+			}))
 		case "script_create_then_run":
 			log.Printf("request %s approved, create+run script: %s", id, req.ScriptName)
-			h.audit.Log("request_approved", id, map[string]interface{}{
+			h.audit.Log("request_approved", id, decisionFields(r, approvedBy, map[string]interface{}{
 				"type":   "script_create_then_run",
 				"script": req.ScriptName,
-			})
+			}))
 		case "registry_op":
 			log.Printf("request %s approved, applying registry op: %s", id, req.RegistryOp)
-			h.audit.Log("request_approved", id, map[string]interface{}{
+			h.audit.Log("request_approved", id, decisionFields(r, approvedBy, map[string]interface{}{
 				"type":          "registry_op",
 				"registry_op":   req.RegistryOp,
 				"registry_args": req.RegistryArgs,
-			})
+			}))
 		default:
 			log.Printf("request %s approved, executing: %s %v", id, req.Command, req.Args)
-			h.audit.Log("request_approved", id, map[string]interface{}{
+			h.audit.Log("request_approved", id, decisionFields(r, approvedBy, map[string]interface{}{
 				"command": req.Command,
 				"args":    req.Args,
-			})
+			}))
 		}
 		h.broadcastEvent("update", id)
 
@@ -320,11 +372,11 @@ func (h *Handler) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		}
 		h.store.Deny(id, body.Reason)
 		log.Printf("request %s denied: %s", id, body.Reason)
-		h.audit.Log("request_denied", id, map[string]interface{}{
+		h.audit.Log("request_denied", id, decisionFields(r, approvedBy, map[string]interface{}{
 			"command":     req.Command,
 			"args":        req.Args,
 			"deny_reason": body.Reason,
-		})
+		}))
 		h.broadcastEvent("update", id)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -383,6 +435,10 @@ func (h *Handler) handleTurbocharge(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodPost:
+		approvedBy, allowed := h.authorizeDecision(w, r)
+		if !allowed {
+			return
+		}
 		var body struct {
 			DurationMinutes int `json:"duration_minutes"`
 			CooldownSeconds int `json:"cooldown_seconds"`
@@ -402,10 +458,10 @@ func (h *Handler) handleTurbocharge(w http.ResponseWriter, r *http.Request) {
 		h.turboExpiry = time.Now().Add(time.Duration(body.DurationMinutes) * time.Minute)
 		h.cooldownMu.Unlock()
 		log.Printf("turbocharge activated: %ds cooldown for %d minutes", body.CooldownSeconds, body.DurationMinutes)
-		h.audit.Log("turbocharge_on", "", map[string]interface{}{
+		h.audit.Log("turbocharge_on", "", decisionFields(r, approvedBy, map[string]interface{}{
 			"cooldown_seconds":  body.CooldownSeconds,
 			"duration_minutes":  body.DurationMinutes,
-		})
+		}))
 		h.broadcastEvent("turbo", "on")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -415,11 +471,15 @@ func (h *Handler) handleTurbocharge(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodDelete:
+		approvedBy, allowed := h.authorizeDecision(w, r)
+		if !allowed {
+			return
+		}
 		h.cooldownMu.Lock()
 		h.turboExpiry = time.Time{}
 		h.cooldownMu.Unlock()
 		log.Printf("turbocharge deactivated")
-		h.audit.Log("turbocharge_off", "", nil)
+		h.audit.Log("turbocharge_off", "", decisionFields(r, approvedBy, nil))
 		h.broadcastEvent("turbo", "off")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "deactivated"})
@@ -570,18 +630,6 @@ func (h *Handler) autoApprove(req *store.Request, gateOutput bool) {
 
 // executeRequest dispatches to the appropriate executor based on request type.
 func (h *Handler) executeRequest(req *store.Request) {
-	// Permission-check requests carry no work — approval IS the verdict.
-	// Mark complete with a zero-exit result so polling clients see done.
-	if req.Type == "permission" {
-		result := &store.Result{ExitCode: 0, Stdout: "approved"}
-		h.store.SetResult(req.ID, result, store.StatusComplete)
-		h.audit.Log("permission_approved", req.ID, map[string]interface{}{
-			"display": req.DisplayCommand,
-		})
-		h.broadcastEvent("update", req.ID)
-		return
-	}
-
 	h.store.SetStatus(req.ID, store.StatusRunning)
 	h.audit.Log("execution_started", req.ID, nil)
 	h.broadcastEvent("update", req.ID)
@@ -709,6 +757,10 @@ func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(rules)
 
 	case http.MethodPost:
+		approvedBy, allowed := h.authorizeDecision(w, r)
+		if !allowed {
+			return
+		}
 		var body struct {
 			// RequestID names the request being whitelisted. When present the
 			// rule's key is derived server-side from the stored request via
@@ -741,11 +793,11 @@ func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 		if err := h.whitelist.Save(); err != nil {
 			log.Printf("whitelist save error: %v", err)
 		}
-		h.audit.Log("whitelist_add", body.RequestID, map[string]interface{}{
+		h.audit.Log("whitelist_add", body.RequestID, decisionFields(r, approvedBy, map[string]interface{}{
 			"command":     command,
 			"args":        wlArgs,
 			"gate_output": body.GateOutput,
-		})
+		}))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "added"})
 
@@ -761,6 +813,10 @@ func (h *Handler) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) 
 	}
 	if h.whitelist == nil {
 		http.Error(w, "whitelist not configured", http.StatusNotFound)
+		return
+	}
+	approvedBy, allowed := h.authorizeDecision(w, r)
+	if !allowed {
 		return
 	}
 
@@ -781,10 +837,10 @@ func (h *Handler) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) 
 	if err := h.whitelist.Save(); err != nil {
 		log.Printf("whitelist save error: %v", err)
 	}
-	h.audit.Log("whitelist_remove", "", map[string]interface{}{
+	h.audit.Log("whitelist_remove", "", decisionFields(r, approvedBy, map[string]interface{}{
 		"command": body.Command,
 		"args":    body.Args,
-	})
+	}))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "removed"})
 }
@@ -813,130 +869,4 @@ func sortRequests(requests []*store.Request, filter store.Status) {
 		}
 		return a.CreatedAt.Before(b.CreatedAt)
 	})
-}
-
-// handlePermissionCheck is POST /api/permission/check.
-// Body: {"tool":"Bash","input":{"command":"ls -la"},"reason":"list cwd"}
-// Response (allow/deny): {"verdict":"allow|deny","rule_id":"...","reason":"..."}
-// Response (ask):       {"verdict":"ask","request_id":"abc","rule_id":"..."}
-// On 'ask' the caller polls GET /api/permission/check/{request_id} until the
-// human approves or denies in the dashboard.
-func (h *Handler) handlePermissionCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.permissions == nil {
-		http.Error(w, "permissions not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	var body struct {
-		Tool   string         `json:"tool"`
-		Input  map[string]any `json:"input"`
-		Reason string         `json:"reason"`
-		Client string         `json:"client"` // cosmetic: "pi", "rolandcode", etc. surfaced in audit + queue UI
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	if body.Tool == "" {
-		http.Error(w, "tool required", http.StatusBadRequest)
-		return
-	}
-	if body.Input == nil {
-		body.Input = map[string]any{}
-	}
-
-	d := h.permissions.Check(body.Tool, body.Input)
-
-	resp := map[string]any{
-		"verdict": string(d.Verdict),
-		"rule_id": d.RuleID,
-	}
-	if d.Reason != "" {
-		resp["reason"] = d.Reason
-	}
-
-	h.audit.Log("permission_check", "", map[string]interface{}{
-		"tool":    body.Tool,
-		"input":   body.Input,
-		"reason":  body.Reason,
-		"client":  body.Client,
-		"verdict": string(d.Verdict),
-		"rule_id": d.RuleID,
-	})
-
-	if d.Verdict == permissions.VerdictAsk {
-		display := formatPermissionDisplay(body.Tool, body.Input)
-		if body.Client != "" {
-			display = "[" + body.Client + "] " + display
-		}
-		req := h.store.AddPermission(display, body.Reason, 300, auth.ClientFrom(r.Context()))
-		resp["request_id"] = req.ID
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-// handlePermissionStatus is GET /api/permission/check/{id}.
-// Returns the current status of an ask-routed permission request.
-// Response: {"status":"pending|approved|denied|...", "verdict":"ask|allow|deny", "reason":"..."}
-func (h *Handler) handlePermissionStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/permission/check/")
-	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
-		return
-	}
-	req := h.store.Get(id)
-	if req == nil {
-		http.NotFound(w, r)
-		return
-	}
-	if req.Type != "permission" {
-		http.Error(w, "not a permission request", http.StatusBadRequest)
-		return
-	}
-
-	resp := map[string]any{
-		"status": string(req.Status),
-	}
-	switch req.Status {
-	case store.StatusPending, store.StatusRunning:
-		resp["verdict"] = "ask"
-	case store.StatusApproved, store.StatusComplete:
-		resp["verdict"] = "allow"
-	case store.StatusDenied:
-		resp["verdict"] = "deny"
-		resp["reason"] = req.DenyReason
-	case store.StatusWithdrawn, store.StatusTimeout, store.StatusError:
-		resp["verdict"] = "deny"
-		resp["reason"] = string(req.Status)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func formatPermissionDisplay(tool string, input map[string]any) string {
-	switch strings.ToLower(tool) {
-	case "bash":
-		if cmd, ok := input["command"].(string); ok {
-			return fmt.Sprintf("Bash: %s", cmd)
-		}
-	case "read", "write", "edit":
-		for _, k := range []string{"file_path", "path"} {
-			if p, ok := input[k].(string); ok {
-				return fmt.Sprintf("%s: %s", tool, p)
-			}
-		}
-	}
-	b, _ := json.Marshal(input)
-	return fmt.Sprintf("%s: %s", tool, string(b))
 }

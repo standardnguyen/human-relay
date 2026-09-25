@@ -212,7 +212,7 @@ export const test = base.extend<{ relay: RelayHelper }>({
 
       async submitCommand(command, args, reason, opts) {
         const resp = await mcpCall('tools/call', {
-          name: 'request_command',
+          name: 'request_command_for_relay',
           arguments: { command, args, reason, ...opts },
         });
         const text = resp.result.content[0].text;

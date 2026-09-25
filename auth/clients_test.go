@@ -154,3 +154,63 @@ func TestVerifierRevokedClientRejectedMasterStillWorks(t *testing.T) {
 		t.Fatal("master token stopped working after a client was revoked")
 	}
 }
+
+// TestVerifierApproverRole: WithApprover adds one credential that verifies as
+// the approver and carries the approver role; no other credential does, and
+// the verifier it was derived from (the MCP port's) never learns it.
+func TestVerifierApproverRole(t *testing.T) {
+	reg, err := NewRegistry(filepath.Join(t.TempDir(), "clients.json"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	clientToken, err := reg.Add("agent")
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	agentPort := NewVerifier(reg, "master-token")
+	webPort := agentPort.WithApprover("approver-token")
+
+	cases := []struct {
+		name         string
+		v            *Verifier
+		token        string
+		wantClient   string
+		wantApprover bool
+		wantOK       bool
+	}{
+		{"web/approver", webPort, "approver-token", ApproverClientName, true, true},
+		{"web/master", webPort, "master-token", "master", false, true},
+		{"web/client", webPort, clientToken, "agent", false, true},
+		{"web/unknown", webPort, "nope", "", false, false},
+		{"mcp/approver", agentPort, "approver-token", "", false, false},
+		{"mcp/master", agentPort, "master-token", "master", false, true},
+	}
+	for _, tc := range cases {
+		client, approver, ok := tc.v.VerifyRole(tc.token)
+		if client != tc.wantClient || approver != tc.wantApprover || ok != tc.wantOK {
+			t.Errorf("%s: VerifyRole = (%q, %v, %v), want (%q, %v, %v)",
+				tc.name, client, approver, ok, tc.wantClient, tc.wantApprover, tc.wantOK)
+		}
+	}
+
+	// A registry client that happens to be named "approver" is still not one.
+	named, err := reg.Add(ApproverClientName)
+	if err != nil {
+		t.Fatalf("Add(approver-named client): %v", err)
+	}
+	if client, approver, ok := webPort.VerifyRole(named); !ok || approver || client != ApproverClientName {
+		t.Fatalf("approver-named registry client: VerifyRole = (%q, %v, %v), want (approver, false, true)", client, approver, ok)
+	}
+}
+
+// TestVerifierWithEmptyApproverIsLegacy: an empty approver token adds nothing.
+func TestVerifierWithEmptyApproverIsLegacy(t *testing.T) {
+	v := NewVerifier(nil, "master-token").WithApprover("")
+	if _, approver, ok := v.VerifyRole(""); ok || approver {
+		t.Fatal("empty token verified against an empty approver token")
+	}
+	if _, approver, ok := v.VerifyRole("master-token"); !ok || approver {
+		t.Fatalf("master: ok=%v approver=%v, want ok and not approver", ok, approver)
+	}
+}

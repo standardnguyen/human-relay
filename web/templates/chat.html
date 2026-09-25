@@ -107,7 +107,7 @@
     <div class="tagline">chat-shaped view of the human-relay signal lane — same queue, gated</div>
   </div>
   <div class="spacer"></div>
-  <div class="agentview" onclick="toggleAgent()">
+  <div class="agentview" data-action="toggle-agent">
     <span id="avlabel">&#128065; human view</span>
     <div class="switch"></div>
   </div>
@@ -133,7 +133,7 @@
         <div class="sub" id="t-sub"></div>
       </div>
       <div class="spacer"></div>
-      <button class="btn release-all" id="releaseAllBtn" onclick="releaseAll()" style="display:none">&#10003; release all gated</button>
+      <button class="btn release-all" id="releaseAllBtn" data-action="release-all" style="display:none">&#10003; release all gated</button>
     </div>
     <div class="messages" id="messages"></div>
     <div class="agentnote">agent view — only released inbound + sent outbound exist down here</div>
@@ -142,7 +142,7 @@
 
 <div id="toasts"></div>
 
-<script>
+<script nonce="{{.Nonce}}">
 const TOKEN = localStorage.getItem('mhr_token') || prompt('Enter auth token:');
 if (TOKEN) localStorage.setItem('mhr_token', TOKEN);
 const headers = { 'Authorization': 'Bearer ' + TOKEN };
@@ -152,8 +152,13 @@ let requests = [];
 let convos = {};       // key -> { key, name, messages:[], lastTs }
 let active = null;
 let agentMode = false;
+let convoKeys = [];     // the order renderConvos last drew; data-index points in here
 
-function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+// Safe in element text and in a quoted attribute value.
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 function shortId(s) { return s ? String(s).slice(0, 8) : 'unknown'; }
 function fmtTime(iso) {
   try { const d = new Date(iso); return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; }
@@ -246,11 +251,14 @@ function renderConvos() {
   const el = document.getElementById('convos');
   const keys = Object.keys(convos).sort((a, b) => convos[b].lastTs - convos[a].lastTs);
   if (!keys.length) { el.innerHTML = '<div class="legend" style="border:none">no signal messages yet.<br>they appear here as the lane runs.</div>'; return; }
-  el.innerHTML = keys.map(k => {
+  // A conversation key is agent-controlled (script args, inbound group_id /
+  // from_uuid), so the row carries only its index into convoKeys, never the key.
+  convoKeys = keys;
+  el.innerHTML = keys.map((k, i) => {
     const c = convos[k], s = convoStats(c);
     const last = c.messages[c.messages.length - 1];
     const initial = (c.name || '?').replace(/[^A-Za-z0-9]/g, '').charAt(0).toUpperCase() || '#';
-    return '<div class="convo' + (k === active ? ' active' : '') + '" onclick="selectConvo(\'' + k.replace(/'/g, "\\'") + '\')">' +
+    return '<div class="convo' + (k === active ? ' active' : '') + '" data-action="select-convo" data-index="' + i + '">' +
       '<div class="avatar" style="background:' + avatarColor(k) + '">' + escapeHtml(initial) + '</div>' +
       '<div class="meta"><div class="name">' + escapeHtml(c.name) + '</div>' +
       '<div class="preview">' + (last ? (last.dir === 'out' ? 'you: ' : '') + escapeHtml(last.text) : '') + '</div></div>' +
@@ -264,13 +272,13 @@ function renderConvos() {
 function gatebar(m) {
   if (m.dir === 'in') {
     if (m.state === 'gated') return '<div class="gatebar"><span class="gatetag g">&#128274; GATED</span>' +
-      '<button class="gact ok" onclick="release(\'' + m.id + '\')">release to agent</button></div>';
+      '<button class="gact ok" data-action="release" data-id="' + escapeHtml(m.id) + '">release to agent</button></div>';
     if (m.state === 'receiving') return '<div class="gatebar"><span class="gatetag recv">&#8230; receiving</span></div>';
     if (m.state === 'released') return '<div class="gatebar"><span class="gatetag r">&#10003; released</span></div>';
   } else {
     if (m.state === 'pending') return '<div class="gatebar"><span class="gatetag p">&#9992; DRAFT — awaiting you</span>' +
-      '<button class="gact ap" onclick="approve(\'' + m.id + '\')">approve &amp; send</button>' +
-      '<button class="gact dn" onclick="deny(\'' + m.id + '\')">deny</button></div>';
+      '<button class="gact ap" data-action="approve" data-id="' + escapeHtml(m.id) + '">approve &amp; send</button>' +
+      '<button class="gact dn" data-action="deny" data-id="' + escapeHtml(m.id) + '">deny</button></div>';
     if (m.state === 'sending') return '<div class="gatebar"><span class="gatetag recv">&#8230; sending</span></div>';
     if (m.state === 'sent') return '<div class="gatebar"><span class="gatetag r">&#10003;&#10003; sent</span></div>';
     if (m.state === 'denied') return '<div class="gatebar"><span class="gatetag w">&#10007; denied</span></div>';
@@ -341,6 +349,24 @@ async function releaseAll() {
   for (const m of gated) { await act(m.id, 'release'); }
   toast('released ' + gated.length + ' message' + (gated.length > 1 ? 's' : ''));
 }
+
+// Every control is dispatched from here: no inline handlers (agent text in an
+// onclick was a stored XSS running with the approver token, and the page's CSP
+// refuses inline handlers).
+const ACTIONS = {
+  'toggle-agent': () => toggleAgent(),
+  'release-all': () => releaseAll(),
+  'select-convo': (d) => { const k = convoKeys[Number(d.index)]; if (k !== undefined) selectConvo(k); },
+  'release': (d) => release(d.id),
+  'approve': (d) => approve(d.id),
+  'deny': (d) => deny(d.id),
+};
+document.addEventListener('click', (e) => {
+  const el = e.target.closest && e.target.closest('[data-action]');
+  if (!el || el.disabled) return;
+  const fn = ACTIONS[el.dataset.action];
+  if (fn) fn(el.dataset);
+});
 
 async function load() {
   try {

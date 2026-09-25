@@ -88,6 +88,24 @@ each one can be revoked on its own, and every request records which client asked
 The registry (`<MHR_DATA_DIR>/clients.json`) stores only each token's SHA-256, so a leaked
 client token costs one `-client-revoke` instead of a fleet-wide rotation.
 
+**Keep approving separate from asking.** Every token above authenticates on the dashboard
+API too, so without more configuration an agent holding one could approve its own request.
+Set `MHR_APPROVER_TOKEN` to a token no agent holds and paste it into the dashboard: it
+becomes the only credential that can approve, deny, release output, whitelist or
+turbocharge, and each decision is written to the audit log with `approved_by: "approver"`
+(`"legacy-shared-token"` when the variable is unset).
+Prefer `MHR_APPROVER_TOKEN_SHA256`, the token's SHA-256: the relay verifies against the digest,
+so the token itself lives only in the dashboard and never in the relay's service config. If you
+set the plaintext form, the relay re-executes itself at startup (same PID) with the token swapped
+for its digest, so it is not left in `/proc/<pid>/environ` where a command running as the same
+user could read it. Either variable is also dropped from the environment that approved commands
+inherit.
+
+The dashboard and `/chat` keep the approver token in the browser, so both pages are built to
+never run agent-supplied text as code: no inline event handlers, and a
+`Content-Security-Policy` whose `script-src` is a per-response nonce with no `'unsafe-inline'`.
+Neither page can be framed by another site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`).
+
 There are two ways to get the header onto the wire.
 
 #### Option A — the client sends the header itself
@@ -240,6 +258,8 @@ Features:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MHR_AUTH_TOKEN` | (required) | Bearer token for dashboard API authentication |
+| `MHR_APPROVER_TOKEN` | (none) | Token the dashboard uses to approve. When set, only it may approve, deny, release output, whitelist or turbocharge; every other token (agents included) can only submit and read requests, gets `403` on those calls, and sees a gated result's output withheld until it is released. It is accepted on the web port only, never on the MCP port, and must differ from `MHR_AUTH_TOKEN` and every client token (the relay refuses to start otherwise). Unset or empty keeps the old behaviour, where any authenticating token can approve, and logs a warning at startup. A value of only whitespace is neither: the relay refuses to start and logs `MHR_APPROVER_TOKEN is whitespace only`, because no dashboard could ever send that token (the bearer token is trimmed) and treating it as unset would open approval to every agent |
+| `MHR_APPROVER_TOKEN_SHA256` | (none) | The approver token's hex SHA-256, instead of the token itself (set one or the other, not both; an empty value counts as unset, a whitespace-only value makes the relay refuse to start rather than count as unset, and so does either variable appearing twice in its environment). Preferred: the relay only needs the digest, so the token never has to be stored on the relay host. Generate with the first field of `printf %s "$TOKEN" \| sha256sum` |
 | `MHR_MCP_PORT` | `8080` | MCP SSE server port |
 | `MHR_WEB_PORT` | `8090` | Web dashboard port |
 | `MHR_DEFAULT_TIMEOUT` | `30` | Default command timeout (seconds) |

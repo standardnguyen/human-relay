@@ -18,6 +18,9 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 - **CSRF protection** — `Origin` header validation on all POST endpoints.
 - **Path traversal blocked** — working directories validated against an allowlist.
 - **Output capped** — stdout/stderr limited to 1MB per command.
+- **Separate approver credential** — with `MHR_APPROVER_TOKEN` set, only that token may approve, deny, release output, whitelist or turbocharge; agent tokens get `403` on those calls, and the approver token is not accepted on the MCP port. `MHR_APPROVER_TOKEN_SHA256` configures it by digest so the relay host never stores the token. Unset, any authenticating token can approve (the relay warns at startup).
+- **Gated output stays gated for agents** — a result approved with *Approve (Gated)* or by a `gate_output` whitelist rule is withheld (stdout and HTTP response body, stderr, response headers) from MCP `get_result` and `list_requests` until the operator releases it, and, with `MHR_APPROVER_TOKEN` set, from the web request list for every token but the approver's. Without an approver token the web port cannot tell the operator from an agent and serves gated output to any authenticating token.
+- **No script from agent text in the dashboard** — the dashboard and `/chat` attach handlers with `addEventListener` and look requests up by id, and serve a `Content-Security-Policy` with a per-response `script-src` nonce and no `'unsafe-inline'`, so agent-supplied strings cannot run with the approver token held in the browser. Both pages refuse to be framed (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), so another site cannot overlay them to clickjack an approval.
 - **Approval cooldown** — server-enforced rate limit between approvals.
 - **Audit log** — append-only JSONL file records every request, approval, denial, and execution result.
 
@@ -27,6 +30,16 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 - No per-user auth — single shared bearer token.
 - Whitelist is exact-match only — no glob/regex patterns.
 - The dashboard's `/events` metadata stream on `:8090` is unauthenticated (EventSource cannot set headers). It is read-only. This does not apply to the MCP `/sse` endpoint on `:8080`, which requires the bearer token.
+
+### The approver token holds only up to the relay's uid
+
+Approved and whitelisted commands run as the relay's own uid (root in the shipped container), so the separation between the approver and agents is only as strong as what a command running as that uid cannot do. The relay keeps the plaintext approver token out of `/proc/<pid>/environ` and out of every command's environment, but an approved command with enough reach can still take approval over in these ways (measured against a local relay on 2026-09-24; none is fixed in code yet):
+
+- **The relay's heap.** Every approval request the dashboard sends carries `Authorization: Bearer <approver token>`, and those bytes stay in the relay's memory. A command that can ptrace the relay (it holds `CAP_SYS_PTRACE`, as a root process in an LXC container or on a native root install does, or `kernel.yama.ptrace_scope` is `0` and the uid matches) can read `/proc/<relay pid>/mem`, recover the token and approve from then on. This applies to `MHR_APPROVER_TOKEN_SHA256` deployments too, since the browser still sends the plaintext token. Docker's default capability set lacks `SYS_PTRACE`, and with `ptrace_scope` `1` the read is refused; a privileged container or a native root install does not have that protection.
+- **Writable scripts.** `/scripts` is mounted read-write (`create_script` writes there), and a `run_script` whitelist rule matches the script's name only, not its content or arguments. A command that rewrites a whitelisted script's body gets that body auto-approved on every later `run_script` call.
+- **Writable whitelist.** `whitelist.json` in the data directory is writable by the same uid. The relay reads it at startup, so a command that adds rules to it has them take effect at the next restart.
+
+Run approved commands under a different uid than the relay, run the relay without `CAP_SYS_PTRACE`, and keep `/scripts` and the data directory out of the command uid's reach to close these. Until then, treat an approved command as able to become the approver.
 
 ## Reporting a vulnerability
 

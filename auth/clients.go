@@ -170,12 +170,89 @@ func (r *Registry) Verify(token string) (string, bool) {
 	return name, true
 }
 
+// ApproverClientName is the identity attributed to the approver token. The
+// approver ROLE is carried separately (see VerifyRole, IsApprover), so a
+// registry client that happens to share this name gains nothing by it.
+const ApproverClientName = "approver"
+
 // Verifier authenticates a presented bearer token against the client registry
 // and the master token. It is what web.AuthMiddleware consults.
 type Verifier struct {
-	registry     *Registry
-	masterDigest [sha256.Size]byte
-	hasMaster    bool
+	registry       *Registry
+	masterDigest   [sha256.Size]byte
+	hasMaster      bool
+	approverDigest [sha256.Size]byte
+	hasApprover    bool
+}
+
+// WithApprover returns a copy of v that also accepts approverToken, which
+// verifies as ApproverClientName with the approver role. v itself is left
+// unchanged, so the MCP port can keep a verifier that never accepts the
+// approver token while the web port uses the copy. An empty token adds nothing.
+func (v *Verifier) WithApprover(approverToken string) *Verifier {
+	if approverToken == "" {
+		c := *v
+		return &c
+	}
+	return v.WithApproverDigest(sha256.Sum256([]byte(approverToken)))
+}
+
+// WithApproverDigest is WithApprover given only the token's SHA-256, so the
+// relay can verify the approver without ever holding the token itself.
+func (v *Verifier) WithApproverDigest(digest [sha256.Size]byte) *Verifier {
+	c := *v
+	c.approverDigest = digest
+	c.hasApprover = true
+	return &c
+}
+
+// ParseTokenDigest decodes a hex SHA-256 token digest (64 hex characters).
+func ParseTokenDigest(s string) ([sha256.Size]byte, error) {
+	var d [sha256.Size]byte
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != sha256.Size {
+		return d, fmt.Errorf("want 64 hex characters (a SHA-256 digest)")
+	}
+	copy(d[:], b)
+	return d, nil
+}
+
+// MatchDigest reports whether digest is the token digest of a registered
+// client (revoked or not), and which. Every row is compared constant-time.
+func (r *Registry) MatchDigest(digest [sha256.Size]byte) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var name string
+	var found bool
+	for n, c := range r.clients {
+		if subtle.ConstantTimeCompare(digest[:], digestBytes(c.TokenSHA256)) == 1 {
+			name, found = n, true
+		}
+	}
+	return name, found
+}
+
+// VerifyRole is Verify plus whether the token is the approver token. Master
+// and approver digests are both compared constant-time before either result
+// is used.
+func (v *Verifier) VerifyRole(token string) (client string, approver bool, ok bool) {
+	if token == "" {
+		return "", false, false
+	}
+	digest := sha256.Sum256([]byte(token))
+	isMaster := v.hasMaster && subtle.ConstantTimeCompare(digest[:], v.masterDigest[:]) == 1
+	isApprover := v.hasApprover && subtle.ConstantTimeCompare(digest[:], v.approverDigest[:]) == 1
+	switch {
+	case isApprover:
+		return ApproverClientName, true, true
+	case isMaster:
+		return masterClientName, false, true
+	}
+	if v.registry == nil {
+		return "", false, false
+	}
+	name, ok := v.registry.Verify(token)
+	return name, false, ok
 }
 
 // NewVerifier binds a registry and the master token. An empty master token
@@ -189,22 +266,12 @@ func NewVerifier(registry *Registry, masterToken string) *Verifier {
 	return v
 }
 
-// Verify returns the client name for a valid token. The master token is
-// checked first by comparing digests constant-time, then the registry.
+// Verify returns the client name for a valid token. The master (and, when
+// configured, approver) token is checked first by comparing digests
+// constant-time, then the registry.
 func (v *Verifier) Verify(token string) (string, bool) {
-	if token == "" {
-		return "", false
-	}
-	if v.hasMaster {
-		digest := sha256.Sum256([]byte(token))
-		if subtle.ConstantTimeCompare(digest[:], v.masterDigest[:]) == 1 {
-			return masterClientName, true
-		}
-	}
-	if v.registry == nil {
-		return "", false
-	}
-	return v.registry.Verify(token)
+	name, _, ok := v.VerifyRole(token)
+	return name, ok
 }
 
 // hashToken is the canonical token fingerprint: hex SHA-256.
@@ -266,4 +333,17 @@ func WithClient(ctx context.Context, name string) context.Context {
 func ClientFrom(ctx context.Context) string {
 	name, _ := ctx.Value(clientCtxKey{}).(string)
 	return name
+}
+
+type approverCtxKey struct{}
+
+// WithApprover marks ctx as authenticated by the approver token.
+func WithApprover(ctx context.Context) context.Context {
+	return context.WithValue(ctx, approverCtxKey{}, true)
+}
+
+// IsApprover reports whether ctx was authenticated by the approver token.
+func IsApprover(ctx context.Context) bool {
+	ok, _ := ctx.Value(approverCtxKey{}).(bool)
+	return ok
 }

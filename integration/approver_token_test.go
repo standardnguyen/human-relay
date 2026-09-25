@@ -271,20 +271,6 @@ func TestApproverToken_ReadsAcceptEitherToken(t *testing.T) {
 	}
 }
 
-// TestApproverToken_AgentWritesThatAreNotDecisionsStillWork: an agent's own
-// submissions over the web port -- the permission-check gate -- are not
-// approval decisions and keep working with an agent token.
-func TestApproverToken_AgentWritesThatAreNotDecisionsStillWork(t *testing.T) {
-	s := StartServer(t, WithApproverToken(approverToken), WithPermissionsFile(writePermFile(t)))
-	code, body := WebPost(t, s.WebURL()+"/api/permission/check", testToken, map[string]any{
-		"tool":  "Bash",
-		"input": map[string]any{"command": "git push origin main"},
-	})
-	if code != http.StatusOK {
-		t.Fatalf("agent permission check: status %d, body %s, want 200", code, body)
-	}
-}
-
 // TestApproverToken_NotAcceptedOnMCPPort: the approver credential belongs to
 // the dashboard only. It is not an agent credential, so the MCP port refuses it.
 func TestApproverToken_NotAcceptedOnMCPPort(t *testing.T) {

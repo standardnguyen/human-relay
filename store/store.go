@@ -168,35 +168,6 @@ func (s *Store) AddHTTPForm(method, url string, headers map[string]string, body 
 	return r
 }
 
-// AddPermission creates a pending request representing a permission check
-// that requires human approval. displayCommand is what the dashboard shows
-// (e.g. `Bash(rm -rf /tmp/x)`). On approve/deny the relay does not execute
-// anything — callers poll the request status to learn the verdict.
-func (s *Store) AddPermission(displayCommand, reason string, timeout int, client string) *Request {
-	id := generateID()
-	r := &Request{
-		ID:             id,
-		Type:           "permission",
-		DisplayCommand: displayCommand,
-		Reason:         reason,
-		Client:         client,
-		Timeout:        timeout,
-		Status:         StatusPending,
-		CreatedAt:      time.Now(),
-	}
-	s.mu.Lock()
-	s.requests[id] = r
-	s.order = append(s.order, id)
-	s.mu.Unlock()
-
-	select {
-	case s.notify <- id:
-	default:
-	}
-
-	return r
-}
-
 // AddScript queues a plain run_script request (Type "script").
 func (s *Store) AddScript(name string, args []string, reason string, timeout int, client string) *Request {
 	return s.AddScriptTyped("script", name, args, reason, timeout, nil, client)

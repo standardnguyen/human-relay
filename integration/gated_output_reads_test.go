@@ -40,13 +40,15 @@ func leakedMarkers(s string) []string {
 	return found
 }
 
-// gatedFixture holds a relay with two completed, output-gated requests: a
-// command that writes to stdout and stderr, and an http_request whose response
-// carries a header and a body.
+// gatedFixture holds a relay with three finished, output-gated requests: a
+// command that writes to stdout and stderr, the same command exiting non-zero
+// (status "error"), and an http_request whose response carries a header and a
+// body.
 type gatedFixture struct {
 	s          *TestServer
 	c          *MCPClient
 	cmdID      string
+	errID      string // a gated command that exited non-zero, so its status is "error"
 	httpID     string
 	decider    string // the token that approved (approver, or the shared token in legacy mode)
 	agentToken string // a per-client token minted for an agent
@@ -109,6 +111,14 @@ func newGatedFixture(t *testing.T, approver bool) *gatedFixture {
 			"reason":  "gated output read test",
 		},
 	}))
+	f.errID = extractRequestID(t, f.c.Call(t, 4, "tools/call", map[string]interface{}{
+		"name": "request_command_for_relay",
+		"arguments": map[string]interface{}{
+			"command": "sh",
+			"args":    []string{"-c", "printf '%s%s' GATEDOUT PUTQQ; printf '%s%s' GATEDERR PUTQQ >&2; exit 3"},
+			"reason":  "gated error-status read test",
+		},
+	}))
 	f.httpID = extractRequestID(t, f.c.Call(t, 3, "tools/call", map[string]interface{}{
 		"name": "http_request",
 		"arguments": map[string]interface{}{
@@ -117,7 +127,7 @@ func newGatedFixture(t *testing.T, approver bool) *gatedFixture {
 			"reason": "gated http read test",
 		},
 	}))
-	for _, id := range []string{f.cmdID, f.httpID} {
+	for _, id := range []string{f.cmdID, f.errID, f.httpID} {
 		if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/approve-gated", f.s.WebURL(), id), f.decider, nil); code != http.StatusOK {
 			t.Fatalf("approve-gated %s: status %d, body %s", id, code, body)
 		}
@@ -125,6 +135,11 @@ func newGatedFixture(t *testing.T, approver bool) *gatedFixture {
 		if _, gated := requestStatus(t, f.s, id); !gated {
 			t.Fatalf("request %s is not output-gated after approve-gated", id)
 		}
+	}
+	// The status-scoped reads below measure the error path only if this
+	// request really ended there.
+	if st, _ := requestStatus(t, f.s, f.errID); st != "error" {
+		t.Fatalf("request %s (exits 3) has status %q, want \"error\"", f.errID, st)
 	}
 	// Let the final update frames reach the subscriber.
 	time.Sleep(200 * time.Millisecond)
@@ -136,7 +151,9 @@ func (f *gatedFixture) webReads() []string {
 	return []string{
 		"/api/requests",
 		"/api/requests?status=complete",
+		"/api/requests?status=error",
 		"/api/requests/" + f.cmdID + "/content",
+		"/api/requests/" + f.errID + "/content",
 		"/api/requests/" + f.httpID + "/content",
 	}
 }
@@ -145,11 +162,13 @@ func (f *gatedFixture) webReads() []string {
 func (f *gatedFixture) mcpReads() map[string]map[string]interface{} {
 	return map[string]map[string]interface{}{
 		"get_result/cmd":         {"name": "get_result", "arguments": map[string]interface{}{"request_id": f.cmdID}},
+		"get_result/err":         {"name": "get_result", "arguments": map[string]interface{}{"request_id": f.errID}},
 		"get_result/http":        {"name": "get_result", "arguments": map[string]interface{}{"request_id": f.httpID}},
 		"get_result/cmd-wait":    {"name": "get_result", "arguments": map[string]interface{}{"request_id": f.cmdID, "timeout": float64(1)}},
 		"get_result/http-wait":   {"name": "get_result", "arguments": map[string]interface{}{"request_id": f.httpID, "timeout": float64(1)}},
 		"list_requests":          {"name": "list_requests", "arguments": map[string]interface{}{}},
 		"list_requests/complete": {"name": "list_requests", "arguments": map[string]interface{}{"status": "complete"}},
+		"list_requests/error":    {"name": "list_requests", "arguments": map[string]interface{}{"status": "error"}},
 	}
 }
 
@@ -197,6 +216,13 @@ func TestGatedOutput_AgentTokensCannotReadIt(t *testing.T) {
 	_, body := WebGet(t, f.s.WebURL()+"/api/requests", approverToken)
 	if got := leakedMarkers(string(body)); len(got) != len(gatedMarkers) {
 		t.Fatalf("approver GET /api/requests shows %v of the gated output, want all of %v", got, gatedMarkers)
+	}
+	// Positive control for the status=error read: the approver sees the
+	// error-status request's output there, so an agent read of the same path
+	// coming back clean means redaction, not an empty list.
+	_, errBody := WebGet(t, f.s.WebURL()+"/api/requests?status=error", approverToken)
+	if !strings.Contains(string(errBody), f.errID) || !strings.Contains(string(errBody), gatedStdoutMarker) || !strings.Contains(string(errBody), gatedStderrMarker) {
+		t.Fatalf("control failed: approver GET /api/requests?status=error does not show request %s with its output, so the agent read of it measured nothing", f.errID)
 	}
 	var list []map[string]interface{}
 	if err := json.Unmarshal(body, &list); err != nil {

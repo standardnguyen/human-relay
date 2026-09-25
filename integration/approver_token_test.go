@@ -616,6 +616,32 @@ func TestApproverToken_DuplicateEntryRefused(t *testing.T) {
 	}
 }
 
+// TestApproverToken_WhitespaceOnlyRefused: an approver variable whose value is
+// only whitespace must stop the relay. Read as a token, it locks the approver
+// out for good (the web port trims the presented bearer token, so nobody can
+// send it); read as unset, it is legacy mode, where every agent token
+// approves. Neither is what the operator meant, so the relay refuses to start.
+// The plaintext cases also exercise the re-exec that swaps a plaintext token
+// for its digest: it must not launder "   " into a valid-looking digest.
+func TestApproverToken_WhitespaceOnlyRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"token-spaces", []string{"MHR_APPROVER_TOKEN=   "}, "MHR_APPROVER_TOKEN is whitespace only"},
+		{"token-tab", []string{"MHR_APPROVER_TOKEN=\t"}, "MHR_APPROVER_TOKEN is whitespace only"},
+		{"token-spaces-empty-digest", []string{"MHR_APPROVER_TOKEN=  ", "MHR_APPROVER_TOKEN_SHA256="}, "MHR_APPROVER_TOKEN is whitespace only"},
+		{"digest-spaces", []string{"MHR_APPROVER_TOKEN_SHA256=   "}, "MHR_APPROVER_TOKEN_SHA256 is whitespace only"},
+		{"digest-spaces-empty-token", []string{"MHR_APPROVER_TOKEN=", "MHR_APPROVER_TOKEN_SHA256= "}, "MHR_APPROVER_TOKEN_SHA256 is whitespace only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertRefusesStartRawEnv(t, tc.env, tc.want)
+		})
+	}
+}
+
 // assertRefusesStartRawEnv starts the relay with os.StartProcess, so the
 // environment reaches it exactly as given (duplicates included), and asserts
 // it exits non-zero naming wantMsg rather than serving.

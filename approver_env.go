@@ -46,6 +46,14 @@ type approverEnv struct {
 // asks. That ambiguity is how an empty MHR_APPROVER_TOKEN_SHA256= line ahead of
 // the real digest once switched the approver gate off, so a variable that
 // appears more than once is an error, whatever the values.
+//
+// A value that is only whitespace is an error too. It is not a usable token --
+// the web port trims the bearer token it is sent, so no approver could ever
+// present it and the gate would be locked for good -- and it must not read as
+// unset either, because unset is legacy mode, where every agent token
+// approves. Refusing covers the re-exec as well: scrubPlaintextApproverToken
+// reads the environment through here, so it never swaps "   " for a digest
+// that would look like a real configuration once the plaintext is gone.
 func readApproverEnv(environ []string) (approverEnv, error) {
 	var e approverEnv
 	seen := map[string]int{}
@@ -57,6 +65,9 @@ func readApproverEnv(environ []string) (approverEnv, error) {
 		seen[key]++
 		if seen[key] > 1 {
 			return approverEnv{}, fmt.Errorf("%s appears more than once in the environment; set it once, so there is no question which value the relay uses", key)
+		}
+		if val != "" && strings.TrimSpace(val) == "" {
+			return approverEnv{}, fmt.Errorf("%s is whitespace only; set it to the real value, or leave it empty (or unset) to run without an approver", key)
 		}
 		if key == approverTokenVar {
 			e.token = val

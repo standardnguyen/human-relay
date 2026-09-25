@@ -20,6 +20,13 @@ func TestReadApproverEnv(t *testing.T) {
 		{"prefix-lookalike-ignored", []string{"MHR_APPROVER_TOKEN_SHA256X=zz", "MHR_APPROVER_TOKENS=yy"}, "", "", ""},
 		{"digest-twice-empty-first", []string{"MHR_APPROVER_TOKEN_SHA256=", "MHR_APPROVER_TOKEN_SHA256=ab"}, "", "", "MHR_APPROVER_TOKEN_SHA256 appears more than once"},
 		{"token-twice", []string{"MHR_APPROVER_TOKEN=", "MHR_APPROVER_TOKEN=tok"}, "", "", "MHR_APPROVER_TOKEN appears more than once"},
+		// Whitespace-only is neither a token nor "unset": the web port trims the
+		// presented bearer token, so no approver could ever send it (a locked
+		// gate), and reading it as unset would be legacy mode (an open one).
+		{"token-whitespace-only", []string{"MHR_APPROVER_TOKEN=   "}, "", "", "MHR_APPROVER_TOKEN is whitespace only"},
+		{"token-tab-newline", []string{"MHR_APPROVER_TOKEN=\t\n"}, "", "", "MHR_APPROVER_TOKEN is whitespace only"},
+		{"digest-whitespace-only", []string{"MHR_APPROVER_TOKEN_SHA256=  "}, "", "", "MHR_APPROVER_TOKEN_SHA256 is whitespace only"},
+		{"token-whitespace-with-empty-digest", []string{"MHR_APPROVER_TOKEN=  ", "MHR_APPROVER_TOKEN_SHA256="}, "", "", "MHR_APPROVER_TOKEN is whitespace only"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

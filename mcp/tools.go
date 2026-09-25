@@ -119,7 +119,7 @@ var ToolDefinitions = []Tool{
 	},
 	{
 		Name:        "get_result",
-		Description: "Get the result of a previously submitted command request. Supports blocking poll — if timeout is set, the server will hold the connection until the request is decided or the timeout expires.",
+		Description: "Get the result of a previously submitted command request. Supports blocking poll — if timeout is set, the server will hold the connection until the request is decided or the timeout expires. To skip this second call, pass `wait` to the approving tool itself: it returns this same payload once the request has run.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -615,10 +615,12 @@ type ToolHandler struct {
 	relayPubkeyFile string
 	scriptsDir     string
 	writeFileChecker WriteFileChecker
+	// maxWait caps the `wait` argument of the approving tools (submit_wait.go).
+	maxWait time.Duration
 }
 
 func NewToolHandler(s *store.Store, cs *containers.Store, ms *machines.Store, hostIP string, al *audit.Logger) *ToolHandler {
-	h := &ToolHandler{store: s, containers: cs, machines: ms, hostIP: hostIP, audit: al, scriptsDir: "/scripts"}
+	h := &ToolHandler{store: s, containers: cs, machines: ms, hostIP: hostIP, audit: al, scriptsDir: "/scripts", maxWait: maxWaitFromEnv()}
 	h.writeFileChecker = h.defaultWriteFileCheck
 	return h
 }
@@ -654,7 +656,9 @@ func (h *ToolHandler) sshPrefix() []string {
 	return nil
 }
 
-func (h *ToolHandler) Handle(name string, args map[string]interface{}, client string) *CallToolResult {
+// dispatchTool runs one tool call and returns its immediate response. Handle
+// and HandleContext (submit_wait.go) wrap it with the optional `wait`.
+func (h *ToolHandler) dispatchTool(name string, args map[string]interface{}, client string) *CallToolResult {
 	switch name {
 	case "request_command":
 		return h.requestCommandRetired(args)

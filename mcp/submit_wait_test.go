@@ -148,6 +148,64 @@ func TestSubmitWaitRejectsBadWaitBeforeQueuing(t *testing.T) {
 	}
 }
 
+// A wait above the cap is clamped to the cap, however large. The clamp has to
+// happen in seconds: multiplying first overflows time.Duration from
+// 9223372037 s up, and the wrapped negative value passed both the clamp and
+// the >= 0 check, so the call came back at once with no wait_expired.
+func TestParseWaitClampsHugeValues(t *testing.T) {
+	const max = 50 * time.Second
+	cases := []struct {
+		wait float64
+		want time.Duration
+	}{
+		{49, 49 * time.Second},
+		{50, max},
+		{51, max},
+		{9223372036, max}, // the largest value whose product still fits
+		{9223372037, max}, // the smallest value whose product overflows
+		{1e10, max},
+		{1e12, max},
+	}
+	for _, c := range cases {
+		got, errRes := parseWait(map[string]interface{}{"wait": c.wait}, max)
+		if errRes != nil {
+			t.Errorf("wait=%v: unexpected error %s", c.wait, errRes.Content[0].Text)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("wait=%v: got %s, want %s", c.wait, got, c.want)
+		}
+	}
+	// A cap under a second (tests set one) must not turn wait=0, "don't
+	// wait", into a wait for the cap.
+	if got, _ := parseWait(map[string]interface{}{"wait": float64(0)}, 300*time.Millisecond); got != 0 {
+		t.Errorf("wait=0 under a 300ms cap: got %s, want 0", got)
+	}
+}
+
+// The same overflow seen from the caller: a huge wait on an unapproved
+// request has to hold for the cap and then report wait_expired, not return
+// the plain pending response at once.
+func TestSubmitWaitHugeWaitHoldsForTheCap(t *testing.T) {
+	h := setup(t)
+	h.maxWait = 300 * time.Millisecond
+	start := time.Now()
+	res := h.Handle("request_command_for_relay", map[string]interface{}{
+		"command": "echo",
+		"args":    []interface{}{"never-approved"},
+		"reason":  "huge wait",
+		"wait":    float64(1e10),
+	}, "")
+	elapsed := time.Since(start)
+	m := decode(t, res)
+	if m["wait_expired"] != true {
+		t.Errorf("wait_expired = %v, want true (wait=1e10 must clamp to the cap, not wrap negative): %s", m["wait_expired"], res.Content[0].Text)
+	}
+	if elapsed < 250*time.Millisecond {
+		t.Errorf("returned after %s; a clamped wait should hold for the %s cap", elapsed, h.maxWait)
+	}
+}
+
 // settleWhenQueued waits for the first request to appear, then approves it and
 // records a result the way the web handler's executor would.
 func settleWhenQueued(t *testing.T, s *store.Store, result *store.Result, status store.Status) <-chan string {

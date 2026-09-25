@@ -104,11 +104,13 @@ func parseWait(args map[string]interface{}, max time.Duration) (time.Duration, *
 	if secs < 0 {
 		return 0, errorResult("wait must be >= 0 seconds")
 	}
-	d := time.Duration(secs) * time.Second
-	if d > max {
-		d = max
+	// Clamp in seconds, before multiplying: from 9223372037 s up the product
+	// overflows time.Duration and wraps negative. Strictly greater, so a cap
+	// under a second still leaves wait=0 meaning "don't wait".
+	if secs > int(max/time.Second) {
+		return max, nil
 	}
-	return d, nil
+	return time.Duration(secs) * time.Second, nil
 }
 
 // settled reports whether a request has reached a state it will not leave:

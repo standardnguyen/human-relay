@@ -380,6 +380,44 @@ func TestSubmitWaitClampedToServerCap(t *testing.T) {
 	}
 }
 
+// The schema states the cap in force, not the compiled-in default. A model
+// plans its waits from the description, so with MHR_MAX_WAIT=2 every approving
+// tool has to say 2 s, not 50 s.
+func TestSubmitWaitSchemaStatesTheEffectiveCap(t *testing.T) {
+	_, c := initClient(t, withMaxWait(2))
+	resp := c.Call(t, 2, "tools/list", nil)
+	if resp.Error != nil {
+		t.Fatalf("tools/list returned error: %s", resp.Error.Message)
+	}
+	var result struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			InputSchema struct {
+				Properties map[string]struct {
+					Description string `json:"description"`
+				} `json:"properties"`
+			} `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("tools/list result: %v", err)
+	}
+	advertised := 0
+	for _, tool := range result.Tools {
+		p, ok := tool.InputSchema.Properties["wait"]
+		if !ok {
+			continue
+		}
+		advertised++
+		if !strings.Contains(p.Description, "at 2 s") || strings.Contains(p.Description, "50") {
+			t.Errorf("%s: wait description does not state the 2 s cap in force: %q", tool.Name, p.Description)
+		}
+	}
+	if advertised == 0 {
+		t.Fatal("no tool advertises wait; the check above ran on nothing")
+	}
+}
+
 // A client that goes away mid-wait leaves the request intact: it is still
 // pending, still approvable, and still retrievable by a new session.
 func TestSubmitWaitClientDisconnectLeavesRequestIntact(t *testing.T) {

@@ -620,7 +620,7 @@ type ToolHandler struct {
 }
 
 func NewToolHandler(s *store.Store, cs *containers.Store, ms *machines.Store, hostIP string, al *audit.Logger) *ToolHandler {
-	h := &ToolHandler{store: s, containers: cs, machines: ms, hostIP: hostIP, audit: al, scriptsDir: "/scripts", maxWait: maxWaitFromEnv()}
+	h := &ToolHandler{store: s, containers: cs, machines: ms, hostIP: hostIP, audit: al, scriptsDir: "/scripts", maxWait: effectiveMaxWait}
 	h.writeFileChecker = h.defaultWriteFileCheck
 	return h
 }

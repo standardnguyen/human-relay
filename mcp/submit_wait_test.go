@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -80,6 +81,7 @@ func TestEveryToolIsClassifiedForWait(t *testing.T) {
 }
 
 func TestApprovingToolsAdvertiseWait(t *testing.T) {
+	enforced := setup(t).maxWait
 	for _, name := range approvingTools {
 		tool := toolByName(name)
 		if tool == nil {
@@ -94,9 +96,10 @@ func TestApprovingToolsAdvertiseWait(t *testing.T) {
 		if p.Type != "integer" {
 			t.Errorf("%s: wait type = %q, want integer", name, p.Type)
 		}
-		// The model reading the schema has to learn the cap from it.
-		if !strings.Contains(p.Description, "50") {
-			t.Errorf("%s: wait description does not state the 50 s cap: %q", name, p.Description)
+		// The model reading the schema has to learn the cap from it, and it
+		// has to be the cap the handler enforces, not the compiled-in default.
+		if want := fmt.Sprintf("at %d s", int(enforced/time.Second)); !strings.Contains(p.Description, want) {
+			t.Errorf("%s: wait description does not state the enforced cap (%q): %q", name, want, p.Description)
 		}
 		for _, req := range tool.InputSchema.Required {
 			if req == "wait" {

@@ -58,20 +58,26 @@ var waitTools = map[string]bool{
 	"delete_machine":            true,
 }
 
-func waitProperty() Property {
+// effectiveMaxWait is the cap this process enforces: MHR_MAX_WAIT, read once
+// at startup. The schema (init below) and every handler (NewToolHandler) take
+// it from here, so the cap the model is told and the cap the relay applies
+// cannot differ.
+var effectiveMaxWait = maxWaitFromEnv()
+
+func waitProperty(max time.Duration) Property {
 	return Property{
 		Type: "integer",
 		Description: fmt.Sprintf("Optional. Seconds to hold this call until the request is decided and has run, then return get_result's payload in this same call. "+
 			"0 (default) returns the request ID at once. Capped server-side at %d s (larger values are clamped); "+
 			"if the wait runs out first, the usual pending response comes back with wait_expired: true, so poll get_result with the request ID. "+
-			"It does not approve anything: an unapproved request still waits for a human.", int(maxSubmitWait/time.Second)),
+			"It does not approve anything: an unapproved request still waits for a human.", int(max/time.Second)),
 	}
 }
 
 func init() {
 	for i := range ToolDefinitions {
 		if waitTools[ToolDefinitions[i].Name] {
-			ToolDefinitions[i].InputSchema.Properties["wait"] = waitProperty()
+			ToolDefinitions[i].InputSchema.Properties["wait"] = waitProperty(effectiveMaxWait)
 		}
 	}
 }

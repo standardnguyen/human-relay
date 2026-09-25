@@ -214,7 +214,7 @@ Agent: run_script(name="check-status", reason="Morning status check", wait=30)
   → { "id": "a1b2c3d4", "status": "complete", "result": { "exit_code": 0, "stdout": "..." } }
 ```
 
-- `wait` is capped at 50 seconds, below the 60-second default request timeout of MCP clients built on the TypeScript SDK. A larger value is clamped, not rejected. `MHR_MAX_WAIT` can lower the cap but not raise it.
+- `wait` is capped at 50 seconds, below the 60-second default request timeout of MCP clients built on the TypeScript SDK. A larger value is clamped, not rejected. `MHR_MAX_WAIT` can lower the cap but not raise it, and the `wait` description in every approving tool's schema states the cap in force.
 - If the wait runs out first, the call returns the normal pending response plus `wait_expired: true`, `wait_seconds` and `current_status`. Poll `get_result` as usual.
 - A denial comes back as soon as it is made. Gated output stays gated: `output_gated: true`, with the placeholder instead of the content.
 - Anything else the submit response carries (warnings, `write_file`'s target and route) is kept under `submission`.
@@ -266,7 +266,7 @@ Features:
 | `MHR_HOST_IP` | (none) | Fallback host IP for `exec_container` routing when direct SSH is unavailable |
 | `MHR_WHITELIST_FILE` | `<data_dir>/whitelist.json` | Path to whitelist rules file; matching commands are auto-approved |
 | `MHR_SSH_CONFIG` | (none) | Path to custom SSH config; prepends `-F <path>` to all SSH commands |
-| `MHR_MAX_WAIT` | `50` | Cap in seconds on the `wait` argument of approving tools. It can only lower the cap; a larger or invalid value means 50 |
+| `MHR_MAX_WAIT` | `50` | Cap in seconds on the `wait` argument of approving tools. It can only lower the cap; a larger or invalid value means 50. The `wait` description in each approving tool's schema states the value in force |
 
 ## Security
 

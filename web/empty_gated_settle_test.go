@@ -82,8 +82,10 @@ func runGated(t *testing.T, command string, args ...string) (*store.Store, strin
 	w := &snapshotWriter{s: s, id: req.ID}
 	prev := log.Writer()
 	log.SetOutput(w)
+	// Deferred so a panic in executeRequest cannot leave the process-global
+	// logger pointed at this writer for every later test in the package.
+	defer log.SetOutput(prev)
 	h.executeRequest(approved)
-	log.SetOutput(prev)
 
 	raw, err := os.ReadFile(auditPath)
 	if err != nil {

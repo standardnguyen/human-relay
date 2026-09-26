@@ -153,7 +153,6 @@ func (h *Handler) activeCooldown() time.Duration {
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", h.handleDashboard)
-	mux.HandleFunc("/chat", h.handleChat)
 	mux.HandleFunc("/api/requests", h.handleListRequests)
 	mux.HandleFunc("/api/requests/", h.handleRequestAction)
 	mux.HandleFunc("/api/turbocharge", h.handleTurbocharge)
@@ -168,16 +167,6 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.servePage(w, "index.html")
-}
-
-// handleChat serves the chat-shaped view of the signal-lane approval queue —
-// the same requests as the dashboard, rendered as conversation bubbles.
-func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/chat" {
-		http.NotFound(w, r)
-		return
-	}
-	h.servePage(w, "chat.html")
 }
 
 func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {

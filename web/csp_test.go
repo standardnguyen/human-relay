@@ -1,15 +1,15 @@
 package web
 
-// The dashboard and /chat render agent-supplied strings (command, args, script
-// args, inbound message fields). Both pages read the approver token from
-// localStorage, so any script an agent smuggles into either page runs with the
-// credential that alone may approve. Two independent defences are pinned here:
+// The dashboard renders agent-supplied strings (command, args, script args).
+// It reads the approver token from localStorage, so any script an agent
+// smuggles into the page runs with the credential that alone may approve. Two
+// independent defences are pinned here:
 //
-//  1. No inline event handler exists anywhere in either page, including the
+//  1. No inline event handler exists anywhere in the page, including the
 //     HTML that the page's own JS builds as strings. Handlers are attached with
 //     addEventListener and look their data up by request id, so agent text is
 //     never parsed as an attribute or a JS string literal.
-//  2. Each page is served with a Content-Security-Policy whose script-src is a
+//  2. The page is served with a Content-Security-Policy whose script-src is a
 //     per-response nonce with no 'unsafe-inline', so even an attribute breakout
 //     that slipped past (1) could not run a handler.
 
@@ -59,7 +59,7 @@ func getPage(t *testing.T, url string) (string, http.Header) {
 
 func TestPages_CSPNonceForbidsInlineScript(t *testing.T) {
 	srv := newPageTestServer(t)
-	for _, path := range []string{"/", "/chat"} {
+	for _, path := range []string{"/"} {
 		t.Run(path, func(t *testing.T) {
 			body, hdr := getPage(t, srv.URL+path)
 			csp := hdr.Get("Content-Security-Policy")
@@ -121,7 +121,7 @@ func TestPages_NoInlineEventHandlers(t *testing.T) {
 		}
 	}
 	srv := newPageTestServer(t)
-	for _, path := range []string{"/", "/chat"} {
+	for _, path := range []string{"/"} {
 		body, _ := getPage(t, srv.URL+path)
 		if locs := inlineHandlerRe.FindAllStringIndex(body, -1); len(locs) > 0 {
 			var hits []string
@@ -143,12 +143,12 @@ func TestPages_NoInlineEventHandlers(t *testing.T) {
 
 // TestPages_CannotBeFramed: a framed copy of the dashboard loads the approver
 // token from localStorage and renders live Approve buttons, so a page on any
-// other origin could overlay it and clickjack an approval. Both pages refuse
+// other origin could overlay it and clickjack an approval. The page refuses
 // every framer, by CSP frame-ancestors and by X-Frame-Options for browsers
 // that ignore frame-ancestors.
 func TestPages_CannotBeFramed(t *testing.T) {
 	srv := newPageTestServer(t)
-	for _, path := range []string{"/", "/chat"} {
+	for _, path := range []string{"/"} {
 		_, hdr := getPage(t, srv.URL+path)
 		csp := hdr.Get("Content-Security-Policy")
 		if !strings.Contains(csp, "frame-ancestors 'none'") {

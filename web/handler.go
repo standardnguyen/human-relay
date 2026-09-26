@@ -598,30 +598,27 @@ func (h *Handler) watchRequests() {
 				continue
 			}
 			wlCommand, wlArgs := whitelistKey(req)
-			if rule, ok := h.whitelist.MatchRule(wlCommand, wlArgs); ok && req.Status == store.StatusPending {
-				h.autoApprove(req, rule.GateOutput)
+			if h.whitelist.Match(wlCommand, wlArgs) && req.Status == store.StatusPending {
+				h.autoApprove(req)
 			}
 		}
 	}
 }
 
-func (h *Handler) autoApprove(req *store.Request, gateOutput bool) {
+func (h *Handler) autoApprove(req *store.Request) {
 	// Same atomic guard as the manual approve path: the pending check in
 	// watchRequests is a separate read, so without this a whitelist
 	// auto-approval could race an operator click and execute the request twice.
-	// gateOutput means "whitelist but gate outputs": execution is auto-approved,
-	// but the result stays output_gated until the human releases it.
-	ok, approved := h.store.Approve(req.ID, gateOutput)
+	ok, approved := h.store.Approve(req.ID, false)
 	if !ok {
 		log.Printf("request %s auto-approve raced a concurrent decision, ignoring", req.ID)
 		return
 	}
 	req = approved
-	log.Printf("request %s auto-approved (whitelist, gated=%v): %s %v", req.ID, gateOutput, req.Command, req.Args)
+	log.Printf("request %s auto-approved (whitelist): %s %v", req.ID, req.Command, req.Args)
 	h.audit.Log("request_auto_approved", req.ID, map[string]interface{}{
-		"command":     req.Command,
-		"args":        req.Args,
-		"gate_output": gateOutput,
+		"command": req.Command,
+		"args":    req.Args,
 	})
 	h.broadcastEvent("update", req.ID)
 
@@ -767,13 +764,20 @@ func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 			// whitelistKey — the same function the auto-approve path matches
 			// with — instead of being taken from the client. That is what lets
 			// script creates key on a body hash the browser never sees.
-			RequestID  string   `json:"request_id"`
-			Command    string   `json:"command"`
-			Args       []string `json:"args"`
-			GateOutput bool     `json:"gate_output"`
+			RequestID string   `json:"request_id"`
+			Command   string   `json:"command"`
+			Args      []string `json:"args"`
+			// GateOutput is read only to refuse it: the flag was removed,
+			// and dropping it silently would store an ungated rule that
+			// shows the agent output the caller asked to withhold.
+			GateOutput bool `json:"gate_output"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if body.GateOutput {
+			http.Error(w, "gate_output was removed: a whitelist rule can no longer withhold output; leave the request unwhitelisted and use Approve (Gated)", http.StatusBadRequest)
 			return
 		}
 		command, wlArgs := body.Command, body.Args
@@ -789,14 +793,13 @@ func (h *Handler) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "command is required", http.StatusBadRequest)
 			return
 		}
-		h.whitelist.Add(command, wlArgs, body.GateOutput)
+		h.whitelist.Add(command, wlArgs)
 		if err := h.whitelist.Save(); err != nil {
 			log.Printf("whitelist save error: %v", err)
 		}
 		h.audit.Log("whitelist_add", body.RequestID, decisionFields(r, approvedBy, map[string]interface{}{
-			"command":     command,
-			"args":        wlArgs,
-			"gate_output": body.GateOutput,
+			"command": command,
+			"args":    wlArgs,
 		}))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "added"})

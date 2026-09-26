@@ -1,13 +1,19 @@
 package integration
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// approveAs decides a pending request through the dashboard API with the
+// given action ("approve" or "approve-gated").
+func approveAs(t *testing.T, s *TestServer, id, action string) {
+	t.Helper()
+	if code, body := WebPost(t, fmt.Sprintf("%s/api/requests/%s/%s", s.WebURL(), id, action), s.token, nil); code != 200 {
+		t.Fatalf("%s %s: status %d, body %s", action, id, code, body)
+	}
+}
 
 // findByID returns the list_requests entry for id, failing the test if the
 // request is missing from the listing entirely.
@@ -31,24 +37,7 @@ func findByID(t *testing.T, list []RequestResult, id string) RequestResult {
 // that fired on everything would pass a gated-only assertion, so the ungated
 // entry is the control that proves the filter discriminates.
 func TestListRequestsRedactsGatedOutput(t *testing.T) {
-	dir := t.TempDir()
-	wlPath := filepath.Join(dir, "whitelist.json")
-	rules := []map[string]interface{}{
-		{"command": "echo", "args": []string{"topsecret"}, "gate_output": true},
-		{"command": "echo", "args": []string{"publicvalue"}},
-	}
-	data, _ := json.Marshal(rules)
-	os.WriteFile(wlPath, data, 0644)
-
-	s := StartServer(t, WithWhitelistFile(wlPath))
-	c := NewMCPClient(t, s.MCPURL())
-
-	c.Call(t, 1, "initialize", map[string]interface{}{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]interface{}{},
-		"clientInfo":      map[string]string{"name": "test", "version": "1.0"},
-	})
-	c.Notify(t, "notifications/initialized", nil)
+	s, c := initClient(t)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
 		"name": "request_command_for_relay",
@@ -69,6 +58,8 @@ func TestListRequestsRedactsGatedOutput(t *testing.T) {
 		},
 	})
 	ungatedID := extractRequestID(t, resp)
+	approveAs(t, s, gatedID, "approve-gated")
+	approveAs(t, s, ungatedID, "approve")
 
 	if got := pollUntilDone(t, c, 4, gatedID); got.Status != "complete" {
 		t.Fatalf("gated request status = %s, want complete", got.Status)
@@ -128,23 +119,7 @@ func TestListRequestsRedactsGatedOutput(t *testing.T) {
 // TestListRequestsRedactsGatedStderr covers the stderr half of the same gate:
 // a gated failure must not hand its stderr back through list_requests either.
 func TestListRequestsRedactsGatedStderr(t *testing.T) {
-	dir := t.TempDir()
-	wlPath := filepath.Join(dir, "whitelist.json")
-	rules := []map[string]interface{}{
-		{"command": "sh", "args": []string{"-c", "echo secretdiagnostic >&2; exit 3"}, "gate_output": true},
-	}
-	data, _ := json.Marshal(rules)
-	os.WriteFile(wlPath, data, 0644)
-
-	s := StartServer(t, WithWhitelistFile(wlPath))
-	c := NewMCPClient(t, s.MCPURL())
-
-	c.Call(t, 1, "initialize", map[string]interface{}{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]interface{}{},
-		"clientInfo":      map[string]string{"name": "test", "version": "1.0"},
-	})
-	c.Notify(t, "notifications/initialized", nil)
+	s, c := initClient(t)
 
 	resp := c.Call(t, 2, "tools/call", map[string]interface{}{
 		"name": "request_command_for_relay",
@@ -155,6 +130,7 @@ func TestListRequestsRedactsGatedStderr(t *testing.T) {
 		},
 	})
 	id := extractRequestID(t, resp)
+	approveAs(t, s, id, "approve-gated")
 
 	if got := pollUntilDone(t, c, 3, id); got.Status != "error" {
 		t.Fatalf("status = %s, want error (exit 3)", got.Status)

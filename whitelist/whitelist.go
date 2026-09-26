@@ -2,6 +2,7 @@ package whitelist
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"sync"
 )
@@ -9,11 +10,20 @@ import (
 type Rule struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
-	// GateOutput auto-approves matching requests but leaves their output
-	// gated (output_gated) until the human releases it — "whitelist but
-	// gate outputs". Absent/false = classic ungated auto-approve.
-	GateOutput bool `json:"gate_output,omitempty"`
 }
+
+// storedRule is a rule as read from disk. gate_output ("auto-approve, but
+// withhold the output") was removed; it is still decoded so that Load can
+// refuse such a rule instead of silently loading it as a plain auto-approve
+// rule, which would show the agent output that was meant to stay gated.
+type storedRule struct {
+	Rule
+	GateOutput bool `json:"gate_output"`
+}
+
+// scriptTools key their rules on a script name, which is safe to log. Every
+// other rule's args are a command line or URL and may carry a secret.
+var scriptTools = map[string]bool{"run_script": true, "create_script": true, "create_then_run": true}
 
 type Whitelist struct {
 	mu    sync.RWMutex
@@ -30,28 +40,33 @@ func Load(path string) (*Whitelist, error) {
 		}
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &w.rules); err != nil {
+	var stored []storedRule
+	if err := json.Unmarshal(data, &stored); err != nil {
 		return nil, err
+	}
+	for _, r := range stored {
+		if r.GateOutput {
+			name := r.Command
+			if scriptTools[r.Command] && len(r.Args) > 0 {
+				name += " " + r.Args[0]
+			}
+			log.Printf("WHITELIST: SKIPPING rule %q from %s: it sets gate_output, which was removed; matching requests now wait for manual approval (use Approve (Gated)), and the rule is dropped from the file at the next whitelist change", name, path)
+			continue
+		}
+		w.rules = append(w.rules, r.Rule)
 	}
 	return w, nil
 }
 
 func (w *Whitelist) Match(command string, args []string) bool {
-	_, ok := w.MatchRule(command, args)
-	return ok
-}
-
-// MatchRule returns the matching rule (so callers can honor per-rule
-// options like GateOutput) and whether a match was found.
-func (w *Whitelist) MatchRule(command string, args []string) (Rule, bool) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	for _, r := range w.rules {
 		if r.Command == command && argsEqual(r.Args, args) {
-			return r, true
+			return true
 		}
 	}
-	return Rule{}, false
+	return false
 }
 
 func (w *Whitelist) Rules() []Rule {
@@ -62,17 +77,16 @@ func (w *Whitelist) Rules() []Rule {
 	return out
 }
 
-func (w *Whitelist) Add(command string, args []string, gateOutput bool) {
+func (w *Whitelist) Add(command string, args []string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// Re-adding an existing rule updates its gate flag instead of duplicating
-	for i, r := range w.rules {
+	// Re-adding an existing rule is a no-op instead of a duplicate
+	for _, r := range w.rules {
 		if r.Command == command && argsEqual(r.Args, args) {
-			w.rules[i].GateOutput = gateOutput
 			return
 		}
 	}
-	w.rules = append(w.rules, Rule{Command: command, Args: args, GateOutput: gateOutput})
+	w.rules = append(w.rules, Rule{Command: command, Args: args})
 }
 
 func (w *Whitelist) Remove(command string, args []string) bool {

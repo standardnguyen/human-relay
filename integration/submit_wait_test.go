@@ -322,18 +322,6 @@ func TestSubmitWaitDenialReturnsPromptly(t *testing.T) {
 // Gating is untouched by the wait: the content stays withheld and the caller
 // is told it is gated.
 func TestSubmitWaitGatedOutputStaysGated(t *testing.T) {
-	t.Run("whitelist gate_output", func(t *testing.T) {
-		wlPath := filepath.Join(t.TempDir(), "whitelist.json")
-		rules, _ := json.Marshal([]map[string]interface{}{
-			{"command": "echo", "args": []string{"secret-wl"}, "gate_output": true},
-		})
-		os.WriteFile(wlPath, rules, 0644)
-		_, c := initClient(t, WithWhitelistFile(wlPath))
-		resp, _ := callTool(t, c, 10, "request_command_for_relay", map[string]interface{}{
-			"command": "echo", "args": []string{"secret-wl"}, "reason": "gated whitelist", "wait": 10,
-		})
-		assertGated(t, waitJSON(t, resp), "secret-wl")
-	})
 	t.Run("approve-gated during wait", func(t *testing.T) {
 		s, c := initClient(t)
 		decided := decideFirstPending(s, "approve-gated", 500*time.Millisecond, nil)

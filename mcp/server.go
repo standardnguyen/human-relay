@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -36,9 +37,17 @@ func keepaliveFromEnv() time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
+// session is one open /sse stream. ctx is that stream's request context: it
+// ends when the client disconnects, which is how a held tool call learns there
+// is no longer anyone to answer.
+type session struct {
+	ch  chan []byte
+	ctx context.Context
+}
+
 type Server struct {
 	handler   *ToolHandler
-	clients   map[string]chan []byte // sessionID -> message channel
+	clients   map[string]*session // sessionID -> open stream
 	mu        sync.Mutex
 	nextID    int
 	keepalive time.Duration
@@ -47,7 +56,7 @@ type Server struct {
 func NewServer(handler *ToolHandler) *Server {
 	return &Server{
 		handler:   handler,
-		clients:   make(map[string]chan []byte),
+		clients:   make(map[string]*session),
 		keepalive: keepaliveFromEnv(),
 	}
 }
@@ -74,7 +83,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	s.nextID++
 	sessionID := fmt.Sprintf("session-%d", s.nextID)
 	ch := make(chan []byte, 100)
-	s.clients[sessionID] = ch
+	s.clients[sessionID] = &session{ch: ch, ctx: r.Context()}
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -112,13 +121,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("sessionId")
 	s.mu.Lock()
-	ch, ok := s.clients[sessionID]
+	sess, ok := s.clients[sessionID]
 	s.mu.Unlock()
 
 	if !ok {
 		http.Error(w, "unknown session", http.StatusBadRequest)
 		return
 	}
+	ch := sess.ch
 
 	// Read the JSON-RPC request. Handle both single requests and batched.
 	// The MCP spec sends one request at a time over the message endpoint.
@@ -138,7 +148,16 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := s.dispatch(req, auth.ClientFrom(r.Context()))
+	// A tool call held by `wait` stops when either half of the client goes
+	// away: this POST (its context ends when the connection drops) or the SSE
+	// stream the reply would travel on. AfterFunc starts no goroutine unless
+	// the stream actually ends, and stop() releases it when the call returns.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	stop := context.AfterFunc(sess.ctx, cancel)
+	defer stop()
+
+	resp := s.dispatch(ctx, req, auth.ClientFrom(r.Context()))
 	if resp == nil {
 		// Notification — no response needed
 		w.WriteHeader(http.StatusAccepted)
@@ -155,7 +174,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Server) dispatch(req JSONRPCRequest, client string) *JSONRPCResponse {
+func (s *Server) dispatch(ctx context.Context, req JSONRPCRequest, client string) *JSONRPCResponse {
 	switch req.Method {
 	case "initialize":
 		return &JSONRPCResponse{
@@ -189,7 +208,7 @@ func (s *Server) dispatch(req JSONRPCRequest, client string) *JSONRPCResponse {
 		var callParams CallToolParams
 		json.Unmarshal(params, &callParams)
 
-		result := s.handler.Handle(callParams.Name, callParams.Arguments, client)
+		result := s.handler.HandleContext(ctx, callParams.Name, callParams.Arguments, client)
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,

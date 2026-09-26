@@ -26,9 +26,10 @@ jobs:
       # Every package except integration/, which needs the built binary (next step).
       # Derived, not listed, so a package that gains tests is covered automatically.
       - name: Run unit tests
+        shell: bash
         run: |
           set -o pipefail
-          pkgs=$(go list ./... | grep -v /integration)
+          pkgs=$(go list ./... | grep -vE '/integration(/|$)')
           go test -v -count=1 $pkgs
 
       - name: Run integration tests

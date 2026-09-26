@@ -101,10 +101,10 @@ for its digest, so it is not left in `/proc/<pid>/environ` where a command runni
 user could read it. Either variable is also dropped from the environment that approved commands
 inherit.
 
-The dashboard and `/chat` keep the approver token in the browser, so both pages are built to
+The dashboard keeps the approver token in the browser, so it is built to
 never run agent-supplied text as code: no inline event handlers, and a
 `Content-Security-Policy` whose `script-src` is a per-response nonce with no `'unsafe-inline'`.
-Neither page can be framed by another site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`).
+It cannot be framed by another site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`).
 
 There are two ways to get the header onto the wire.
 

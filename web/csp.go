@@ -6,13 +6,13 @@ import (
 	"net/http"
 )
 
-// The dashboard and /chat hold the approver token in localStorage and render
-// agent-supplied strings, so a script injected into either page approves with
-// the one credential agents must never wield. Neither page builds inline event
-// handlers any more; this policy is the second, independent layer: script-src
-// is a fresh per-response nonce with no 'unsafe-inline', so an injected
+// The dashboard holds the approver token in localStorage and renders
+// agent-supplied strings, so a script injected into it approves with the one
+// credential agents must never wield. The page builds no inline event
+// handlers; this policy is the second, independent layer: script-src is a
+// fresh per-response nonce with no 'unsafe-inline', so an injected
 // onclick/onmouseover or <script> cannot run even if some render path fails
-// to escape. Inline style attributes stay allowed (the pages use them, and a
+// to escape. Inline style attributes stay allowed (the page uses them, and a
 // style cannot call the API). frame-ancestors 'none' (with X-Frame-Options:
 // DENY in servePage for browsers that ignore it) stops another site framing a
 // page that holds the approver token and clickjacking an approval.

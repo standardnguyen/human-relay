@@ -1,21 +1,20 @@
 import { test, expect, Page } from '@playwright/test';
 import { ChildProcess, spawn } from 'child_process';
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import http from 'http';
 
 // Stored DOM-XSS regressions. An agent holds only an agent token, but the
-// dashboard and /chat render its strings while holding the APPROVER token in
-// localStorage. Any script an agent smuggles into either page runs with the one
+// dashboard renders its strings while holding the APPROVER token in
+// localStorage. Any script an agent smuggles into the page runs with the one
 // credential that may approve. These tests submit attribute/JS-string breakout
-// payloads with the agent token, open the pages as the approver, sweep the
+// payloads with the agent token, open the page as the approver, sweep the
 // mouse across the viewport, and assert that nothing ran and nothing was
 // approved or whitelisted.
 //
-// This spec runs its own relay (approver token set, a scripts dir holding a
-// dummy signal-send) on ports of its own, so it does not share state with the
-// fixture-driven specs.
+// This spec runs its own relay (approver token set) on ports of its own, so it
+// does not share state with the fixture-driven specs.
 
 const AGENT = 'xss-agent-token-throwaway';
 const APPROVER = 'xss-approver-token-throwaway';
@@ -81,10 +80,6 @@ test.describe.configure({ mode: 'serial' });
 
 test.beforeAll(async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'pw-xss-'));
-  const scriptsDir = join(dataDir, 'scripts');
-  mkdirSync(scriptsDir);
-  writeFileSync(join(scriptsDir, 'signal-send.sh'), '#!/bin/sh\nexit 0\n');
-  chmodSync(join(scriptsDir, 'signal-send.sh'), 0o755);
   writeFileSync(join(dataDir, 'whitelist.json'), '[]');
   const bin = process.env.HUMAN_RELAY_BIN;
   if (!bin) throw new Error('HUMAN_RELAY_BIN not set');
@@ -93,7 +88,7 @@ test.beforeAll(async () => {
       ...process.env,
       MHR_MCP_PORT: String(MCP_PORT), MHR_WEB_PORT: String(WEB_PORT),
       MHR_AUTH_TOKEN: AGENT, MHR_APPROVER_TOKEN: APPROVER,
-      MHR_DATA_DIR: dataDir, MHR_SCRIPTS_DIR: scriptsDir,
+      MHR_DATA_DIR: dataDir,
       MHR_APPROVAL_COOLDOWN: '0', MHR_DEFAULT_TIMEOUT: '5', MHR_MAX_TIMEOUT: '10',
     },
     stdio: ['ignore', 'ignore', 'ignore'],
@@ -167,16 +162,6 @@ test('dashboard: an attribute breakout in `command` runs nothing on hover', asyn
   await assertNothingRan(page, [id]);
 });
 
-test('/chat: an attribute breakout in a signal-send conversation key runs nothing on hover', async ({ page }) => {
-  const id = await tool('run_script', { name: 'signal-send', args: [ATTR_BREAKOUT('x'), 'hello'], reason: 'send' });
-  await openAsApprover(page, '/chat');
-  await expect(page.locator('.convo')).toHaveCount(1);
-  await sweepMouse(page);
-  await page.locator('.convo').first().click({ force: true });
-  await sweepMouse(page);
-  await assertNothingRan(page, [id]);
-});
-
 test('dashboard: Approve & Whitelist on quote- and &quot;-bearing args whitelists exactly those bytes and runs nothing else', async ({ page }) => {
   // Clear the earlier pending payloads out of the way by denying them as the approver.
   const all = JSON.parse((await req('GET', `${WEB}/api/requests`, AGENT)).body);
@@ -200,7 +185,7 @@ test('dashboard: Approve & Whitelist on quote- and &quot;-bearing args whitelist
   expect(['approved', 'running', 'complete']).toContain(done.status);
 });
 
-test('dashboard and /chat: every control still works under the CSP, with no violations', async ({ page }) => {
+test('dashboard: every control still works under the CSP, with no violations', async ({ page }) => {
   const violations = await openAsApprover(page, '/');
   // Static controls wired by addEventListener rather than onclick.
   await page.locator('.filters button[data-filter="whitelist"]').click();
@@ -220,16 +205,4 @@ test('dashboard and /chat: every control still works under the CSP, with no viol
   await page.locator('.request-card.pending .btn-deny').click();
   await expect.poll(async () => JSON.parse((await req('GET', `${WEB}/api/requests`, AGENT)).body).find((r: any) => r.id === id).status).toBe('denied');
   expect(violations).toEqual([]);
-
-  const chatViolations = await openAsApprover(page, '/chat');
-  await page.locator('.agentview').click();
-  await expect(page.locator('#avlabel')).toContainText('agent view');
-  await page.locator('.agentview').click();   // back to the human view, where drafts show
-  await expect(page.locator('#avlabel')).toContainText('human view');
-  const sid = await tool('run_script', { name: 'signal-send', args: ['group.abc', 'hi'], reason: 'send' });
-  await page.waitForTimeout(1000);
-  await page.locator('.convo', { hasText: 'group.a' }).click();
-  await page.locator('.gact.ap').click();
-  await expect.poll(async () => JSON.parse((await req('GET', `${WEB}/api/requests`, AGENT)).body).find((r: any) => r.id === sid).status).not.toBe('pending');
-  expect(chatViolations).toEqual([]);
 });

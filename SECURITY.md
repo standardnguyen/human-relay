@@ -19,8 +19,8 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 - **Path traversal blocked** — working directories validated against an allowlist.
 - **Output capped** — stdout/stderr limited to 1MB per command.
 - **Separate approver credential** — with `MHR_APPROVER_TOKEN` set, only that token may approve, deny, release output, whitelist or turbocharge; agent tokens get `403` on those calls, and the approver token is not accepted on the MCP port. `MHR_APPROVER_TOKEN_SHA256` configures it by digest so the relay host never stores the token. Unset, any authenticating token can approve (the relay warns at startup).
-- **Gated output stays gated for agents** — a result approved with *Approve (Gated)* or by a `gate_output` whitelist rule is withheld (stdout and HTTP response body, stderr, response headers) from MCP `get_result` and `list_requests` until the operator releases it, and, with `MHR_APPROVER_TOKEN` set, from the web request list for every token but the approver's. Without an approver token the web port cannot tell the operator from an agent and serves gated output to any authenticating token.
-- **No script from agent text in the dashboard** — the dashboard and `/chat` attach handlers with `addEventListener` and look requests up by id, and serve a `Content-Security-Policy` with a per-response `script-src` nonce and no `'unsafe-inline'`, so agent-supplied strings cannot run with the approver token held in the browser. Both pages refuse to be framed (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), so another site cannot overlay them to clickjack an approval.
+- **Gated output stays gated for agents** — a result approved with *Approve (Gated)* is withheld (stdout and HTTP response body, stderr, response headers) from MCP `get_result` and `list_requests` until the operator releases it, and, with `MHR_APPROVER_TOKEN` set, from the web request list for every token but the approver's. Without an approver token the web port cannot tell the operator from an agent and serves gated output to any authenticating token.
+- **No script from agent text in the dashboard** — the dashboard attaches handlers with `addEventListener` and looks requests up by id, and serves a `Content-Security-Policy` with a per-response `script-src` nonce and no `'unsafe-inline'`, so agent-supplied strings cannot run with the approver token held in the browser. It refuses to be framed (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), so another site cannot overlay it to clickjack an approval.
 - **Approval cooldown** — server-enforced rate limit between approvals.
 - **Audit log** — append-only JSONL file records every request, approval, denial, and execution result.
 
@@ -28,7 +28,7 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 
 - No TLS — terminate TLS at a reverse proxy.
 - No per-user auth — single shared bearer token.
-- Whitelist is exact-match only — no glob/regex patterns.
+- Whitelist is exact-match only — no glob/regex patterns. A whitelisted request always runs with its output visible to the agent; to withhold output, leave the request unwhitelisted and use *Approve (Gated)*.
 - The dashboard's `/events` metadata stream on `:8090` is unauthenticated (EventSource cannot set headers). It is read-only. This does not apply to the MCP `/sse` endpoint on `:8080`, which requires the bearer token.
 
 ### The approver token holds only up to the relay's uid

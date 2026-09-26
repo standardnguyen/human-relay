@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -378,8 +379,9 @@ func (s *Store) Approve(id string, gateOutput bool) (bool, *Request) {
 }
 
 // SetResult records a finished request's result and status. Gated output with
-// nothing in it (no stdout, no stderr) is released in this same update:
-// gating protects content and an empty result has none, and releasing it in a
+// nothing to withhold (no stdout, no stderr, no response headers: see
+// hasGatedContent) is released in this same update: gating protects content
+// and such a result has none, and releasing it in a
 // second update published the request as finished and gated in between, so a
 // reader waited for a Release click that was never needed. releasedEmpty
 // reports that this update released it; ok is false when id is unknown.
@@ -392,7 +394,7 @@ func (s *Store) SetResult(id string, result *Result, status Status) (ok, release
 	}
 	r.Result = result
 	r.Status = status
-	if r.OutputGated && result != nil && result.Stdout == "" && result.Stderr == "" {
+	if r.OutputGated && result != nil && !result.hasGatedContent() {
 		r.OutputGated = false
 		releasedEmpty = true
 	}
@@ -486,11 +488,28 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
+// visibleWhenGated is the part of a result that gating never withholds: the
+// exit code and the HTTP status code, so a caller still learns whether the
+// command or call worked. Every other field is withheld while output is gated.
+// RedactGatedOutput builds its copy from this and SetResult auto-releases only
+// a result that holds nothing more, so what gating hides and what counts as
+// nothing to hide cannot drift apart.
+func (res *Result) visibleWhenGated() Result {
+	return Result{ExitCode: res.ExitCode, StatusCode: res.StatusCode}
+}
+
+// hasGatedContent reports whether gating res withholds anything: whether any
+// field outside visibleWhenGated is set. An HTTP response with no body still
+// has its response headers, so it has gated content.
+func (res *Result) hasGatedContent() bool {
+	return !reflect.DeepEqual(*res, res.visibleWhenGated())
+}
+
 // RedactGatedOutput returns r untouched when its output is not gated (never
-// gated, or released), and otherwise a copy whose result withholds everything
-// the command or HTTP call produced: stdout (an HTTP response body lands
-// there), stderr and the response headers are replaced or dropped. The exit
-// code and HTTP status code stay, so a caller still learns whether it worked.
+// gated, or released), and otherwise a copy whose result keeps only
+// visibleWhenGated: stdout (an HTTP response body lands there) and stderr
+// become placeholders giving their byte counts, and the response headers are
+// dropped. The exit code and HTTP status code stay.
 //
 // Every path that hands a request to a caller who may not see gated output
 // must pass it through here: MCP get_result and list_requests always, the web
@@ -500,14 +519,13 @@ func RedactGatedOutput(r *Request) *Request {
 		return r
 	}
 	gated := *r
-	gr := *r.Result
-	stdoutLen := len(gr.Stdout)
-	stderrLen := len(gr.Stderr)
+	gr := r.Result.visibleWhenGated()
+	stdoutLen := len(r.Result.Stdout)
+	stderrLen := len(r.Result.Stderr)
 	gr.Stdout = fmt.Sprintf("[output gated by operator — %d bytes. use release button in dashboard to unlock, then re-poll get_result]", stdoutLen)
 	if stderrLen > 0 {
 		gr.Stderr = fmt.Sprintf("[stderr gated — %d bytes]", stderrLen)
 	}
-	gr.RespHeaders = nil
 	gated.Result = &gr
 	return &gated
 }

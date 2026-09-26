@@ -24,6 +24,8 @@ func TestFinishedGatedRequestReadsGatedOnlyWithOutput(t *testing.T) {
 		{"empty", store.Result{ExitCode: 0}, false},
 		{"stdout", store.Result{ExitCode: 0, Stdout: "withheld\n"}, true},
 		{"stderr only", store.Result{ExitCode: 0, Stderr: "withheld\n"}, true},
+		// A bodiless HTTP response: gating withholds its headers.
+		{"response headers only", store.Result{ExitCode: 0, StatusCode: 204, RespHeaders: map[string]string{"Set-Cookie": "session=withheld"}}, true},
 	}
 	submit := func(h *ToolHandler, wait float64) *CallToolResult {
 		args := map[string]interface{}{"command": "true", "reason": "empty gated result test"}
@@ -50,6 +52,9 @@ func TestFinishedGatedRequestReadsGatedOnlyWithOutput(t *testing.T) {
 		if gated != wantGated || placeholder != wantGated {
 			t.Errorf("output_gated = %v, stdout = %q; want gated = %v (an agent told a finished request is gated waits for a Release click)",
 				gated, stdout, wantGated)
+		}
+		if wantGated && result["response_headers"] != nil {
+			t.Errorf("response_headers = %v on a gated read", result["response_headers"])
 		}
 	}
 

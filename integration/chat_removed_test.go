@@ -25,6 +25,13 @@ func TestChatPageRemoved(t *testing.T) {
 	if code != 200 || !strings.Contains(string(body), "<html") {
 		t.Fatalf("control: GET / without auth: status %d", code)
 	}
+
+	// The public-page exception is GET-only: any other method on "/" still
+	// needs auth. Before /chat was removed, TestChatPageOnlyGet pinned this.
+	code, body = WebPost(t, s.WebURL()+"/", "", nil)
+	if code == 200 {
+		t.Fatalf("POST / without auth: status 200, want it refused; body starts %q", firstN(body, 80))
+	}
 }
 
 func firstN(b []byte, n int) string {

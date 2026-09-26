@@ -23,8 +23,13 @@ jobs:
       - name: Build binary
         run: go build -o human-relay .
 
+      # Every package except integration/, which needs the built binary (next step).
+      # Derived, not listed, so a package that gains tests is covered automatically.
       - name: Run unit tests
-        run: go test -v -count=1 ./mcp/ ./executor/ ./whitelist/
+        run: |
+          set -o pipefail
+          pkgs=$(go list ./... | grep -v /integration)
+          go test -v -count=1 $pkgs
 
       - name: Run integration tests
         run: HUMAN_RELAY_BIN=${{ github.workspace }}/human-relay go test -v -count=1 ./integration/...

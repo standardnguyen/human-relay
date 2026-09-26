@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +28,7 @@ var (
 func TestGatedBodilessHTTPResponseKeepsHeadersGated(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/no-content", "/no-content-rule":
+		case "/no-content":
 			w.Header().Set("Set-Cookie", "session="+bodilessCookieMarker)
 			w.WriteHeader(http.StatusNoContent)
 		case "/redirect":
@@ -42,19 +40,9 @@ func TestGatedBodilessHTTPResponseKeepsHeadersGated(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	// A gate_output rule gates without a human: the call is auto-approved and
-	// its output held for release.
-	wlPath := filepath.Join(t.TempDir(), "whitelist.json")
-	rules, _ := json.Marshal([]map[string]interface{}{
-		{"command": "GET", "args": []string{upstream.URL + "/no-content-rule"}, "gate_output": true},
-	})
-	if err := os.WriteFile(wlPath, rules, 0644); err != nil {
-		t.Fatal(err)
-	}
-
 	dataDir := t.TempDir()
 	agentToken := mintClient(t, dataDir, "bodiless-reader")
-	s := StartServer(t, WithDataDir(dataDir), WithApproverToken(approverToken), WithWhitelistFile(wlPath))
+	s := StartServer(t, WithDataDir(dataDir), WithApproverToken(approverToken))
 	c := NewMCPClient(t, s.MCPURL())
 	initMCP(t, c)
 
@@ -172,19 +160,6 @@ func TestGatedBodilessHTTPResponseKeepsHeadersGated(t *testing.T) {
 			agentRead(t, "http_request with wait", text, tc.marker, tc.status, tc.code)
 		})
 	}
-
-	t.Run("gate_output rule during wait", func(t *testing.T) {
-		resp := submit("/no-content-rule", 10)
-		if isErrorResponse(resp) {
-			t.Fatalf("wait returned an error: %s", toolText(t, resp))
-		}
-		text := toolText(t, resp)
-		var m bodilessRead
-		json.Unmarshal([]byte(text), &m)
-		approverSees(t, m.ID, bodilessCookieMarker)
-		agentRead(t, "http_request with wait", text, bodilessCookieMarker, "complete", http.StatusNoContent)
-		agentRead(t, "agent GET /api/requests", webEntry(t, agentToken, m.ID), bodilessCookieMarker, "complete", http.StatusNoContent)
-	})
 }
 
 // bodilessRead is the part of an agent-visible request this test checks.

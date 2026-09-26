@@ -379,9 +379,8 @@ func (s *Store) Approve(id string, gateOutput bool) (bool, *Request) {
 }
 
 // SetResult records a finished request's result and status. Gated output with
-// nothing to withhold (no stdout, no stderr, no response headers: see
-// hasGatedContent) is released in this same update: gating protects content
-// and such a result has none, and releasing it in a
+// nothing to withhold (see hasGatedContent) is released in this same update:
+// gating protects content and such a result has none, and releasing it in a
 // second update published the request as finished and gated in between, so a
 // reader waited for a Release click that was never needed. releasedEmpty
 // reports that this update released it; ok is false when id is unknown.
@@ -500,7 +499,9 @@ func (res *Result) visibleWhenGated() Result {
 
 // hasGatedContent reports whether gating res withholds anything: whether any
 // field outside visibleWhenGated is set. An HTTP response with no body still
-// has its response headers, so it has gated content.
+// has its response headers, so it has gated content. An empty but non-nil
+// header map also counts as content and stays gated; that is intentional, since
+// erring toward gating is the safe side, so do not narrow this to a length check.
 func (res *Result) hasGatedContent() bool {
 	return !reflect.DeepEqual(*res, res.visibleWhenGated())
 }

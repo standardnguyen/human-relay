@@ -654,8 +654,9 @@ func (h *Handler) executeRequest(req *store.Request) {
 	if result.ExitCode != 0 {
 		status = store.StatusError
 	}
-	// SetResult releases an empty gated result in the same update that marks
-	// it finished, so no reader ever sees it complete and gated.
+	// SetResult releases a gated result with nothing to withhold in the same
+	// update that marks it finished, so no reader ever sees it complete and
+	// gated.
 	_, releasedEmpty := h.store.SetResult(req.ID, result, status)
 	log.Printf("request %s completed with exit code %d", req.ID, result.ExitCode)
 	h.audit.Log("execution_completed", req.ID, map[string]interface{}{

@@ -139,10 +139,8 @@ func TestSubmitWaitZeroIsUnchanged(t *testing.T) {
 }
 
 // The card's motivating case: an auto-approved script finishes at once, so one
-// call should carry its output back. create_then_run is used rather than
-// run_script because run_script's executor always reads /scripts and ignores
-// MHR_SCRIPTS_DIR, so a test cannot point it at a temp dir; both go through
-// the same script executor and the same wait.
+// call should carry its output back. create_then_run and run_script go
+// through the same script executor and the same wait.
 func TestSubmitWaitWhitelistedScriptReturnsInline(t *testing.T) {
 	const body = "#!/bin/sh\necho \"hello-$1\"\n"
 	sum := sha256.Sum256([]byte(body))

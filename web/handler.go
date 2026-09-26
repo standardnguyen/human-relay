@@ -639,7 +639,7 @@ func (h *Handler) executeRequest(req *store.Request) {
 	case "http":
 		result = h.executor.ExecuteHTTP(req)
 	case "script":
-		result = h.executor.ExecuteScript(req)
+		result = h.executor.ExecuteScriptIn(req, h.scriptsDir)
 	case "script_create":
 		result = h.executor.ExecuteScriptCreate(req, h.scriptsDir)
 	case "script_create_then_run":

@@ -12,13 +12,6 @@ import (
 	"github.com/standardnguyen/human-relay/store"
 )
 
-const defaultScriptsDir = "/scripts"
-
-// ExecuteScript runs a named script from the default scripts directory.
-func (e *Executor) ExecuteScript(r *store.Request) *store.Result {
-	return e.ExecuteScriptIn(r, defaultScriptsDir)
-}
-
 // ExecuteScriptIn detects the script type (.sh, .py, or .json) and routes to
 // the appropriate executor. Lookup order: .sh, .py, .json.
 func (e *Executor) ExecuteScriptIn(r *store.Request, dir string) *store.Result {

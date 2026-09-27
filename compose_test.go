@@ -8,10 +8,11 @@ import (
 	"testing"
 )
 
-// Approved commands run as root inside the relay's own container. With NET_RAW
-// (in Docker's default capability set) a command can open a packet socket and
-// read the dashboard's HTTP traffic, including the approver's Authorization
-// header, then approve its own requests. The shipped compose file must drop it.
+// Commands the relay runs in its own container execute there as root. With
+// NET_RAW (in Docker's default capability set) such a command can open a packet
+// socket and read the dashboard's HTTP traffic, including the approver's
+// Authorization header, then approve its own requests. The shipped compose file
+// must drop it.
 func TestComposeDropsNetRaw(t *testing.T) {
 	const file = "docker-compose.yml"
 	b, err := os.ReadFile(file)
@@ -89,7 +90,7 @@ func checkNetRawDropped(compose, service string) error {
 		return err
 	}
 	if !hasCap(drops, "NET_RAW") && !hasCap(drops, "ALL") {
-		return fmt.Errorf("service %q must list NET_RAW under cap_drop (it drops %v); without it an approved command can open a packet socket and read the approver credential off the wire", service, drops)
+		return fmt.Errorf("service %q must list NET_RAW under cap_drop (it drops %v); without it a command run in the relay's container can open a packet socket and read the approver credential off the wire", service, drops)
 	}
 	adds, err := composeCapList(compose, service, "cap_add")
 	if err != nil {

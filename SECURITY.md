@@ -24,11 +24,11 @@ If either port is exposed to the public internet, or the SSH key is exfiltrated,
 - **Approval cooldown** — server-enforced rate limit between approvals.
 - **Audit log** — append-only JSONL file records every request, approval, denial, and execution result.
 
-### No packet capture from approved commands
+### No packet capture from inside the relay's container
 
-Approved commands run in the relay's own container and network namespace, and traffic reaching the relay's ports is plain HTTP (TLS, if you use it, ends at a proxy in front). The dashboard sends `Authorization: Bearer <approver token>` with every request it makes, so a command that could open a packet socket (`AF_PACKET`, which needs `CAP_NET_RAW`) could read dashboard or MCP traffic off the wire, including that header, and approve its own requests. Docker's default capability set includes `NET_RAW`. The shipped `docker-compose.yml` drops it from the `human-relay` service, so the socket call fails with a permission error, and `TestComposeDropsNetRaw` fails if the file stops dropping it.
+Commands the relay runs in its own container (`request_command_for_relay`, `run_script`, `create_then_run`) share its network namespace, and traffic reaching the relay's ports is plain HTTP (TLS, if you use it, ends at a proxy in front). The dashboard sends `Authorization: Bearer <approver token>` with every API call it makes, so a command that could open a packet socket (`AF_PACKET`, which needs `CAP_NET_RAW`) could read dashboard or MCP traffic off the wire, including that header, and approve its own requests. Docker's default capability set includes `NET_RAW`. The shipped `docker-compose.yml` drops it from the `human-relay` service, so the socket call fails with a permission error, and `TestComposeDropsNetRaw` fails if the file stops dropping it, adds it back, or makes the service privileged.
 
-If you run the relay outside this compose file, drop the capability yourself: `docker run --cap-drop NET_RAW …`, or `cap_drop: [NET_RAW]` on the service in your own compose file.
+If you run the relay outside this compose file, drop the capability yourself: `docker run --cap-drop NET_RAW …`, or `cap_drop: [NET_RAW]` on the service in your own compose file. Do not run the container privileged: Docker ignores `--cap-drop` for a privileged container.
 
 ## What's not protected (yet)
 

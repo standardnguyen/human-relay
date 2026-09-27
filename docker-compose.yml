@@ -2,8 +2,8 @@ services:
   human-relay:
     build: .
     restart: always
-    # Approved commands run as root in this container; without NET_RAW they
-    # cannot open packet sockets to read dashboard or MCP traffic (SECURITY.md).
+    # Commands the relay runs here execute as root; without NET_RAW they cannot
+    # open packet sockets to read dashboard or MCP traffic (SECURITY.md).
     cap_drop:
       - NET_RAW
     ports:

@@ -27,6 +27,12 @@ func TestComposeDropsNetRaw(t *testing.T) {
 func TestCheckNetRawDropped(t *testing.T) {
 	const head = "services:\n  human-relay:\n    build: .\n"
 	const drop = "    cap_drop:\n      - NET_RAW\n"
+	const anchor = "x-caps:\n  raw: &raw NET_RAW\n"
+	// unresolved is the start of the error for a list item this check cannot
+	// read as a plain capability name.
+	unresolved := func(key, item string) string {
+		return fmt.Sprintf("service %q: %s item %q: cannot resolve", "human-relay", key, item)
+	}
 	cases := []struct {
 		name    string
 		compose string
@@ -49,6 +55,24 @@ func TestCheckNetRawDropped(t *testing.T) {
 		{"extends-flow", head + drop + "    extends: {service: base}\n", "extends"},
 		{"merge-key", "x-extra: &extra\n  cap_add: [NET_RAW]\nservices:\n  human-relay:\n    <<: *extra\n    build: .\n" + drop, "<<"},
 		{"merge-key-list", "services:\n  human-relay:\n    <<: [*a, *b]\n" + drop, "<<"},
+		// Items docker compose config resolves (aliases, interpolation, tags,
+		// block scalars) but this parser cannot, so they fail closed.
+		{"cap-add-alias-flow", anchor + head + drop + "    cap_add: [*raw]\n", unresolved("cap_add", "*raw")},
+		{"cap-add-alias-block", anchor + head + drop + "    cap_add:\n      - *raw\n", unresolved("cap_add", "*raw")},
+		{"cap-drop-alias-flow", anchor + head + "    cap_drop: [NET_RAW, *raw]\n", unresolved("cap_drop", "*raw")},
+		{"cap-drop-alias-block", anchor + head + drop + "      - *raw\n", unresolved("cap_drop", "*raw")},
+		{"cap-add-interp-flow", head + drop + "    cap_add: [\"${EXTRA_CAP:-NET_RAW}\"]\n", unresolved("cap_add", "${EXTRA_CAP:-NET_RAW}")},
+		{"cap-add-interp-block", head + drop + "    cap_add:\n      - ${EXTRA_CAP}\n", unresolved("cap_add", "${EXTRA_CAP}")},
+		{"cap-add-interp-default-block", head + drop + "    cap_add:\n      - ${EXTRA_CAP:-NET_RAW}\n", unresolved("cap_add", "${EXTRA_CAP:-NET_RAW}")},
+		{"cap-add-interp-bare-block", head + drop + "    cap_add:\n      - $EXTRA_CAP\n", unresolved("cap_add", "$EXTRA_CAP")},
+		{"cap-drop-interp-flow", head + "    cap_drop: [NET_RAW, \"${EXTRA_DROP}\"]\n", unresolved("cap_drop", "${EXTRA_DROP}")},
+		{"cap-drop-interp-block", head + drop + "      - ${EXTRA_DROP}\n", unresolved("cap_drop", "${EXTRA_DROP}")},
+		{"cap-add-anchored-item", head + drop + "    cap_add: [&a NET_RAW]\n", unresolved("cap_add", "&a NET_RAW")},
+		{"cap-add-tagged-item", head + drop + "    cap_add:\n      - !!str NET_RAW\n", unresolved("cap_add", "!!str NET_RAW")},
+		{"cap-add-block-scalar", head + drop + "    cap_add:\n      - >-\n        NET_RAW\n", unresolved("cap_add", ">-")},
+		{"cap-add-bare-dash", head + drop + "    cap_add:\n      -\n        NET_RAW\n", unresolved("cap_add", "")},
+		{"cap-add-bare-dash-same-indent", head + drop + "    cap_add:\n    -\n      NET_RAW\n", unresolved("cap_add", "")},
+		{"cap-drop-continued-item", head + drop + "        EXTRA\n", unresolved("cap_drop", "EXTRA")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -227,18 +251,37 @@ func serviceKeys(compose, service string) (map[string]string, error) {
 // cap_add) in one service of a compose file, upper-cased and without a CAP_
 // prefix. It reads only the two list shapes this parser supports: a
 // single-line flow list (key: [A, B]) and a block list (- A lines under the
-// key). Any other shape is an error rather than an empty list.
+// key). Any other shape is an error rather than an empty list, and so is any
+// item that is not a plain capability name: an alias, anchor, tag, ${..}
+// interpolation or multi-line value can resolve to NET_RAW without saying so.
 func composeCapList(compose, service, key string) ([]string, error) {
 	body, fieldIndent, err := serviceBody(compose, service)
 	if err != nil {
 		return nil, err
 	}
 	var caps []string
+	unresolved := func(item string) error {
+		return fmt.Errorf("service %q: %s item %q: cannot resolve (an alias, anchor, tag, interpolation or multi-line value); check by hand with docker compose config that the service drops NET_RAW and does not add it back", service, key, strings.Trim(strings.TrimSpace(item), `"'`))
+	}
+	add := func(item string) error {
+		c := normCap(item)
+		if !isPlainCap(c) {
+			return unresolved(item)
+		}
+		caps = append(caps, c)
+		return nil
+	}
 	inKey := false
 	for _, l := range body {
-		if inKey && l.ind >= fieldIndent && strings.HasPrefix(l.text, "- ") {
-			caps = append(caps, normCap(strings.TrimPrefix(l.text, "- ")))
+		if inKey && l.ind >= fieldIndent && (l.text == "-" || strings.HasPrefix(l.text, "- ")) {
+			if err := add(strings.TrimPrefix(l.text, "-")); err != nil {
+				return nil, err
+			}
 			continue
+		}
+		if inKey && l.ind > fieldIndent {
+			// A deeper line that is not an item continues the one above it.
+			return nil, unresolved(l.text)
 		}
 		if l.ind > fieldIndent {
 			continue
@@ -254,7 +297,9 @@ func composeCapList(compose, service, key string) ([]string, error) {
 		case strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]"):
 			for _, c := range strings.Split(v[1:len(v)-1], ",") {
 				if c = strings.TrimSpace(c); c != "" {
-					caps = append(caps, normCap(c))
+					if err := add(c); err != nil {
+						return nil, err
+					}
 				}
 			}
 		default:
@@ -267,6 +312,20 @@ func composeCapList(compose, service, key string) ([]string, error) {
 func normCap(s string) string {
 	s = strings.ToUpper(strings.Trim(strings.TrimSpace(s), `"'`))
 	return strings.TrimPrefix(s, "CAP_")
+}
+
+// isPlainCap reports whether a normalised item is a bare capability name
+// (letters, digits and underscores), the only item shape read at face value.
+func isPlainCap(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // stripYAMLComment drops a # comment, which YAML starts only at the beginning

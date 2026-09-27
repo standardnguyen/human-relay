@@ -674,7 +674,7 @@ func TestContainerRegistryPersistence(t *testing.T) {
 	defer os.RemoveAll(dataDir)
 
 	// Start server 1, register a container, then kill it
-	s1 := StartServer(t, WithDataDir(dataDir), WithPorts(18180+os.Getpid()%1000, 19190+os.Getpid()%1000))
+	s1 := StartServer(t, WithDataDir(dataDir))
 	c1 := NewMCPClient(t, s1.MCPURL())
 	c1.Call(t, 1, "initialize", map[string]interface{}{
 		"protocolVersion": "2024-11-05",
@@ -699,7 +699,7 @@ func TestContainerRegistryPersistence(t *testing.T) {
 	s1.cmd.Wait()
 
 	// Start server 2 with the same data dir but different ports
-	s2 := StartServer(t, WithDataDir(dataDir), WithPorts(18280+os.Getpid()%1000, 19290+os.Getpid()%1000))
+	s2 := StartServer(t, WithDataDir(dataDir))
 	c2 := NewMCPClient(t, s2.MCPURL())
 	c2.Call(t, 1, "initialize", map[string]interface{}{
 		"protocolVersion": "2024-11-05",
@@ -846,7 +846,7 @@ func TestSSHUserPersistence(t *testing.T) {
 	defer os.RemoveAll(dataDir)
 
 	// Start server 1, register with ssh_user
-	s1 := StartServer(t, WithDataDir(dataDir), WithPorts(18380+os.Getpid()%1000, 19390+os.Getpid()%1000))
+	s1 := StartServer(t, WithDataDir(dataDir))
 	c1 := NewMCPClient(t, s1.MCPURL())
 	c1.Call(t, 1, "initialize", map[string]interface{}{
 		"protocolVersion": "2024-11-05",
@@ -867,7 +867,7 @@ func TestSSHUserPersistence(t *testing.T) {
 	s1.cmd.Wait()
 
 	// Start server 2 with same data dir
-	s2 := StartServer(t, WithDataDir(dataDir), WithPorts(18480+os.Getpid()%1000, 19490+os.Getpid()%1000))
+	s2 := StartServer(t, WithDataDir(dataDir))
 	c2 := NewMCPClient(t, s2.MCPURL())
 	c2.Call(t, 1, "initialize", map[string]interface{}{
 		"protocolVersion": "2024-11-05",

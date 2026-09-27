@@ -2,6 +2,10 @@ services:
   human-relay:
     build: .
     restart: always
+    # Commands the relay runs here execute as root; without NET_RAW they cannot
+    # open packet sockets to read dashboard or MCP traffic (SECURITY.md).
+    cap_drop:
+      - NET_RAW
     ports:
       - "8080:8080"
       - "8090:8090"

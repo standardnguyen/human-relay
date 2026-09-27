@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -77,13 +78,6 @@ func WithDataDir(dir string) ServerOption {
 	}
 }
 
-func WithPorts(mcp, web int) ServerOption {
-	return func(s *TestServer) {
-		s.mcpPort = mcp
-		s.webPort = web
-	}
-}
-
 func WithCooldown(seconds int) ServerOption {
 	return func(s *TestServer) {
 		s.env = append(s.env, fmt.Sprintf("MHR_APPROVAL_COOLDOWN=%d", seconds))
@@ -117,13 +111,15 @@ func StartServer(t *testing.T, opts ...ServerOption) *TestServer {
 		t.Fatal("HUMAN_RELAY_BIN not set")
 	}
 
-	// Find free ports
-	mcpPort := 18080 + os.Getpid()%1000
-	webPort := 19090 + os.Getpid()%1000
+	// Ask the kernel for two free ports rather than deriving them, so relays
+	// alive at once, in this suite or another on the same box, never pick the
+	// same ones. They are held until just before the relay starts, since it
+	// must bind them itself; another process could take one in that gap.
+	ports, release := reservePorts(t, 2)
 
 	s := &TestServer{
-		mcpPort: mcpPort,
-		webPort: webPort,
+		mcpPort: ports[0],
+		webPort: ports[1],
 		token:   testToken,
 	}
 	for _, opt := range opts {
@@ -146,6 +142,7 @@ func StartServer(t *testing.T, opts ...ServerOption) *TestServer {
 	s.stderr = &lockedBuffer{}
 	s.cmd.Stderr = s.stderr
 
+	release()
 	if err := s.cmd.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
@@ -167,6 +164,31 @@ func StartServer(t *testing.T, opts ...ServerOption) *TestServer {
 	}
 	t.Fatalf("server didn't start within 5s, stderr: %s", s.stderr.String())
 	return nil
+}
+
+// reservePorts listens on n kernel-chosen ports and returns them with a func
+// that closes the listeners. It binds the wildcard address, as the relay does,
+// so a port that is free here is free for the relay; holding all n at once
+// keeps them distinct.
+func reservePorts(t *testing.T, n int) ([]int, func()) {
+	t.Helper()
+	var lns []net.Listener
+	release := func() {
+		for _, l := range lns {
+			l.Close()
+		}
+	}
+	ports := make([]int, 0, n)
+	for i := 0; i < n; i++ {
+		l, err := net.Listen("tcp", ":0")
+		if err != nil {
+			release()
+			t.Fatalf("reserve a free port: %v", err)
+		}
+		lns = append(lns, l)
+		ports = append(ports, l.Addr().(*net.TCPAddr).Port)
+	}
+	return ports, release
 }
 
 func (s *TestServer) MCPURL() string {

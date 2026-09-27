@@ -377,16 +377,26 @@ func (s *Store) Approve(id string, gateOutput bool) (bool, *Request) {
 	return true, &cp
 }
 
-func (s *Store) SetResult(id string, result *Result, status Status) bool {
+// SetResult records a finished request's result and status. Gated output with
+// nothing in it (no stdout, no stderr) is released in this same update:
+// gating protects content and an empty result has none, and releasing it in a
+// second update published the request as finished and gated in between, so a
+// reader waited for a Release click that was never needed. releasedEmpty
+// reports that this update released it; ok is false when id is unknown.
+func (s *Store) SetResult(id string, result *Result, status Status) (ok, releasedEmpty bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r, ok := s.requests[id]
-	if !ok {
-		return false
+	r, found := s.requests[id]
+	if !found {
+		return false, false
 	}
 	r.Result = result
 	r.Status = status
-	return true
+	if r.OutputGated && result != nil && result.Stdout == "" && result.Stderr == "" {
+		r.OutputGated = false
+		releasedEmpty = true
+	}
+	return true, releasedEmpty
 }
 
 func (s *Store) List(filter Status) []*Request {

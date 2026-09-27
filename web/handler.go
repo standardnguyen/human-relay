@@ -640,7 +640,9 @@ func (h *Handler) executeRequest(req *store.Request) {
 	if result.ExitCode != 0 {
 		status = store.StatusError
 	}
-	h.store.SetResult(req.ID, result, status)
+	// SetResult releases an empty gated result in the same update that marks
+	// it finished, so no reader ever sees it complete and gated.
+	_, releasedEmpty := h.store.SetResult(req.ID, result, status)
 	log.Printf("request %s completed with exit code %d", req.ID, result.ExitCode)
 	h.audit.Log("execution_completed", req.ID, map[string]interface{}{
 		"exit_code": result.ExitCode,
@@ -648,10 +650,7 @@ func (h *Handler) executeRequest(req *store.Request) {
 		"stdout":    audit.Truncate(result.Stdout),
 		"stderr":    audit.Truncate(result.Stderr),
 	})
-	// Gating protects content; an empty result has none to screen. Auto-release
-	// so gated-whitelist polls that find nothing don't queue no-op Release clicks.
-	if cur := h.store.Get(req.ID); cur != nil && cur.OutputGated && result.Stdout == "" && result.Stderr == "" {
-		h.store.ReleaseOutput(req.ID)
+	if releasedEmpty {
 		h.audit.Log("output_auto_released_empty", req.ID, nil)
 	}
 	h.broadcastEvent("update", req.ID)

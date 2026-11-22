@@ -1,9 +1,16 @@
 BIN := ./human-relay
 
-.PHONY: build test test-unit test-integration test-e2e test-e2e-containers test-e2e-frontend test-e2e-frontend-update test-all clean
+.PHONY: build build-tui test-tui test test-unit test-integration test-e2e test-e2e-containers test-e2e-frontend test-e2e-frontend-update test-all clean
 
 build:
 	go build -o $(BIN) .
+
+# The terminal UI is its own Go module under tui/ (it is not part of the relay's image).
+build-tui:
+	cd tui && CGO_ENABLED=0 go build -o bin/human-relay-tui .
+
+test-tui: build
+	cd tui && go vet ./... && HUMAN_RELAY_BIN=$(abspath $(BIN)) go test -count=1 ./...
 
 test-unit:
 	go test -v -count=1 ./whitelist/... ./mcp/...

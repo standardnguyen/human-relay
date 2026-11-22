@@ -269,6 +269,10 @@ Features:
 - Command whitelist with auto-approval for trusted command+args patterns
 - Collapsible whitelist panel; one-click "Whitelist" button on completed requests
 
+## Terminal UI
+
+`tui/` holds `human-relay-tui`, a terminal approval screen with the same abilities as the dashboard: list and filter requests, read every field, approve, approve (gated), deny, release, whitelist, turbocharge. It is a separate Go module (`make build-tui`) and talks to the relay's web port with the approver token, which it asks for at a hidden prompt and keeps in memory only. See [tui/README.md](tui/README.md).
+
 ## Configuration
 
 | Variable | Default | Description |

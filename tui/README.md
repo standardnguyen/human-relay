@@ -36,7 +36,7 @@ It asks for the approver token at a hidden prompt on the terminal and refuses to
 - `403` means the token is valid but is not the approver token. You are offered to enter another.
 - `401` means the relay does not know the token.
 
-`127.0.0.1:8090` being reachable from the relay host's own shell has not been verified; if it is not, point `--url` at an address that is.
+The default address assumes the relay's web port answers on the machine running the TUI; if it does not, point `--url` at an address that does.
 
 ## Keys
 
